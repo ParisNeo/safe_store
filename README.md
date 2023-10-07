@@ -1,7 +1,3 @@
-Certainly! Here's a comprehensive project description for the `safe_store` library:
-
----
-
 # safe_store
 
 `safe_store` is an open-source Python library that provides essential tools for text data management, vectorization, and document retrieval. It empowers users to work with text documents efficiently and effortlessly.
