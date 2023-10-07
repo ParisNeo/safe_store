@@ -121,6 +121,8 @@ print("Similar Documents:")
 for i, text in enumerate(similar_texts):
     print(f"{i + 1}: {text}")
 ```
+The `vectorizer.show_document(show_interactive_form=True)` should yield a plot like this where you can read the text by pointing on the dots. Each dot is a chunk of the text. We can clearly see that chunks that come from the same document tend to form a cluster.
+![image](https://github.com/ParisNeo/safe_store/assets/827993/5d9c59f8-656a-423d-ab8a-08ebf77595e4)
 
 ---
 
