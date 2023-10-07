@@ -1,0 +1,11 @@
+scikit-learn
+ascii_colors
+matplotlib
+seaborn
+pdfminer
+pdfminer.six
+python-docx
+python-pptx
+python-csv
+beautifulsoup4
+mplcursors
