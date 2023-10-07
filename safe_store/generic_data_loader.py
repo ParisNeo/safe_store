@@ -11,10 +11,15 @@ class GenericDataLoader:
             return GenericDataLoader.read_json_file(file_path)
         elif file_path.suffix == ".html":
             return GenericDataLoader.read_html_file(file_path)
+        
         elif file_path.suffix == ".pptx":
             return GenericDataLoader.read_pptx_file(file_path)
         if file_path.suffix in [".txt", ".rtf", ".md", ".log", ".cpp", ".java", ".js", ".py", ".rb", ".sh", ".sql", ".css", ".html", ".php", ".json", ".xml", ".yaml", ".yml", ".h", ".hh", ".hpp", ".inc", ".snippet", ".snippets", ".asm", ".s", ".se", ".sym", ".ini", ".inf", ".map", ".bat"]:
             return GenericDataLoader.read_text_file(file_path)
+        elif file_path.suffix == ".csv":
+            return GenericDataLoader.read_csv_file(file_path)
+        elif file_path.suffix == ".xlsx":
+            return GenericDataLoader.read_excel_file(file_path)
         else:
             raise ValueError("Unknown file type")
     def get_supported_file_types():
@@ -56,11 +61,23 @@ class GenericDataLoader:
     
     @staticmethod
     def read_csv_file(file_path):
-        import csv
-        with open(file_path, 'r') as file:
-            csv_reader = csv.reader(file)
-            lines = [row for row in csv_reader]
-        return lines    
+        import pandas as pd
+        try:
+            df = pd.read_csv(file_path)
+            return df
+        except FileNotFoundError:
+            print(f"File '{file_path}' not found.")
+            return None
+
+    @staticmethod
+    def read_excel_file(file_path, sheet_name=None):
+        import pandas as pd
+        try:
+            df = pd.read_excel(file_path, sheet_name)
+            return df
+        except FileNotFoundError:
+            print(f"File '{file_path}' not found.")
+            return None
 
     @staticmethod
     def read_html_file(file_path):

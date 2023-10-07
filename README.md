@@ -31,7 +31,7 @@
 
 ### 1. Text Vectorizer
 
-- **Versatile Vectorization:** Choose between TF-IDF vectorization and model-based embeddings to convert text documents into numerical representations.
+- **Versatile Vectorization:** Choose between TF-IDF vectorization, model-based embeddings to convert text documents into numerical representations or use BM25 ranking for text retreival.
 - **Document Similarity:** Find documents similar to a given query text, making it ideal for document retrieval tasks.
 - **Interactive Visualization:** Visualize document embeddings in a scatter plot to gain insights into document relationships.
 - **No Authentication Required:** Use the library without the need for API keys or authentication, making it accessible for everyone.

@@ -115,6 +115,8 @@ class TextVectorizer:
         from tkinter import Tk, Text, Scrollbar, Frame, Label, TOP, BOTH, RIGHT, LEFT, Y, N, END
         from sklearn.manifold import TSNE
         from sklearn.decomposition import PCA
+        if save_fig_path is None and show_interactive_form==False:
+            raise Exception("[show_document] parameters error. Either select a save_fig_path to save the graph or set show_interactive_form to True")
 
         if self.vectorization_method==VectorizationMethod.BM25_VECTORIZER:
             ASCIIColors.red("BM25 does not make a representatrion of the data. So we don't show a distribution.")

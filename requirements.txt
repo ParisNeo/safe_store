@@ -1,12 +1,10 @@
 scikit-learn
-rank_bm25
 ascii_colors
 matplotlib
 seaborn
-pdfminer
-pdfminer.six
 python-docx
 python-pptx
-python-csv
+pandas
 beautifulsoup4
 mplcursors
+PyPDF2

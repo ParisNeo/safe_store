@@ -11,7 +11,7 @@ vectorizer = TextVectorizer(
 )
 
 # Add a document for vectorization
-database_path = Path(__file__).parent/"raw_database"
+database_path = Path(__file__).parent.parent/"test_database"
 documents = [d for d in database_path.iterdir()]
 for doc in documents:
     text = GenericDataLoader.read_file(doc)
@@ -24,7 +24,7 @@ vectorizer.index()
 query_text = "How did wild life evolve?"
 similar_texts, _ = vectorizer.recover_text(query_text, top_k=3)
 
-vectorizer.show_document(query_text, show_interactive_form=False)
+vectorizer.show_document(query_text,show_interactive_form=True)
 
 print("Similar Documents:")
 for i, text in enumerate(similar_texts):
