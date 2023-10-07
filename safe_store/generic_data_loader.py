@@ -21,10 +21,16 @@ class GenericDataLoader:
         return ["pdf", "txt", "docx", "json", "html", "pptx",".txt", ".md", ".log", ".cpp", ".java", ".js", ".py", ".rb", ".sh", ".sql", ".css", ".html", ".php", ".json", ".xml", ".yaml", ".yml", ".h", ".hh", ".hpp", ".inc", ".snippet", ".snippets", ".asm", ".s", ".se", ".sym", ".ini", ".inf", ".map", ".bat", ".rtf"]    
     @staticmethod        
     def read_pdf_file(file_path):
-        from pdfminer.high_level import extract_text
-            
+        import PyPDF2
+        def extract_text_from_pdf(file_path):
+            text = ""
+            with open(file_path, 'rb') as pdf_file:
+                pdf_reader = PyPDF2.PdfReader(pdf_file)
+                for page in pdf_reader.pages:
+                    text += page.extract_text()
+            return text
         # Extract text from the PDF
-        text = extract_text(file_path)
+        text = extract_text_from_pdf(file_path)
 
         # Convert to Markdown (You may need to implement custom logic based on your specific use case)
         markdown_text = text.replace('\n', '  \n')  # Adding double spaces at the end of each line for Markdown line breaks

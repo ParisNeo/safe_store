@@ -1,4 +1,5 @@
 scikit-learn
+rank_bm25
 ascii_colors
 matplotlib
 seaborn

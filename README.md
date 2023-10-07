@@ -6,6 +6,27 @@
 
 `safe_store` is an open-source Python library that provides essential tools for text data management, vectorization, and document retrieval. It empowers users to work with text documents efficiently and effortlessly.
 
+- [Introduction](#safe_store)
+- [Key Features](#key-features)
+  - [Text Vectorizer](#1-text-vectorizer)
+  - [Generic Data Loader](#2-generic-data-loader)
+- [What Can You Use `safe_store` For?](#what-can-you-use-safe_store-for)
+- [Text Vectorizer](#text-vectorizer)
+  - [Features](#features)
+  - [Installation](#installation)
+  - [Getting Started](#getting-started)
+    - [Initializing the Text Vectorizer](#initializing-the-text-vectorizer)
+    - [Adding and Indexing Documents](#adding-and-indexing-documents)
+    - [Embedding a Query and Retrieving Similar Documents](#embedding-a-query-and-retrieving-similar-documents)
+  - [Interactive Document Visualization](#interactive-document-visualization)
+- [Generic Data Loader](#generic-data-loader)
+  - [Features](#features-1)
+  - [Usage](#usage)
+  - [Supported File Types](#supported-file-types)
+- [Author](#author)
+- [License](#license)
+
+
 ## Key Features:
 
 ### 1. Text Vectorizer
@@ -31,31 +52,9 @@
 
 `safe_store` is designed to be accessible, versatile, and free for all users. It's an ideal choice for developers, data scientists, and researchers who want a user-friendly and open-source solution for working with text data.
 
-## License
-
-`safe_store` is licensed under the Apache 2.0 License, allowing you to use it freely, even for commercial purposes, without any signup or authorization keys.
-
 ---
 
 Explore the world of text data management and analysis with `safe_store` today!
-
-# Table of Contents
-- [safe_store](#safe_store)
-  - [Text Vectorizer](#text-vectorizer)
-    - [Features](#features)
-    - [Installation](#installation)
-    - [Getting Started](#getting-started)
-      - [Initializing the Text Vectorizer](#initializing-the-text-vectorizer)
-      - [Adding and Indexing Documents](#adding-and-indexing-documents)
-      - [Embedding a Query and Retrieving Similar Documents](#embedding-a-query-and-retrieving-similar-documents)
-  - [Generic Data Loader](#generic-data-loader)
-    - [Features](#features-1)
-    - [Usage](#usage)
-    - [Supported File Types](#supported-file-types)
-  - [Author](#author)
-  - [License](#license)
-
----
 
 ## Text Vectorizer
 
