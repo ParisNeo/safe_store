@@ -1,4 +1,8 @@
 # safe_store
+![GitHub Repo](https://img.shields.io/badge/GitHub-Repo-brightgreen.svg)
+![PyPI Version](https://img.shields.io/pypi/v/safe-store.svg)
+![License](https://img.shields.io/github/license/ParisNeo/safe_store.svg)
+![Python Versions](https://img.shields.io/pypi/pyversions/safe-store.svg)
 
 `safe_store` is an open-source Python library that provides essential tools for text data management, vectorization, and document retrieval. It empowers users to work with text documents efficiently and effortlessly.
 
