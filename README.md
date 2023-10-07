@@ -167,16 +167,13 @@ file_content = GenericDataLoader.read_file(file_path)
 - INF
 - MAP
 - BAT
-```
 
 Feel free to replace `"example.pdf"` with the path to your specific file.
 
 ---
 
 ## Author
-
 - ParisNeo
 
 ## License
-
 This project is licensed under the Apache 2.0 License.
