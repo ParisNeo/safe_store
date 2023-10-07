@@ -1,5 +1,4 @@
 from safe_store import TextVectorizer
-
 from safe_store import TextVectorizer, VectorizationMethod
 
 from pathlib import Path
