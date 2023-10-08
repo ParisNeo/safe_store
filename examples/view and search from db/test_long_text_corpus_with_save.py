@@ -7,7 +7,7 @@ vectorizer = TextVectorizer(
     vectorization_method=VectorizationMethod.TFIDF_VECTORIZER,#=VectorizationMethod.BM25_VECTORIZER,
     database_path=Path(__file__).parent.parent/"vectorized_dbs"/"database.json",
     data_visualization_method=VisualizationMethod.TSNE,#VisualizationMethod.PCA,
-    save_db=False
+    save_db=True
 )
 
 # # Add a document for vectorization
@@ -25,7 +25,7 @@ query_text = "What are future space technologies"
 similar_texts, _ = vectorizer.recover_text(query_text, top_k=3)
 
 vectorizer.show_document(query_text,show_interactive_form=True)
-
+vectorizer.save_to_json()
 
 print("Similar Documents:")
 for i, text in enumerate(similar_texts):

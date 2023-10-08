@@ -100,11 +100,11 @@ class TextVectorizer:
                 self.ready = True
             else:
                 ASCIIColors.info(f"No database file found : {self.database_file}")
-
-        if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
-            self.vectorizer = TfidfVectorizer()
-        elif self.vectorization_method == VectorizationMethod.BM25_VECTORIZER:
-            self.vectorizer = BM25Vectorizer()
+        else:
+            if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
+                self.vectorizer = TfidfVectorizer()
+            elif self.vectorization_method == VectorizationMethod.BM25_VECTORIZER:
+                self.vectorizer = BM25Vectorizer()
 
                     
     def show_document(self, query_text=None, save_fig_path=None, show_interactive_form=False, add_hover_detection=False, add_click_detection=False):
@@ -454,14 +454,19 @@ class TextVectorizer:
             self.chunks = database["chunks"]
             self.infos= database["infos"]
             self.ready = True
-        if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER or self.vectorization_method==VectorizationMethod.BM25_VECTORIZER:
-            data = [c["chunk_text"] for k,c in self.chunks.items()]
-            if len(data)>0:
-                self.vectorizer = TfidfVectorizer()
-                self.vectorizer.fit(data)
-                self.embeddings={}
-                for k,chunk in self.chunks.items():
-                    chunk["embeddings"][k]= self.vectorizer.transform([chunk["embeddings"]]).toarray()
+        if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
+            self.vectorizer = TFIDFLoader.create_vectorizer_from_dict(database["vectorizer"])
+        if self.vectorization_method==VectorizationMethod.BM25_VECTORIZER:
+            self.vectorizer = BM25Vectorizer()
+            data=[]
+            for k,chunk in self.chunks.items():
+                try:
+                    data.append(chunk["chunk_text"]) 
+                except Exception as ex:
+                    print("oups")
+            self.vectorizer.fit(data)
+
+                
                     
                     
     def clear_database(self):
