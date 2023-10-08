@@ -2,12 +2,13 @@ from safe_store import TextVectorizer
 from safe_store import TextVectorizer, VectorizationMethod, VisualizationMethod
 from safe_store.generic_data_loader import GenericDataLoader
 from pathlib import Path
+
 # Create an instance of TextVectorizer
 vectorizer = TextVectorizer(
     vectorization_method=VectorizationMethod.TFIDF_VECTORIZER,#=VectorizationMethod.BM25_VECTORIZER,
     database_path=Path(__file__).parent.parent/"vectorized_dbs"/"database.json",
     data_visualization_method=VisualizationMethod.TSNE,#VisualizationMethod.PCA,
-    save_db=True
+    save_db=False
 )
 
 # Add a document for vectorization

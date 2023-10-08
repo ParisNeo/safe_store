@@ -1,5 +1,7 @@
 import numpy as np
 import json
+def serialize_enum_to_json(enum_member):
+    return enum_member.value
 
 class NumpyEncoderDecoder(json.JSONEncoder):
     def default(self, obj):

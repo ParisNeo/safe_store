@@ -13,7 +13,7 @@ class TFIDFLoader:
     def create_dict_from_vectorizer(vectorizer):
         tfidf_info = {
             "vocabulary": vectorizer.vocabulary_,
-            "idf_values": dict(zip(vectorizer.get_feature_names(), vectorizer.idf_)),
+            "idf_values": vectorizer.idf_,# dict(zip(vectorizer.get_feature_names(), )),
             "params": vectorizer.get_params()
         }
         return tfidf_info

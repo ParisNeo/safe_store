@@ -7,7 +7,7 @@ URL = 'https://github.com/ParisNeo/safe_store'
 AUTHOR = 'ALOUI Saifeddine (ParisNeo)'
 AUTHOR_EMAIL = 'aloui.seifeddine@email.com'
 LICENSE = 'Apache 2.0'
-VERSION = '0.1.7'  # Update with your desired version
+VERSION = '0.1.8'  # Update with your desired version
 
 # Read dependencies from requirements.txt
 with open('requirements.txt', 'r') as req_file:

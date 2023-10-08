@@ -23,7 +23,7 @@ class VisualizationMethod(Enum):
 class TextVectorizer:
     def __init__(
                     self, 
-                    vectorization_method:VectorizationMethod|str, # supported "model_embedding" or "ftidf_vectorizer"
+                    vectorization_method:VectorizationMethod|str, # supported "model_embedding" or "tfidf_vectorizer"
                     model=None, #needed in case of using model_embedding
                     database_path=None,
                     save_db=False,
@@ -70,26 +70,26 @@ class TextVectorizer:
                     if not self.model or self.model.embed("hi")==None: # test
                         self.vectorization_method=VectorizationMethod.TFIDF_VECTORIZER
                         self.infos={
-                            "vectorization_method":VectorizationMethod.TFIDF_VECTORIZER
+                            "vectorization_method":VectorizationMethod.TFIDF_VECTORIZER.value
                         }                        
                     else:
                         self.infos={
-                            "vectorization_method":VectorizationMethod.MODEL_EMBEDDING
+                            "vectorization_method":VectorizationMethod.MODEL_EMBEDDING.value
                         }
                 except Exception as ex:
                     ASCIIColors.error("Couldn't embed the text, so trying to use tfidf instead.")
                     trace_exception(ex)
                     self.infos={
-                        "vectorization_method":VectorizationMethod.TFIDF_VECTORIZER
+                        "vectorization_method":VectorizationMethod.TFIDF_VECTORIZER.value
                     }
             elif vectorization_method == VectorizationMethod.BM25_VECTORIZER:
                 self.infos = {
-                    "vectorization_method": VectorizationMethod.BM25_VECTORIZER
+                    "vectorization_method": VectorizationMethod.BM25_VECTORIZER.value
                 }
 
             else:
                 self.infos={
-                    "vectorization_method":VectorizationMethod.TFIDF_VECTORIZER
+                    "vectorization_method":VectorizationMethod.TFIDF_VECTORIZER.value
                 }
 
         # Load previous state from the JSON file
@@ -300,8 +300,6 @@ class TextVectorizer:
                 return True
         return False
 
-
-
     def add_document(self, document_name:Path, text:str, chunk_size: int, overlap_size:int, force_vectorize=False,add_as_a_bloc=False):
         if self.file_exists(document_name) and not force_vectorize:
             print(f"Document {document_name} already exists. Skipping vectorization.")
@@ -392,6 +390,16 @@ class TextVectorizer:
 
         return query_embedding
 
+    def __len__(self):
+        return len(list(self.chunks.keys()))
+
+    def recover_chunk_by_index(self, index):
+        chunk_id = [ch for ch in self.chunks.keys()][index]
+        return self.chunks[chunk_id]["chunk_text"]
+
+    def recover_chunk_by_document_name(self, document_name):
+        chunks = [ch for ch in self.chunks.values() if ch["document_name"]==document_name]
+        return chunks
 
     def recover_text(self, query, top_k=3):
         if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER or self.vectorization_method==VectorizationMethod.MODEL_EMBEDDING:
@@ -423,7 +431,7 @@ class TextVectorizer:
         state = {
             "chunks": self.chunks,
             "infos": self.infos,
-            "vectorizer": TFIDFLoader.create_vectorizer_from_dict(self.vectorizer) if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER else None
+            "vectorizer": TFIDFLoader.create_dict_from_vectorizer(self.vectorizer) if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER else None
         }
         return state
     
@@ -434,7 +442,7 @@ class TextVectorizer:
         state = {
             "chunks": self.chunks,
             "infos": self.infos,
-            "vectorizer": TFIDFLoader.create_vectorizer_from_dict(self.vectorizer) if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER else None
+            "vectorizer": TFIDFLoader.create_dict_from_vectorizer(self.vectorizer) if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER else None
         }
         with open(self.database_file, "w") as f:
             json.dump(state, f, cls=NumpyEncoderDecoder, indent=4)
