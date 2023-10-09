@@ -100,6 +100,10 @@ class TextVectorizer:
                 self.ready = True
             else:
                 ASCIIColors.info(f"No database file found : {self.database_file}")
+                if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
+                    self.vectorizer = TfidfVectorizer()
+                elif self.vectorization_method == VectorizationMethod.BM25_VECTORIZER:
+                    self.vectorizer = BM25Vectorizer()
         else:
             if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
                 self.vectorizer = TfidfVectorizer()
