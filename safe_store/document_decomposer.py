@@ -39,7 +39,9 @@ class DocumentDecomposer:
                 if tokenize is not None:
                     tokens = tokenize(sentence)
                 else:
-                    tokens = sentence.split()  # Use words as units
+                    # Split the text using regular expression to preserve line breaks and multiple spaces
+                    tokens = re.split(r'(\s+|\n+)', sentence)
+                    # tokens = sentence.split()  # Use words as units
 
                 nb_tokens = len(tokens)
                 if nb_tokens > max_chunk_size:
