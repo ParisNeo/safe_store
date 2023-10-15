@@ -96,7 +96,14 @@ class TextVectorizer:
         if self.save_db:
             if Path(self.database_file).exists():
                 ASCIIColors.success(f"Database file found : {self.database_file}")
-                self.load_from_json()
+                try:
+                    self.load_from_json()
+                except Exception as ex:
+                    ASCIIColors.error("Couldn't load vectorized db.\nMoving to safe mode")
+                    if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
+                        self.vectorizer = TfidfVectorizer()
+                    elif self.vectorization_method == VectorizationMethod.BM25_VECTORIZER:
+                        self.vectorizer = BM25Vectorizer()
                 self.ready = True
             else:
                 ASCIIColors.info(f"No database file found : {self.database_file}")
