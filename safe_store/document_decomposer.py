@@ -18,7 +18,7 @@ class DocumentDecomposer:
     def tokenize_sentences(paragraph):
         # Custom sentence tokenizer using simple regex-based approach
         sentences = [s+"." for s in paragraph.split(".")]
-        sentences = [sentence.strip() for sentence in sentences if sentence.strip()]
+        sentences = [sentence for sentence in sentences]
         return sentences
 
     @staticmethod
