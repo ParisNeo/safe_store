@@ -8,7 +8,7 @@ from ascii_colors import ASCIIColors, trace_exception
 from safe_store.document_decomposer import DocumentDecomposer
 from safe_store.tfidf_loader import TFIDFLoader
 from safe_store.utils import NumpyEncoderDecoder
-
+from typing import Union, Tuple, List, Dict, Any
 from enum import Enum
 
 class VectorizationMethod(Enum):
@@ -117,8 +117,18 @@ class TextVectorizer:
             elif self.vectorization_method == VectorizationMethod.BM25_VECTORIZER:
                 self.vectorizer = BM25Vectorizer()
 
-                    
-    def show_document(self, query_text=None, save_fig_path=None, show_interactive_form=False, add_hover_detection=False, add_click_detection=False):
+
+    def show_document(self, query_text: str = None, save_fig_path: str = None, show_interactive_form: bool = False, add_hover_detection: bool = False, add_click_detection: bool = False):
+        """
+        Show the document and optionally highlight specific text based on the query.
+        Args:
+            query_text (str, optional): The text to highlight in the document. Defaults to None.
+            save_fig_path (str, optional): The file path to save the figure. Defaults to None.
+            show_interactive_form (bool, optional): Whether to show an interactive form for entering the query text. Defaults to False.
+            add_hover_detection (bool, optional): Whether to add hover detection for highlighting text. Defaults to False.
+            add_click_detection (bool, optional): Whether to add click detection for highlighting text. Defaults to False.
+        """
+
         import textwrap
         import seaborn as sns
         import matplotlib.pyplot as plt
@@ -294,7 +304,15 @@ class TextVectorizer:
                 plt.show()
 
     
-    def file_exists(self, document_name:str)->bool:
+    def file_exists(self, document_name: str) -> bool:
+        """
+        Check if a document exists in the vector store.
+        Args:
+            document_name (str): The name of the document to check.
+        Returns:
+            bool: True if the document exists, False otherwise.
+        """
+
         # Loop through the list of dictionaries
         for dictionary in self.chunks:
             if 'document_name' in dictionary and dictionary['document_name'] == document_name:
@@ -303,7 +321,14 @@ class TextVectorizer:
                 return True
         return False
     
-    def remove_document(self, document_name:str):
+    def remove_document(self, document_name: str):
+        """
+        Remove a document from the vector store.
+        Args:
+            document_name (str): The name of the document to be removed.
+        Returns:
+            bool: True if the document was successfully removed, False otherwise.
+        """
         for dictionary in self.chunks:
             if 'document_name' in dictionary and dictionary['document_name'] == document_name:
                 # If the document_name is found in the current dictionary, set the flag to True and break the loop
@@ -311,7 +336,19 @@ class TextVectorizer:
                 return True
         return False
 
-    def add_document(self, document_name:Path, text:str, chunk_size: int, overlap_size:int, force_vectorize=False,add_as_a_bloc=False):
+    def add_document(self, document_name: Path, text: str, chunk_size: int, overlap_size: int, force_vectorize: bool = False, add_as_a_bloc: bool = False):
+        """
+        Add a document to the vector store.
+
+        Args:
+            document_name (Path): The name of the document.
+            text (str): The text content of the document.
+            chunk_size (int): The size of each chunk in tokens.
+            overlap_size (int): The number of overlapping tokens between chunks.
+            force_vectorize (bool, optional): Whether to force vectorization even if the document already exists. Defaults to False.
+            add_as_a_bloc (bool, optional): Whether to add the entire document as a single chunk. Defaults to False.
+        """
+
         if self.file_exists(document_name) and not force_vectorize:
             print(f"Document {document_name} already exists. Skipping vectorization.")
             return
@@ -345,6 +382,9 @@ class TextVectorizer:
                 self.chunks[chunk_id] = chunk_dict
         
     def index(self):
+        """
+        Index the documents in the vector store and generate embeddings for each chunk.
+        """
         if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
             #if self.debug:
             #    ASCIIColors.yellow(','.join([len(chunk) for chunk in chunks]))
@@ -385,34 +425,67 @@ class TextVectorizer:
             
         self.ready = True
 
-
-    def embed_query(self, query_text):
+    def embed_query(self, query_text: str) -> Union[np.ndarray, None]:
+        """
+        Embeds the query text using the specified vectorization method.
+        Args:
+            query_text (str): The query text to be embedded.
+        Returns:
+            Union[np.ndarray, None]: The embedded query text as a numpy array, or None if embedding is not supported.
+        """
         # Generate query embeddings
         if self.vectorization_method == VectorizationMethod.TFIDF_VECTORIZER:
             query_embedding = self.vectorizer.transform([query_text]).toarray()
         elif self.vectorization_method == VectorizationMethod.BM25_VECTORIZER:
-            raise Exception("BM25 don't use embedding")
+            raise Exception("BM25 doesn't use embedding")
         else:
             query_embedding = self.model.embed(query_text)
             if query_embedding is None:
                 ASCIIColors.warning("The model doesn't implement embeddings extraction")
                 self.vectorization_method = VectorizationMethod.TFIDF_VECTORIZER
                 query_embedding = self.vectorizer.transform([query_text]).toarray()
-
         return query_embedding
 
-    def __len__(self):
+
+    def __len__(self) -> int:
+        """
+        Returns the number of chunks in the vector store.
+        Returns:
+            int: The number of chunks in the vector store.
+        """
         return len(list(self.chunks.keys()))
 
-    def recover_chunk_by_index(self, index):
+    def recover_chunk_by_index(self, index: int) -> str:
+        """
+        Recovers the chunk text by its index in the vector store.
+        Args:
+            index (int): The index of the chunk.
+        Returns:
+            str: The text of the chunk.
+        """
         chunk_id = [ch for ch in self.chunks.keys()][index]
         return self.chunks[chunk_id]["chunk_text"]
 
-    def recover_chunk_by_document_name(self, document_name):
+    def recover_chunk_by_document_name(self, document_name: str) -> List[Dict[str, Any]]:
+        """
+        Recovers the chunks by their document name.
+        Args:
+            document_name (str): The name of the document.
+        Returns:
+            List[Dict[str, Any]]: A list of chunks with matching document names.
+        """
         chunks = [ch for ch in self.chunks.values() if ch["document_name"]==document_name]
         return chunks
 
-    def recover_text(self, query, top_k=3):
+    def recover_text(self, query: str, top_k: int = 3) -> Tuple[List[str], np.ndarray]:
+        """
+        Retrieves the most similar texts to a given query.
+        Args:
+            query (str): The query text.
+            top_k (int, optional): The number of most similar texts to retrieve. Default is 3.
+        Returns:
+            Tuple[List[str], np.ndarray]: A tuple containing a list of the most similar texts and an array of the corresponding similarity scores.
+        """
         if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER or self.vectorization_method==VectorizationMethod.MODEL_EMBEDDING:
             similarities = {}
             query_embedding = self.embed_query(query)
@@ -438,7 +511,12 @@ class TextVectorizer:
             sorted_similarities = np.sort(bm25_scores)
         return texts, sorted_similarities
 
-    def toJson(self):
+    def toJson(self) -> Dict[str, Any]:
+        """
+        Converts the vector store object to a JSON-compatible dictionary.
+        Returns:
+            Dict[str, Any]: The JSON-compatible dictionary representing the vector store object.
+        """
         state = {
             "chunks": self.chunks,
             "infos": self.infos,
@@ -446,10 +524,22 @@ class TextVectorizer:
         }
         return state
     
-    def setVectorizer(self, vectorizer_dict:dict):
+    def setVectorizer(self, vectorizer_dict: Dict[str, Any]) -> None:
+        """
+        Sets the vectorizer of the vector store using a dictionary representation.
+        Args:
+            vectorizer_dict (Dict[str, Any]): The dictionary representation of the vectorizer.
+        Returns:
+            None
+        """
         self.vectorizer=TFIDFLoader.create_vectorizer_from_dict(vectorizer_dict)
 
-    def save_to_json(self):
+    def save_to_json(self) -> None:
+        """
+        Saves the vector store object to a JSON file.
+        Returns:
+            None
+        """
         state = {
             "chunks": self.chunks,
             "infos": self.infos,
@@ -458,7 +548,12 @@ class TextVectorizer:
         with open(self.database_file, "w") as f:
             json.dump(state, f, cls=NumpyEncoderDecoder, indent=4)
 
-    def load_from_json(self):
+    def load_from_json(self) -> None:
+        """
+        Loads vectorized documents from a JSON file.
+        Returns:
+            None
+        """
         ASCIIColors.info("Loading vectorized documents")
         with open(self.database_file, "r") as f:
             database = json.load(f, object_hook=NumpyEncoderDecoder.as_numpy_array)
@@ -478,9 +573,12 @@ class TextVectorizer:
             self.vectorizer.fit(data)
 
                 
-                    
-                    
-    def clear_database(self):
+    def clear_database(self) -> None:
+        """
+        Clears the vector store database.
+        Returns:
+            None
+        """
         self.ready = False
         self.vectorizer=None
         self.chunks = {}
