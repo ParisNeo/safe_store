@@ -385,6 +385,7 @@ class TextVectorizer:
         """
         Index the documents in the vector store and generate embeddings for each chunk.
         """
+        ASCIIColors.yellow("Indexing database ...",end="")
         if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
             #if self.debug:
             #    ASCIIColors.yellow(','.join([len(chunk) for chunk in chunks]))
@@ -422,6 +423,9 @@ class TextVectorizer:
 
         if self.save_db:
             self.save_to_json()
+        
+        ASCIIColors.green("ok")
+
             
         self.ready = True
 
