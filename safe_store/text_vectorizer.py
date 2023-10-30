@@ -381,10 +381,13 @@ class TextVectorizer:
                 }
                 self.chunks[chunk_id] = chunk_dict
         
-    def index(self):
+    def index(self)->bool:
         """
         Index the documents in the vector store and generate embeddings for each chunk.
         """
+        if len(list(self.chunks.items()))==0:
+            ASCIIColors.print("Warning! Database empty! Coudln't index anything", ASCIIColors.color_orange)
+            return False
         ASCIIColors.yellow("Indexing database ...",end="")
         if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
             #if self.debug:
@@ -428,6 +431,7 @@ class TextVectorizer:
 
             
         self.ready = True
+        return True
 
     def embed_query(self, query_text: str) -> Union[np.ndarray, None]:
         """
