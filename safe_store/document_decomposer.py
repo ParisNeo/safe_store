@@ -22,7 +22,7 @@ class DocumentDecomposer:
         return sentences
 
     @staticmethod
-    def decompose_document(text, max_chunk_size, overlap_size, tokenize=None, detokenize=None):
+    def decompose_document(text, max_chunk_size, overlap_size, tokenize=None, detokenize=None, return_detokenized=False):
         cleaned_text = DocumentDecomposer.clean_text(text)
         paragraphs = DocumentDecomposer.split_into_paragraphs(cleaned_text)
 
@@ -70,4 +70,7 @@ class DocumentDecomposer:
             clean_chunks.append(current_chunk)
             current_chunk = ""
 
-        return clean_chunks
+        if return_detokenized:
+            return [detokenize(c) for c in clean_chunks]
+        else:
+            return clean_chunks
