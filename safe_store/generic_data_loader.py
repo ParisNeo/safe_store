@@ -3,7 +3,7 @@ from typing import List
  
 class GenericDataLoader:
     @staticmethod
-    def read_file(file_path: Path) -> str:
+    def read_file(file_path: Path|str) -> str:
         """
         Read a file and return its content as a string.
 
@@ -16,6 +16,8 @@ class GenericDataLoader:
         Raises:
             ValueError: If the file type is unknown.
         """
+        file_path = Path(file_path)
+        
         if file_path.suffix ==".pdf":
             return GenericDataLoader.read_pdf_file(file_path)
         elif file_path.suffix == ".docx":
