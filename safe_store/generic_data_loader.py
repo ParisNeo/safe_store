@@ -1,5 +1,12 @@
 from pathlib import Path
 from typing import List
+
+class PackageManager:
+    @staticmethod
+    def install_package(package_name):
+        import subprocess
+        import sys
+        subprocess.check_call([sys.executable, "-m", "pip", "install", package_name])
  
 class GenericDataLoader:
     @staticmethod
@@ -28,6 +35,8 @@ class GenericDataLoader:
             return GenericDataLoader.read_html_file(file_path)
         elif file_path.suffix == ".pptx":
             return GenericDataLoader.read_pptx_file(file_path)
+        if file_path.suffix in [".pcap"]:
+            return GenericDataLoader.read_pcap_file(file_path)
         if file_path.suffix in [".txt", ".rtf", ".md", ".log", ".csv", ".cpp", ".java", ".js", ".py", ".rb", ".sh", ".sql", ".css", ".html", ".php", ".json", ".xml", ".yaml", ".yml", ".h", ".hh", ".hpp", ".inc", ".snippet", ".snippets", ".asm", ".s", ".se", ".sym", ".ini", ".inf", ".map", ".bat"]:
             return GenericDataLoader.read_text_file(file_path)
         else:
@@ -43,6 +52,73 @@ class GenericDataLoader:
         """
         return ["pdf", "txt", "docx", "json", "css", "css", "html", "pptx",".txt", ".md", ".log", ".cpp", ".java", ".js", ".py", ".rb", ".sh", ".sql", ".css", ".html", ".php", ".json", ".xml", ".yaml", ".yml", ".h", ".hh", ".hpp", ".inc", ".snippet", ".snippets", ".asm", ".s", ".se", ".sym", ".ini", ".inf", ".map", ".bat", ".rtf"]    
     
+    @staticmethod
+    def read_pcap_file(file_path):
+        import dpkt
+        result = ""  # Create an empty string to store the packet details
+        with open(file_path, 'rb') as f:
+            pcap = dpkt.pcap.Reader(f)
+            for timestamp, buf in pcap:
+                eth = dpkt.ethernet.Ethernet(buf)
+                
+                # Extract Ethernet information
+                src_mac = ':'.join('{:02x}'.format(b) for b in eth.src)
+                dst_mac = ':'.join('{:02x}'.format(b) for b in eth.dst)
+                eth_type = eth.type
+                
+                # Concatenate Ethernet information to the result string
+                result += f"Source MAC: {src_mac}\n"
+                result += f"Destination MAC: {dst_mac}\n"
+                result += f"Ethernet Type: {eth_type}\n"
+                
+                # Check if packet is an IP packet
+                if isinstance(eth.data, dpkt.ip.IP):
+                    ip = eth.data
+                    
+                    # Extract IP information
+                    src_ip = dpkt.ip.inet_to_str(ip.src)
+                    dst_ip = dpkt.ip.inet_to_str(ip.dst)
+                    ip_proto = ip.p
+                
+                    # Concatenate IP information to the result string
+                    result += f"Source IP: {src_ip}\n"
+                    result += f"Destination IP: {dst_ip}\n"
+                    result += f"IP Protocol: {ip_proto}\n"
+                    
+                    # Check if packet is a TCP packet
+                    if isinstance(ip.data, dpkt.tcp.TCP):
+                        tcp = ip.data
+                        
+                        # Extract TCP information
+                        src_port = tcp.sport
+                        dst_port = tcp.dport
+                        
+                        # Concatenate TCP information to the result string
+                        result += f"Source Port: {src_port}\n"
+                        result += f"Destination Port: {dst_port}\n"
+                        
+                        # Add more code here to extract and concatenate other TCP details if needed
+                        
+                    # Check if packet is a UDP packet
+                    elif isinstance(ip.data, dpkt.udp.UDP):
+                        udp = ip.data
+                        
+                        # Extract UDP information
+                        src_port = udp.sport
+                        dst_port = udp.dport
+                        
+                        # Concatenate UDP information to the result string
+                        result += f"Source Port: {src_port}\n"
+                        result += f"Destination Port: {dst_port}\n"
+                        
+                        # Add more code here to extract and concatenate other UDP details if needed
+                        
+                    # Add more code here to handle other protocols if needed
+                    
+                result += '-' * 50 + '\n'  # Separator between packets
+                
+        return result  # Return the result string
+
     @staticmethod
     def read_pdf_file(file_path: Path) -> str:
         """
