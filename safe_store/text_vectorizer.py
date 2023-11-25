@@ -88,16 +88,14 @@ class TextVectorizer:
                 self.infos = {
                     "vectorization_method": VectorizationMethod.BM25_VECTORIZER.value
                 }
-            elif vectorization_method==VectorizationMethod.WORD2VEC:
-                from gensim.models import KeyedVectors
-                from huggingface_hub import hf_hub_download
-                model = KeyedVectors.load_word2vec_format(hf_hub_download(repo_id="Word2vec/wikipedia2vec_dewiki_20180420_100d", filename="dewiki_20180420_100d.txt"))
-
-                self.infos = {
-                    "vectorization_method": VectorizationMethod.WORD2VEC.value
-                }
-                self.
             elif vectorization_method==VectorizationMethod.DOC2VEC:
+                from gensim.models import KeyedVectors, Doc2Vec
+                from huggingface_hub import hf_hub_download
+                w2v_cbow_d2v_dm = hf_hub_download(repo_id = "Projeto/LegalNLP", filename = "w2v_d2v_dm_size_100_window_15_epochs_20")
+                self.d2v=Doc2Vec.load(w2v_cbow_d2v_dm)
+                txt='hello can you hear me?'
+                tokens=txt.split()
+                txt_vec=self.d2v.infer_vector(tokens, epochs=20)
                 self.infos = {
                     "vectorization_method": VectorizationMethod.DOC2VEC.value
                 }
