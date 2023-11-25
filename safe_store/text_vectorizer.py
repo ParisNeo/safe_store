@@ -15,6 +15,8 @@ class VectorizationMethod(Enum):
     MODEL_EMBEDDING = "model_embedding"
     TFIDF_VECTORIZER = "tfidf_vectorizer"
     BM25_VECTORIZER = "bm25_vectorizer"
+    WORD2VEC = "word_2_vec"
+    DOC2VEC = "doc_2_vec"
 
 class VisualizationMethod(Enum):
     PCA = "PCA"
@@ -85,6 +87,19 @@ class TextVectorizer:
             elif vectorization_method == VectorizationMethod.BM25_VECTORIZER:
                 self.infos = {
                     "vectorization_method": VectorizationMethod.BM25_VECTORIZER.value
+                }
+            elif vectorization_method==VectorizationMethod.WORD2VEC:
+                from gensim.models import KeyedVectors
+                from huggingface_hub import hf_hub_download
+                model = KeyedVectors.load_word2vec_format(hf_hub_download(repo_id="Word2vec/wikipedia2vec_dewiki_20180420_100d", filename="dewiki_20180420_100d.txt"))
+
+                self.infos = {
+                    "vectorization_method": VectorizationMethod.WORD2VEC.value
+                }
+                self.
+            elif vectorization_method==VectorizationMethod.DOC2VEC:
+                self.infos = {
+                    "vectorization_method": VectorizationMethod.DOC2VEC.value
                 }
 
             else:
@@ -336,7 +351,7 @@ class TextVectorizer:
                 return True
         return False
 
-    def add_document(self, document_name: Path, text: str, chunk_size: int, overlap_size: int, force_vectorize: bool = False, add_as_a_bloc: bool = False):
+    def add_document(self, document_name: Path, text: str, chunk_size: int=512, overlap_size: int=0, force_vectorize: bool = False, add_as_a_bloc: bool = False):
         """
         Add a document to the vector store.
 

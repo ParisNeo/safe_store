@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import List
 
+
 class PackageManager:
     @staticmethod
     def install_package(package_name):
@@ -67,6 +68,7 @@ class GenericDataLoader:
                 eth_type = eth.type
                 
                 # Concatenate Ethernet information to the result string
+                result += f"Timestamp: {timestamp}\n"
                 result += f"Source MAC: {src_mac}\n"
                 result += f"Destination MAC: {dst_mac}\n"
                 result += f"Ethernet Type: {eth_type}\n"

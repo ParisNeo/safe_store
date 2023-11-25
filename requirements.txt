@@ -9,3 +9,5 @@ beautifulsoup4
 mplcursors
 PyPDF2
 dpkt
+gensim==3.8.3
+huggingface_hub
