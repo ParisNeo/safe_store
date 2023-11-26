@@ -88,12 +88,15 @@ class TextVectorizer:
                 }
             elif vectorization_method==VectorizationMethod.BERT:
                 from transformers import BertTokenizer, BertModel
+                import torch
                 tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-cased')
                 model = BertModel.from_pretrained("bert-base-multilingual-cased")
                 def embed(text):
-                    encoded_input = tokenizer(text, return_tensors='pt')
-                    out =  model(**encoded_input)
-                    return out.numpy()
+                    with torch.no_grad():
+                        encoded_input = tokenizer(text, return_tensors='pt')
+                        out =  model(**encoded_input)
+                        # Extract components from the model output
+                        return out.last_hidden_state.numpy()
                 
                 self.embed = embed
                 self.infos = {
