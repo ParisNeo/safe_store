@@ -15,9 +15,7 @@ class VectorizationMethod(Enum):
     MODEL_EMBEDDING = "model_embedding"
     TFIDF_VECTORIZER = "tfidf_vectorizer"
     BM25_VECTORIZER = "bm25_vectorizer"
-    WORD2VEC = "word_2_vec"
-    DOC2VEC = "doc_2_vec"
-
+    BERT = "bert"
 class VisualizationMethod(Enum):
     PCA = "PCA"
     TSNE = "TSNE"
@@ -88,16 +86,18 @@ class TextVectorizer:
                 self.infos = {
                     "vectorization_method": VectorizationMethod.BM25_VECTORIZER.value
                 }
-            elif vectorization_method==VectorizationMethod.DOC2VEC:
-                from gensim.models import KeyedVectors, Doc2Vec
-                from huggingface_hub import hf_hub_download
-                w2v_cbow_d2v_dm = hf_hub_download(repo_id = "Projeto/LegalNLP", filename = "w2v_d2v_dm_size_100_window_15_epochs_20")
-                self.d2v=Doc2Vec.load(w2v_cbow_d2v_dm)
-                txt='hello can you hear me?'
-                tokens=txt.split()
-                txt_vec=self.d2v.infer_vector(tokens, epochs=20)
+            elif vectorization_method==VectorizationMethod.BERT:
+                from transformers import BertTokenizer, BertModel
+                tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-cased')
+                model = BertModel.from_pretrained("bert-base-multilingual-cased")
+                def embed(text):
+                    encoded_input = tokenizer(text, return_tensors='pt')
+                    out =  model(**encoded_input)
+                    return out.numpy()
+                
+                self.embed = embed
                 self.infos = {
-                    "vectorization_method": VectorizationMethod.DOC2VEC.value
+                    "vectorization_method": VectorizationMethod.BERT.value
                 }
 
             else:
@@ -349,7 +349,7 @@ class TextVectorizer:
                 return True
         return False
 
-    def add_document(self, document_name: Path, text: str, chunk_size: int=512, overlap_size: int=0, force_vectorize: bool = False, add_as_a_bloc: bool = False):
+    def add_document(self, document_name: Path, text: str, chunk_size: int=512, overlap_size: int=0, force_vectorize: bool = False, add_as_a_bloc: bool = False, add_to_index=False):
         """
         Add a document to the vector store.
 
@@ -392,7 +392,8 @@ class TextVectorizer:
                     "chunk_tokens": chunk,
                     "embeddings":[]
                 }
-                self.chunks[chunk_id] = chunk_dict
+                if add_to_index:
+                    chunk_dict["embeddings"] = self.embed(chunk_dict["chunk_text"])
         
     def index(self)->bool:
         """
@@ -432,6 +433,8 @@ class TextVectorizer:
                     chunk["embeddings"] = self.vectorizer.transform([chunk["chunk_text"]]).toarray()
                 elif self.vectorization_method==VectorizationMethod.BM25_VECTORIZER:
                     chunk["BM25_data"] = (self.vectorizer.doc_term_freqs, self.vectorizer.doc_lengths) 
+                elif self.vectorization_method==VectorizationMethod.BERT:
+                    chunk["embeddings"] = self.embed(chunk["chunk_text"])
                 else:
                     chunk["embeddings"] = self.model.embed(chunk["chunk_text"])
             except Exception as ex:
@@ -457,6 +460,8 @@ class TextVectorizer:
         # Generate query embeddings
         if self.vectorization_method == VectorizationMethod.TFIDF_VECTORIZER:
             query_embedding = self.vectorizer.transform([query_text]).toarray()
+        elif self.vectorization_method == VectorizationMethod.BERT:
+            query_embedding = self.embed(query_text)
         elif self.vectorization_method == VectorizationMethod.BM25_VECTORIZER:
             raise Exception("BM25 doesn't use embedding")
         else:
@@ -507,7 +512,7 @@ class TextVectorizer:
         Returns:
             Tuple[List[str], np.ndarray]: A tuple containing a list of the most similar texts and an array of the corresponding similarity scores.
         """
-        if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER or self.vectorization_method==VectorizationMethod.MODEL_EMBEDDING:
+        if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER or self.vectorization_method==VectorizationMethod.MODEL_EMBEDDING or self.vectorization_method==VectorizationMethod.BERT:
             similarities = {}
             query_embedding = self.embed_query(query)
             for chunk_id, chunk in self.chunks.items():
