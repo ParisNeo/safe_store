@@ -396,8 +396,15 @@ class TextVectorizer:
                     "embeddings":[]
                 }
                 if add_to_index:
-                    chunk_dict["embeddings"] = self.embed(chunk_dict["chunk_text"])
-        
+                    if self.vectorization_method==VectorizationMethod.BERT:
+                        chunk_dict["embeddings"] = self.embed(chunk_dict["chunk_text"])
+                    elif self.vectorization_method==VectorizationMethod.MODEL_EMBEDDING:
+                        chunk_dict["embeddings"] = self.model.embed(chunk_dict["chunk_text"])
+                    elif self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
+                        chunk["embeddings"] = self.vectorizer.transform([chunk_dict["chunk_text"]]).toarray()
+                    
+                self.chunks[chunk_id] = chunk_dict
+
     def index(self)->bool:
         """
         Index the documents in the vector store and generate embeddings for each chunk.
