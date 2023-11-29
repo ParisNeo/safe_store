@@ -26,19 +26,19 @@ class GenericDataLoader:
         """
         file_path = Path(file_path)
         
-        if file_path.suffix ==".pdf":
+        if file_path.suffix.lower() ==".pdf":
             return GenericDataLoader.read_pdf_file(file_path)
-        elif file_path.suffix == ".docx":
+        elif file_path.suffix.lower() == ".docx":
             return GenericDataLoader.read_docx_file(file_path)
-        elif file_path.suffix == ".json":
+        elif file_path.suffix.lower() == ".json":
             return GenericDataLoader.read_json_file(file_path)
-        elif file_path.suffix == ".html":
+        elif file_path.suffix.lower() == ".html":
             return GenericDataLoader.read_html_file(file_path)
-        elif file_path.suffix == ".pptx":
+        elif file_path.suffix.lower() == ".pptx":
             return GenericDataLoader.read_pptx_file(file_path)
-        if file_path.suffix in [".pcap"]:
+        if file_path.suffix.lower() in [".pcap"]:
             return GenericDataLoader.read_pcap_file(file_path)
-        if file_path.suffix in [".txt", ".rtf", ".md", ".log", ".csv", ".cpp", ".java", ".js", ".py", ".rb", ".sh", ".sql", ".css", ".html", ".php", ".json", ".xml", ".yaml", ".yml", ".h", ".hh", ".hpp", ".inc", ".snippet", ".snippets", ".asm", ".s", ".se", ".sym", ".ini", ".inf", ".map", ".bat"]:
+        if file_path.suffix.lower() in [".txt", ".rtf", ".md", ".log", ".csv", ".cpp", ".java", ".js", ".py", ".rb", ".sh", ".sql", ".css", ".html", ".php", ".json", ".xml", ".yaml", ".yml", ".h", ".hh", ".hpp", ".inc", ".snippet", ".snippets", ".asm", ".s", ".se", ".sym", ".ini", ".inf", ".map", ".bat"]:
             return GenericDataLoader.read_text_file(file_path)
         else:
             raise ValueError("Unknown file type")
