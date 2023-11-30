@@ -376,7 +376,6 @@ class TextVectorizer:
                     "document_name": str(document_name),
                     "chunk_index": i+1,
                     "chunk_text":self.model.detokenize(chunk),
-                    "chunk_tokens": chunk,
                     "embeddings":[]
                 }
                 self.chunks[chunk_id] = chunk_dict
@@ -392,7 +391,6 @@ class TextVectorizer:
                     "document_name": str(document_name),
                     "chunk_index": i+1,
                     "chunk_text":self.model.detokenize(chunk) if (self.model and self.model.detokenize) else ''.join(chunk),
-                    "chunk_tokens": chunk,
                     "embeddings":[]
                 }
                 if add_to_index:
