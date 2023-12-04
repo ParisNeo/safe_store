@@ -399,8 +399,11 @@ class TextVectorizer:
                     elif self.vectorization_method==VectorizationMethod.MODEL_EMBEDDING:
                         chunk_dict["embeddings"] = self.model.embed(chunk_dict["chunk_text"])
                     elif self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
-                        chunk["embeddings"] = self.vectorizer.transform([chunk_dict["chunk_text"]]).toarray()
-                    
+                        try:
+                            chunk["embeddings"] = self.vectorizer.transform([chunk_dict["chunk_text"]]).toarray()
+                        except:
+                            ASCIIColors.red("It looks like the database was never indexed. Indexing...")
+                            self.index()
                 self.chunks[chunk_id] = chunk_dict
 
     def index(self)->bool:
@@ -524,9 +527,11 @@ class TextVectorizer:
             similarities = {}
             query_embedding = self.embed_query(query)
             for chunk_id, chunk in self.chunks.items():
-                similarity = cosine_similarity(query_embedding, chunk["embeddings"])
-                similarities[chunk_id] = similarity
-
+                if type(chunk["embeddings"])==np.ndarray:
+                    similarity = cosine_similarity(query_embedding, chunk["embeddings"])
+                    similarities[chunk_id] = similarity
+                else:
+                    similarities[chunk_id] = 1e10
             # Sort the similarities and retrieve the top-k most similar embeddings
             sorted_similarities = sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:top_k]
 
