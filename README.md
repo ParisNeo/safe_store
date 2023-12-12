@@ -1,3 +1,5 @@
+<img src="assets/logo.png" width="200px">
+
 # safe_store
 ![GitHub Repo](https://img.shields.io/badge/GitHub-Repo-brightgreen.svg)
 ![PyPI Version](https://img.shields.io/pypi/v/safe-store.svg)
@@ -6,25 +8,24 @@
 
 `safe_store` is an open-source Python library that provides essential tools for text data management, vectorization, and document retrieval. It empowers users to work with text documents efficiently and effortlessly.
 
-- [Introduction](#safe_store)
-- [Key Features](#key-features)
-  - [Text Vectorizer](#1-text-vectorizer)
-  - [Generic Data Loader](#2-generic-data-loader)
-- [What Can You Use `safe_store` For?](#what-can-you-use-safe_store-for)
-- [Text Vectorizer](#text-vectorizer)
-  - [Features](#features)
-  - [Installation](#installation)
-  - [Getting Started](#getting-started)
-    - [Initializing the Text Vectorizer](#initializing-the-text-vectorizer)
-    - [Adding and Indexing Documents](#adding-and-indexing-documents)
-    - [Embedding a Query and Retrieving Similar Documents](#embedding-a-query-and-retrieving-similar-documents)
-  - [Interactive Document Visualization](#interactive-document-visualization)
-- [Generic Data Loader](#generic-data-loader)
-  - [Features](#features-1)
-  - [Usage](#usage)
-  - [Supported File Types](#supported-file-types)
-- [Author](#author)
-- [License](#license)
+- [safe\_store](#safe_store)
+  - [Key Features:](#key-features)
+    - [1. Text Vectorizer](#1-text-vectorizer)
+    - [2. Generic Data Loader](#2-generic-data-loader)
+  - [What Can You Use `safe_store` For?](#what-can-you-use-safe_store-for)
+  - [Text Vectorizer](#text-vectorizer)
+    - [Features](#features)
+    - [Installation](#installation)
+    - [Getting Started](#getting-started)
+      - [Initializing the Text Vectorizer](#initializing-the-text-vectorizer)
+      - [Adding and Indexing Documents](#adding-and-indexing-documents)
+      - [Embedding a Query and Retrieving Similar Documents](#embedding-a-query-and-retrieving-similar-documents)
+  - [Generic Data Loader](#generic-data-loader)
+    - [Features](#features-1)
+    - [Usage](#usage)
+    - [Supported File Types](#supported-file-types)
+  - [Author](#author)
+  - [License](#license)
 
 
 ## Key Features:
