@@ -9,4 +9,3 @@ beautifulsoup4
 mplcursors
 PyPDF2
 dpkt
-transformers
