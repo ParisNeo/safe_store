@@ -22,7 +22,7 @@ vectorizer.index()
 
 # Embed a query and retrieve similar documents
 query_text = "What are future space technologies"
-similar_texts, _ = vectorizer.recover_text(query_text, top_k=3)
+similar_texts, _, _ = vectorizer.recover_text(query_text, top_k=3)
 
 vectorizer.show_document(query_text,show_interactive_form=True)
 

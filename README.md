@@ -111,7 +111,7 @@ vectorizer.index()
 ```python
 # Embed a query and retrieve similar documents
 query_text = "what is space"
-similar_texts, _ = vectorizer.recover_text(query_text, top_k=3)
+similar_texts, _, _ = vectorizer.recover_text(query_text, top_k=3)
 
 # Show the interactive document visualization
 vectorizer.show_document(show_interactive_form=True)

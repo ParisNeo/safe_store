@@ -221,16 +221,16 @@ class TextVectorizer:
             unique_document_paths = list(set(document_paths))
             legend_labels= []
             embeddings_by_document={doc:[] for doc in unique_document_paths}
-            for i,document_name in enumerate(document_paths):
-                legend_labels.append(Path(document_name).stem if "/" in document_name or "\\" in document_name else document_name)
-                embeddings_by_document[document_name].append(embeddings_2d[i,:][None,:])
+            for i,document_id in enumerate(document_paths):
+                legend_labels.append(Path(document_id).stem if type(document_id) in [Path, str] and "/" in document_id or "\\" in document_id else str(document_id))
+                embeddings_by_document[document_id].append(embeddings_2d[i,:][None,:])
 
             labels=[]
-            for i, (document_name, emb) in enumerate(embeddings_by_document.items()):
-                label = Path(document_name).stem if "/" in document_name or "\\" in document_name else document_name
+            for i, (document_id, emb) in enumerate(embeddings_by_document.items()):
+                label = Path(document_id).stem if type(document_id) in [Path, str] and "/" in document_id or "\\" in document_id else str(document_id)
                 labels.append(label)
                 embeddings_2d = np.vstack(emb)
-                plt.scatter(embeddings_2d[:,0], embeddings_2d[:,1],  color=document_path_colors[i], label=label, marker='o' if document_name!="Query" else "x")
+                plt.scatter(embeddings_2d[:,0], embeddings_2d[:,1],  color=document_path_colors[i], label=label, marker='o' if document_id!="Query" else "x")
                 # Add labels to the scatter plot
                 for j, (x, y) in enumerate(embeddings_2d[:]):
                     if label!="Query":
@@ -320,44 +320,44 @@ class TextVectorizer:
                 plt.show()
 
     
-    def file_exists(self, document_name: str) -> bool:
+    def document_exists(self, document_id: str) -> bool:
         """
         Check if a document exists in the vector store.
         Args:
-            document_name (str): The name of the document to check.
+            document_id (str): The name of the document to check.
         Returns:
             bool: True if the document exists, False otherwise.
         """
 
         # Loop through the list of dictionaries
         for dictionary in self.chunks:
-            if 'document_name' in dictionary and dictionary['document_name'] == document_name:
-                # If the document_name is found in the current dictionary, set the flag to True and break the loop
-                document_name_found = True
+            if 'document_id' in dictionary and dictionary['document_id'] == document_id:
+                # If the document_id is found in the current dictionary, set the flag to True and break the loop
+                document_id_found = True
                 return True
         return False
     
-    def remove_document(self, document_name: str):
+    def remove_document(self, document_id: str):
         """
         Remove a document from the vector store.
         Args:
-            document_name (str): The name of the document to be removed.
+            document_id (str): The name of the document to be removed.
         Returns:
             bool: True if the document was successfully removed, False otherwise.
         """
         for dictionary in self.chunks:
-            if 'document_name' in dictionary and dictionary['document_name'] == document_name:
-                # If the document_name is found in the current dictionary, set the flag to True and break the loop
+            if 'document_id' in dictionary and dictionary['document_id'] == document_id:
+                # If the document_id is found in the current dictionary, set the flag to True and break the loop
                 self.chunks.remove(dictionary)
                 return True
         return False
 
-    def add_document(self, document_name: Path, text: str, chunk_size: int=512, overlap_size: int=0, force_vectorize: bool = False, add_as_a_bloc: bool = False, add_to_index=False):
+    def add_document(self, document_id: Any, text: str, chunk_size: int=512, overlap_size: int=0, force_vectorize: bool = False, add_as_a_bloc: bool = False, add_to_index=False):
         """
         Add a document to the vector store.
 
         Args:
-            document_name (Path): The name of the document.
+            document_id (Any): The identifier of the document.
             text (str): The text content of the document.
             chunk_size (int): The size of each chunk in tokens.
             overlap_size (int): The number of overlapping tokens between chunks.
@@ -365,15 +365,16 @@ class TextVectorizer:
             add_as_a_bloc (bool, optional): Whether to add the entire document as a single chunk. Defaults to False.
         """
 
-        if self.file_exists(document_name) and not force_vectorize:
-            print(f"Document {document_name} already exists. Skipping vectorization.")
+        if self.document_exists(document_id) and not force_vectorize:
+            print(f"Document {document_id} already exists. Skipping vectorization.")
             return
         if add_as_a_bloc:
             chunks_text = [self.model.tokenize(text)]
             for i, chunk in enumerate(chunks_text):
-                chunk_id = f"{document_name}_chunk_{i + 1}"
+                chunk_id = f"{document_id}_chunk_{i + 1}"
+                document_id_type = type(document_id)
                 chunk_dict = {
-                    "document_name": str(document_name),
+                    "document_id":  document_id if document_id_type == dict or document_id_type ==  list else str(document_id),
                     "chunk_index": i+1,
                     "chunk_text":self.model.detokenize(chunk),
                     "embeddings":[]
@@ -386,9 +387,10 @@ class TextVectorizer:
                 chunks_text = DocumentDecomposer.decompose_document(text, chunk_size, overlap_size)
 
             for i, chunk in enumerate(chunks_text):
-                chunk_id = f"{document_name}_chunk_{i + 1}"
+                chunk_id = f"{document_id}_chunk_{i + 1}"
+                document_id_type = type(document_id)
                 chunk_dict = {
-                    "document_name": str(document_name),
+                    "document_id": document_id if document_id_type == dict or document_id_type ==  list else str(document_id),
                     "chunk_index": i+1,
                     "chunk_text":self.model.detokenize(chunk) if (self.model and self.model.detokenize) else ''.join(chunk),
                     "embeddings":[]
@@ -503,15 +505,15 @@ class TextVectorizer:
         chunk_id = [ch for ch in self.chunks.keys()][index]
         return self.chunks[chunk_id]["chunk_text"]
 
-    def recover_chunk_by_document_name(self, document_name: str) -> List[Dict[str, Any]]:
+    def recover_chunk_by_document_id(self, document_id: str) -> List[Dict[str, Any]]:
         """
         Recovers the chunks by their document name.
         Args:
-            document_name (str): The name of the document.
+            document_id (str): The name of the document.
         Returns:
             List[Dict[str, Any]]: A list of chunks with matching document names.
         """
-        chunks = [ch for ch in self.chunks.values() if ch["document_name"]==document_name]
+        chunks = [ch for ch in self.chunks.values() if ch["document_id"]==document_id]
         return chunks
 
     def recover_text(self, query: str, top_k: int = 3) -> Tuple[List[str], np.ndarray]:
@@ -537,6 +539,7 @@ class TextVectorizer:
 
             # Retrieve the original text associated with the most similar embeddings
             texts = [self.chunks[chunk_id]["chunk_text"] for chunk_id, _ in sorted_similarities]
+            document_ids = [self.chunks[chunk_id]["document_id"] for chunk_id, _ in sorted_similarities]
         elif self.vectorization_method==VectorizationMethod.BM25_VECTORIZER:
             # Use the BM25Vectorizer to compute BM25 scores for the query
             bm25_scores = self.vectorizer.transform(query)
@@ -547,8 +550,9 @@ class TextVectorizer:
             # Retrieve the original text associated with the top-k documents
             chunk_keys = [key for key,_ in self.chunks.items()]
             texts = [self.chunks[chunk_keys[chunk_id]]["chunk_text"] for chunk_id in top_k_indices]   
+            document_ids = [self.chunks[chunk_keys[chunk_id]]["document_id"] for chunk_id in top_k_indices]
             sorted_similarities = np.sort(bm25_scores)
-        return texts, sorted_similarities
+        return texts, sorted_similarities, document_ids
 
     def toJson(self) -> Dict[str, Any]:
         """
