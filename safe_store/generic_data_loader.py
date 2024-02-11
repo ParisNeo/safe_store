@@ -30,6 +30,8 @@ class GenericDataLoader:
             return GenericDataLoader.read_pdf_file(file_path)
         elif file_path.suffix.lower() == ".docx":
             return GenericDataLoader.read_docx_file(file_path)
+        elif file_path.suffix.lower() == ".xlsx":
+            return GenericDataLoader.read_xlsx_file(file_path)
         elif file_path.suffix.lower() == ".json":
             return GenericDataLoader.read_json_file(file_path)
         elif file_path.suffix.lower() == ".html":
@@ -51,7 +53,7 @@ class GenericDataLoader:
         Returns:
             List[str]: The list of supported file types.
         """
-        return [".pdf", ".txt", ".docx", ".json", ".css", ".html", ".pptx",".txt", ".md", ".log", ".cpp", ".java", ".js", ".py", ".rb", ".sh", ".sql", ".css", ".html", ".php", ".json", ".xml", ".yaml", ".yml", ".h", ".hh", ".hpp", ".inc", ".snippet", ".snippets", ".asm", ".s", ".se", ".sym", ".ini", ".inf", ".map", ".bat", ".rtf"]    
+        return [".pdf", ".txt", ".docx", ".json", ".css", ".html", ".pptx", ".xlsx",".txt", ".md", ".log", ".cpp", ".java", ".js", ".py", ".rb", ".sh", ".sql", ".css", ".html", ".php", ".json", ".xml", ".yaml", ".yml", ".h", ".hh", ".hpp", ".inc", ".snippet", ".snippets", ".asm", ".s", ".se", ".sym", ".ini", ".inf", ".map", ".bat", ".rtf"]    
     
     @staticmethod
     def read_pcap_file(file_path):
@@ -148,6 +150,7 @@ class GenericDataLoader:
         
         return markdown_text
 
+    
     @staticmethod
     def read_docx_file(file_path: Path) -> str:
         """
@@ -169,6 +172,28 @@ class GenericDataLoader:
         for paragraph in doc.paragraphs:
             text += paragraph.text + "\n"
         return text
+
+    @staticmethod
+    def read_xlsx_file(file_path: Path) -> str:
+        """
+        Read a DOCX file and return its content as a string.
+
+        Args:
+            file_path (Path): The path to the DOCX file.
+
+        Returns:
+            str: The content of the DOCX file.
+        """
+        try:
+            import pandas as pd
+            import openpyxl
+        except ImportError:
+            PackageManager.install_package("openpyxl")
+            PackageManager.install_package("pandas")
+            import pandas as pd
+        xls = pd.read_excel(file_path)
+
+        return xls.to_string()
 
     @staticmethod
     def read_json_file(file_path: Path) -> str:
