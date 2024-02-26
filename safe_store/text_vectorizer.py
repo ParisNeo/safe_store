@@ -352,7 +352,7 @@ class TextVectorizer:
                 return True
         return False
 
-    def add_document(self, document_id: Any, text: str, chunk_size: int=512, overlap_size: int=0, force_vectorize: bool = False, add_as_a_bloc: bool = False, add_to_index=False):
+    def add_document(self, document_id: Any, text: str, chunk_size: int=512, overlap_size: int=0, force_vectorize: bool = False, add_as_a_bloc: bool = False, add_to_index=False, add_first_line_to_all_chunks=False):
         """
         Add a document to the vector store.
 
@@ -381,12 +381,21 @@ class TextVectorizer:
                 }
                 self.chunks[chunk_id] = chunk_dict
         else:
+            if add_first_line_to_all_chunks:
+                try:
+                    add_to_chunks = text[:text.index("\n")]
+                except:
+                    add_to_chunks = ""
+            else:
+                add_to_chunks = None            
             if self.model:
                 chunks_text = DocumentDecomposer.decompose_document(text, chunk_size, overlap_size, self.model.tokenize, self.model.detokenize)
             else:
                 chunks_text = DocumentDecomposer.decompose_document(text, chunk_size, overlap_size)
 
             for i, chunk in enumerate(chunks_text):
+                if add_to_chunks:
+                    chunk = self.model.tokenize(add_to_chunks + "\n") + chunk
                 chunk_id = f"{document_id}_chunk_{i + 1}"
                 document_id_type = type(document_id)
                 chunk_dict = {
