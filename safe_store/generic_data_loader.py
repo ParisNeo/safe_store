@@ -40,7 +40,7 @@ class GenericDataLoader:
             return GenericDataLoader.read_pptx_file(file_path)
         if file_path.suffix.lower() in [".pcap"]:
             return GenericDataLoader.read_pcap_file(file_path)
-        if file_path.suffix.lower() in [".txt", ".rtf", ".md", ".log", ".csv", ".cpp", ".java", ".js", ".py", ".rb", ".sh", ".sql", ".css", ".html", ".php", ".json", ".xml", ".yaml", ".yml", ".h", ".hh", ".hpp", ".inc", ".snippet", ".snippets", ".asm", ".s", ".se", ".sym", ".ini", ".inf", ".map", ".bat"]:
+        if file_path.suffix.lower() in ['.sh', '.json', '.sym', '.log', '.snippet', '.se', '.yml', '.snippets', '.lua', '.pdf', '.md', '.docx', '.yaml', '.inc', '.txt', '.ini', '.pas', '.pptx', '.map', '.php', '.xlsx', '.rtf', '.hpp', '.h', '.asm', '.xml', '.hh', '.sql', '.java', '.c', '.html', '.inf', '.rb', '.py', '.cs', '.js', '.bat', '.css', '.s', '.cpp', '.csv']:
             return GenericDataLoader.read_text_file(file_path)
         else:
             raise ValueError("Unknown file type")
