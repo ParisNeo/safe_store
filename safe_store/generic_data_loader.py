@@ -53,7 +53,7 @@ class GenericDataLoader:
         Returns:
             List[str]: The list of supported file types.
         """
-        return [".pdf", ".txt", ".docx", ".json", ".css", ".html", ".pptx", ".xlsx",".txt", ".md", ".log", ".cpp", ".java", ".js", ".py", ".rb", ".sh", ".sql", ".css", ".html", ".php", ".json", ".xml", ".yaml", ".yml", ".h", ".hh", ".hpp", ".inc", ".snippet", ".snippets", ".asm", ".s", ".se", ".sym", ".ini", ".inf", ".map", ".bat", ".rtf"]    
+        return ['.sh', '.json', '.sym', '.log', '.snippet', '.se', '.yml', '.snippets', '.lua', '.pdf', '.md', '.docx', '.yaml', '.inc', '.txt', '.ini', '.pas', '.pptx', '.map', '.php', '.xlsx', '.rtf', '.hpp', '.h', '.asm', '.xml', '.hh', '.sql', '.java', '.c', '.html', '.inf', '.rb', '.py', '.cs', '.js', '.bat', '.css', '.s', '.cpp', '.csv']    
     
     @staticmethod
     def read_pcap_file(file_path):
