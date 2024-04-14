@@ -1,10 +1,10 @@
 from sklearn.feature_extraction.text import TfidfVectorizer
+from ascii_colors import ASCIIColors, trace_exception
 from sklearn.metrics.pairwise import cosine_similarity
 from safe_store.BM25Vectorizer import BM25Vectorizer, split_string  # Import BM25Vectorizer
 import numpy as np
 from pathlib import Path
 import json
-from ascii_colors import ASCIIColors, trace_exception
 from safe_store.document_decomposer import DocumentDecomposer
 from safe_store.tfidf_loader import TFIDFLoader
 from safe_store.utils import NumpyEncoderDecoder
@@ -15,7 +15,7 @@ class VectorizationMethod(Enum):
     MODEL_EMBEDDING = "model_embedding"
     TFIDF_VECTORIZER = "tfidf_vectorizer"
     BM25_VECTORIZER = "bm25_vectorizer"
-    BERT = "bert"
+    SENTENCE_TRANSFORMER_EMBEDDING = "sentense_transformer"
 class VisualizationMethod(Enum):
     PCA = "PCA"
     TSNE = "TSNE"
@@ -28,8 +28,11 @@ class TextVectorizer:
                     database_path=None,
                     save_db=False,
                     data_visualization_method:VisualizationMethod|str=VisualizationMethod.PCA,
-                    database_dict=None
+                    database_dict=None,
+                    embedding_model = "all-MiniLM-L6-v2"
                     ):
+        # Only useful when using  VectorizationMethod.SENTENCE_TRANSFORMER_EMBEDDING
+        self.embedding_model = embedding_model
         if isinstance(vectorization_method, str):
             try:
                 vectorization_method = VectorizationMethod(vectorization_method)
@@ -46,8 +49,12 @@ class TextVectorizer:
         elif not isinstance(data_visualization_method, VisualizationMethod):
             raise ValueError("Invalid vectorization_method. Please use VisualizationMethod enum values or strings.")
         
-        
-        
+        if vectorization_method==VectorizationMethod.SENTENCE_TRANSFORMER_EMBEDDING:
+            try:
+                from sentence_transformers import SentenceTransformer
+                self.embedding_model = SentenceTransformer(self.embedding_model)
+            except Exception as ex:
+                ASCIIColors.warning("Couldn't load sentence_transformers. reverting to tf-idf format")        
         self.vectorization_method = vectorization_method
         self.save_db = save_db
         self.model = model
@@ -87,6 +94,22 @@ class TextVectorizer:
                     "vectorization_method": VectorizationMethod.BM25_VECTORIZER.value
                 }
             elif vectorization_method==VectorizationMethod.BERT:
+                from transformers import BertTokenizer, BertModel
+                import torch
+                tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-cased')
+                model = BertModel.from_pretrained("bert-base-multilingual-cased")
+                def embed(text):
+                    with torch.no_grad():
+                        encoded_input = tokenizer(text, return_tensors='pt')
+                        out =  model(**encoded_input)
+                        # Extract components from the model output
+                        return out.last_hidden_state.numpy()
+                
+                self.embed = embed
+                self.infos = {
+                    "vectorization_method": VectorizationMethod.BERT.value
+                }
+            elif vectorization_method==VectorizationMethod.SENTENCE_TRANSFORMER_EMBEDDING:
                 from transformers import BertTokenizer, BertModel
                 import torch
                 tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-cased')
