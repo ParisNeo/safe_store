@@ -10,6 +10,7 @@ from safe_store.tfidf_loader import TFIDFLoader
 from safe_store.utils import NumpyEncoderDecoder
 from typing import Union, Tuple, List, Dict, Any
 from enum import Enum
+from pipmaster import PackageManager
 
 class VectorizationMethod(Enum):
     MODEL_EMBEDDING = "model_embedding"
@@ -93,7 +94,7 @@ class TextVectorizer:
                 self.infos = {
                     "vectorization_method": VectorizationMethod.BM25_VECTORIZER.value
                 }
-            elif vectorization_method==VectorizationMethod.BERT:
+            elif vectorization_method==VectorizationMethod.SENTENCE_TRANSFORMER_EMBEDDING:
                 from transformers import BertTokenizer, BertModel
                 import torch
                 tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-cased')
