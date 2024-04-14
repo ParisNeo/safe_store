@@ -1,3 +1,5 @@
+from pipmaster import PackageManager
+pm = PackageManager()
 from sklearn.feature_extraction.text import TfidfVectorizer
 from ascii_colors import ASCIIColors, trace_exception
 from sklearn.metrics.pairwise import cosine_similarity
@@ -10,7 +12,6 @@ from safe_store.tfidf_loader import TFIDFLoader
 from safe_store.utils import NumpyEncoderDecoder
 from typing import Union, Tuple, List, Dict, Any
 from enum import Enum
-from pipmaster import PackageManager
 
 class VectorizationMethod(Enum):
     MODEL_EMBEDDING = "model_embedding"
@@ -52,6 +53,8 @@ class TextVectorizer:
         
         if vectorization_method==VectorizationMethod.SENTENCE_TRANSFORMER_EMBEDDING:
             try:
+                if not pm.is_installed("sentence_transformers"):
+                    pm.install("sentence_transformers")
                 from sentence_transformers import SentenceTransformer
                 self.embedding_model = SentenceTransformer(self.embedding_model)
             except Exception as ex:
@@ -95,38 +98,10 @@ class TextVectorizer:
                     "vectorization_method": VectorizationMethod.BM25_VECTORIZER.value
                 }
             elif vectorization_method==VectorizationMethod.SENTENCE_TRANSFORMER_EMBEDDING:
-                from transformers import BertTokenizer, BertModel
-                import torch
-                tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-cased')
-                model = BertModel.from_pretrained("bert-base-multilingual-cased")
-                def embed(text):
-                    with torch.no_grad():
-                        encoded_input = tokenizer(text, return_tensors='pt')
-                        out =  model(**encoded_input)
-                        # Extract components from the model output
-                        return out.last_hidden_state.numpy()
-                
-                self.embed = embed
+                self.embed = self.embedding_model.encode
                 self.infos = {
-                    "vectorization_method": VectorizationMethod.BERT.value
+                    "vectorization_method": VectorizationMethod.SENTENCE_TRANSFORMER_EMBEDDING.value
                 }
-            elif vectorization_method==VectorizationMethod.SENTENCE_TRANSFORMER_EMBEDDING:
-                from transformers import BertTokenizer, BertModel
-                import torch
-                tokenizer = BertTokenizer.from_pretrained('bert-base-multilingual-cased')
-                model = BertModel.from_pretrained("bert-base-multilingual-cased")
-                def embed(text):
-                    with torch.no_grad():
-                        encoded_input = tokenizer(text, return_tensors='pt')
-                        out =  model(**encoded_input)
-                        # Extract components from the model output
-                        return out.last_hidden_state.numpy()
-                
-                self.embed = embed
-                self.infos = {
-                    "vectorization_method": VectorizationMethod.BERT.value
-                }
-
             else:
                 self.infos={
                     "vectorization_method":VectorizationMethod.TFIDF_VECTORIZER.value
@@ -429,7 +404,7 @@ class TextVectorizer:
                     "embeddings":[]
                 }
                 if add_to_index:
-                    if self.vectorization_method==VectorizationMethod.BERT:
+                    if self.vectorization_method==VectorizationMethod.SENTENCE_TRANSFORMER_EMBEDDING:
                         chunk_dict["embeddings"] = self.embed(chunk_dict["chunk_text"])
                     elif self.vectorization_method==VectorizationMethod.MODEL_EMBEDDING:
                         chunk_dict["embeddings"] = self.model.embed(chunk_dict["chunk_text"])
@@ -479,7 +454,7 @@ class TextVectorizer:
                     chunk["embeddings"] = self.vectorizer.transform([chunk["chunk_text"]]).toarray()
                 elif self.vectorization_method==VectorizationMethod.BM25_VECTORIZER:
                     chunk["BM25_data"] = (self.vectorizer.doc_term_freqs, self.vectorizer.doc_lengths) 
-                elif self.vectorization_method==VectorizationMethod.BERT:
+                elif self.vectorization_method==VectorizationMethod.SENTENCE_TRANSFORMER_EMBEDDING:
                     chunk["embeddings"] = self.embed(chunk["chunk_text"])
                 else:
                     chunk["embeddings"] = self.model.embed(chunk["chunk_text"])
@@ -506,7 +481,7 @@ class TextVectorizer:
         # Generate query embeddings
         if self.vectorization_method == VectorizationMethod.TFIDF_VECTORIZER:
             query_embedding = self.vectorizer.transform([query_text]).toarray()
-        elif self.vectorization_method == VectorizationMethod.BERT:
+        elif self.vectorization_method == VectorizationMethod.SENTENCE_TRANSFORMER_EMBEDDING:
             query_embedding = self.embed(query_text)
         elif self.vectorization_method == VectorizationMethod.BM25_VECTORIZER:
             raise Exception("BM25 doesn't use embedding")
@@ -558,7 +533,7 @@ class TextVectorizer:
         Returns:
             Tuple[List[str], np.ndarray]: A tuple containing a list of the most similar texts and an array of the corresponding similarity scores.
         """
-        if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER or self.vectorization_method==VectorizationMethod.MODEL_EMBEDDING or self.vectorization_method==VectorizationMethod.BERT:
+        if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER or self.vectorization_method==VectorizationMethod.MODEL_EMBEDDING:
             similarities = {}
             query_embedding = self.embed_query(query)
             for chunk_id, chunk in self.chunks.items():
@@ -573,6 +548,23 @@ class TextVectorizer:
             # Retrieve the original text associated with the most similar embeddings
             texts = [self.chunks[chunk_id]["chunk_text"] for chunk_id, _ in sorted_similarities]
             document_ids = [self.chunks[chunk_id]["document_id"] for chunk_id, _ in sorted_similarities]
+        elif self.vectorization_method==VectorizationMethod.SENTENCE_TRANSFORMER_EMBEDDING:
+            from sentence_transformers.util import cos_sim
+            similarities = {}
+            query_embedding = self.embed_query(query)
+            for chunk_id, chunk in self.chunks.items():
+                if type(chunk["embeddings"])==np.ndarray:
+                    similarity = cos_sim(query_embedding, chunk["embeddings"])
+                    similarities[chunk_id] = similarity[0][0]
+                else:
+                    similarities[chunk_id] = 1e10
+            # Sort the similarities and retrieve the top-k most similar embeddings
+            sorted_similarities = sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:top_k]
+
+            # Retrieve the original text associated with the most similar embeddings
+            texts = [self.chunks[chunk_id]["chunk_text"] for chunk_id, _ in sorted_similarities]
+            document_ids = [self.chunks[chunk_id]["document_id"] for chunk_id, _ in sorted_similarities]
+
         elif self.vectorization_method==VectorizationMethod.BM25_VECTORIZER:
             # Use the BM25Vectorizer to compute BM25 scores for the query
             bm25_scores = self.vectorizer.transform(query)
