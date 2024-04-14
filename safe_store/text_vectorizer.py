@@ -57,6 +57,7 @@ class TextVectorizer:
                     pm.install("sentence_transformers")
                 from sentence_transformers import SentenceTransformer
                 self.embedding_model = SentenceTransformer(self.embedding_model)
+                self.embedding_model.max_seq_length = 512
             except Exception as ex:
                 ASCIIColors.warning("Couldn't load sentence_transformers. reverting to tf-idf format")        
         self.vectorization_method = vectorization_method
@@ -626,7 +627,7 @@ class TextVectorizer:
         with open(self.database_file, "r") as f:
             database = json.load(f, object_hook=NumpyEncoderDecoder.as_numpy_array)
             self.chunks = database["chunks"]
-            self.infos= database["infos"]
+            self.infos = database["infos"]
             self.ready = True
         if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
             self.vectorizer = TFIDFLoader.create_vectorizer_from_dict(database["vectorizer"])
