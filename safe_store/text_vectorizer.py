@@ -1,8 +1,6 @@
 from pipmaster import PackageManager
 pm = PackageManager()
-from sklearn.feature_extraction.text import TfidfVectorizer
 from ascii_colors import ASCIIColors, trace_exception
-from sklearn.metrics.pairwise import cosine_similarity
 from safe_store.BM25Vectorizer import BM25Vectorizer, split_string  # Import BM25Vectorizer
 import numpy as np
 from pathlib import Path
@@ -117,6 +115,8 @@ class TextVectorizer:
                 except Exception as ex:
                     ASCIIColors.error("Couldn't load vectorized db.\nMoving to safe mode")
                     if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
+                        from sklearn.feature_extraction.text import TfidfVectorizer
+
                         self.vectorizer = TfidfVectorizer()
                     elif self.vectorization_method == VectorizationMethod.BM25_VECTORIZER:
                         self.vectorizer = BM25Vectorizer()
@@ -124,11 +124,13 @@ class TextVectorizer:
             else:
                 ASCIIColors.info(f"No database file found : {self.database_file}")
                 if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
+                    from sklearn.feature_extraction.text import TfidfVectorizer
                     self.vectorizer = TfidfVectorizer()
                 elif self.vectorization_method == VectorizationMethod.BM25_VECTORIZER:
                     self.vectorizer = BM25Vectorizer()
         else:
             if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
+                from sklearn.feature_extraction.text import TfidfVectorizer
                 self.vectorizer = TfidfVectorizer()
             elif self.vectorization_method == VectorizationMethod.BM25_VECTORIZER:
                 self.vectorizer = BM25Vectorizer()
@@ -535,6 +537,7 @@ class TextVectorizer:
             Tuple[List[str], np.ndarray]: A tuple containing a list of the most similar texts and an array of the corresponding similarity scores.
         """
         if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER or self.vectorization_method==VectorizationMethod.MODEL_EMBEDDING:
+            from sklearn.metrics.pairwise import cosine_similarity
             similarities = {}
             query_embedding = self.embed_query(query)
             for chunk_id, chunk in self.chunks.items():

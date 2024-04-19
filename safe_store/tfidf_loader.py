@@ -1,9 +1,9 @@
-from sklearn.feature_extraction.text import TfidfVectorizer
 import numpy
 
 class TFIDFLoader:
     @staticmethod
     def create_vectorizer_from_dict(tfidf_info):
+        from sklearn.feature_extraction.text import TfidfVectorizer
         vectorizer = TfidfVectorizer(**tfidf_info['params'])
         vectorizer.ngram_range = tuple(vectorizer.ngram_range)
         vectorizer.vocabulary_ = tfidf_info['vocabulary']
