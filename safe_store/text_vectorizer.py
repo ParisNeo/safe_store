@@ -10,6 +10,7 @@ from safe_store.tfidf_loader import TFIDFLoader
 from safe_store.utils import NumpyEncoderDecoder
 from typing import Union, Tuple, List, Dict, Any
 from enum import Enum
+from safe_store.tf_idf_vectorizer import TfidfVectorizer
 
 class VectorizationMethod(Enum):
     MODEL_EMBEDDING = "model_embedding"
@@ -115,8 +116,6 @@ class TextVectorizer:
                 except Exception as ex:
                     ASCIIColors.error("Couldn't load vectorized db.\nMoving to safe mode")
                     if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
-                        from sklearn.feature_extraction.text import TfidfVectorizer
-
                         self.vectorizer = TfidfVectorizer()
                     elif self.vectorization_method == VectorizationMethod.BM25_VECTORIZER:
                         self.vectorizer = BM25Vectorizer()
@@ -124,19 +123,24 @@ class TextVectorizer:
             else:
                 ASCIIColors.info(f"No database file found : {self.database_file}")
                 if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
-                    from sklearn.feature_extraction.text import TfidfVectorizer
                     self.vectorizer = TfidfVectorizer()
                 elif self.vectorization_method == VectorizationMethod.BM25_VECTORIZER:
                     self.vectorizer = BM25Vectorizer()
         else:
             if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
-                from sklearn.feature_extraction.text import TfidfVectorizer
                 self.vectorizer = TfidfVectorizer()
             elif self.vectorization_method == VectorizationMethod.BM25_VECTORIZER:
                 self.vectorizer = BM25Vectorizer()
 
 
-    def show_document(self, query_text: str = None, save_fig_path: str = None, show_interactive_form: bool = False, add_hover_detection: bool = False, add_click_detection: bool = False):
+    def show_document(
+                        self, 
+                        query_text: str = None, 
+                        save_fig_path: str = None, 
+                        show_interactive_form: bool = False, 
+                        add_hover_detection: bool = False, 
+                        add_click_detection: bool = False
+                    ):
         """
         Show the document and optionally highlight specific text based on the query.
         Args:
@@ -146,181 +150,7 @@ class TextVectorizer:
             add_hover_detection (bool, optional): Whether to add hover detection for highlighting text. Defaults to False.
             add_click_detection (bool, optional): Whether to add click detection for highlighting text. Defaults to False.
         """
-
-        import textwrap
-        import seaborn as sns
-        import matplotlib.pyplot as plt
-        import mplcursors
-        from tkinter import Tk, Text, Scrollbar, Frame, Label, TOP, BOTH, RIGHT, LEFT, Y, N, END
-        from sklearn.manifold import TSNE
-        from sklearn.decomposition import PCA
-        if save_fig_path is None and show_interactive_form==False:
-            raise Exception("[show_document] parameters error. Either select a save_fig_path to save the graph or set show_interactive_form to True")
-
-        if self.vectorization_method==VectorizationMethod.BM25_VECTORIZER:
-            ASCIIColors.red("BM25 does not make a representatrion of the data. So we don't show a distribution.")
-            return
-
-        if self.data_visualization_method == VisualizationMethod.PCA:
-            use_pca = True
-        else:
-            use_pca = False
-
-        if use_pca:
-            print("Showing pca representation:")
-        else:
-            print("Showing t-sne representation:")
-
-        embeddings = {key: chunk["embeddings"] for key, chunk in self.chunks.items()}
-        emb = list(embeddings.values())
-        ref = list(embeddings.keys())
-
-        if len(emb) >= 2:
-            # Normalize embeddings
-            emb = np.vstack(emb)
-            norms = np.linalg.norm(emb, axis=1)
-            normalized_embeddings = emb / norms[:, np.newaxis]
-
-            # Embed the query text
-            if query_text is not None:
-                query_embedding = self.embed_query(query_text)
-                query_normalized_embedding = query_embedding / np.linalg.norm(query_embedding)
-
-                # Combine the query embeddings with the document embeddings
-                combined_embeddings = np.vstack((normalized_embeddings, query_normalized_embedding))
-                ref.append("Query")  # Use a unique name for the query
-            else:
-                # Combine the query embeddings with the document embeddings
-                combined_embeddings = normalized_embeddings
-
-            if use_pca:
-                # Use PCA for dimensionality reduction
-                pca = PCA(n_components=2)
-                try:
-                    embeddings_2d = pca.fit_transform(combined_embeddings)
-                except Exception as ex:
-                    embeddings_2d = []
-            else:
-                # Use t-SNE for dimensionality reduction
-                perplexity = min(30, combined_embeddings.shape[0] - 1)
-                tsne = TSNE(n_components=2, perplexity=perplexity)
-                embeddings_2d = tsne.fit_transform(combined_embeddings)
-
-
-
-            trans={tuple(e.tolist()):r for e,r in zip(embeddings_2d,ref)}
-
-            # Create a dictionary to map document paths to unique colors
-            document_paths = ["_".join(path.split("_")[:-1]) if "/" in path or "\\" in path else path for path in ref]
-            # Define the number of colors you need
-            num_colors = len(document_paths)
-
-            # Use Seaborn's "Set1" palette to get a list of distinct colors
-            colors = sns.color_palette("Set1", n_colors=num_colors)
-
-            # Now you can use the 'colors' list for your document paths
-            document_path_colors = colors
-            unique_document_paths = list(set(document_paths))
-            legend_labels= []
-            embeddings_by_document={doc:[] for doc in unique_document_paths}
-            for i,document_id in enumerate(document_paths):
-                legend_labels.append(Path(document_id).stem if type(document_id) in [Path, str] and "/" in document_id or "\\" in document_id else str(document_id))
-                embeddings_by_document[document_id].append(embeddings_2d[i,:][None,:])
-
-            labels=[]
-            for i, (document_id, emb) in enumerate(embeddings_by_document.items()):
-                label = Path(document_id).stem if type(document_id) in [Path, str] and "/" in document_id or "\\" in document_id else str(document_id)
-                labels.append(label)
-                embeddings_2d = np.vstack(emb)
-                plt.scatter(embeddings_2d[:,0], embeddings_2d[:,1],  color=document_path_colors[i], label=label, marker='o' if document_id!="Query" else "x")
-                # Add labels to the scatter plot
-                for j, (x, y) in enumerate(embeddings_2d[:]):
-                    if label!="Query":
-                        plt.text(x, y, f"{i}_{j}", fontsize=8)
-                    else:
-                        plt.text(x, y, f"query", fontsize=8)
-            # Create the legend
-            plt.legend(title='Document Name', loc='upper right')
-
-
-
-            plt.xlabel('Dimension 1')
-            plt.ylabel('Dimension 2')
-
-            if use_pca:
-                plt.title('Embeddings Scatter Plot based on PCA')
-            else:
-                plt.title('Embeddings Scatter Plot based on t-SNE')
-
-            # Enable mplcursors to show tooltips on hover
-            cursor = mplcursors.cursor(hover=True)
-
-            # Define the hover event handler
-            if add_hover_detection:
-                @cursor.connect("add")
-                def on_hover(sel):
-                    index = sel.target.index
-                    if trans[tuple(sel.target.real.tolist())]!="Query":
-                        text = self.chunks[trans[tuple(sel.target.real.tolist())]]["chunk_text"]
-                    else:
-                        text = query_text
-                    wrapped_text = textwrap.fill(text, width=50)  # Wrap the text into multiple lines
-                    sel.annotation.set_text(f"Index: {index}\nText:\n{wrapped_text}")
-
-            if add_click_detection:
-                # Define the click event handler using matplotlib event handling mechanism
-                def on_click(event):
-                    if event.xdata is not None and event.ydata is not None:
-                        x, y = event.xdata, event.ydata
-                        distances = ((embeddings_2d[:, 0] - x) ** 2 + (embeddings_2d[:, 1] - y) ** 2)
-                        index = distances.argmin()
-                        if distances[index]<0.1:
-
-                            # Check if the click is outside any data point
-                            if index < len(self.chunks):
-                                text = self.chunks[trans[tuple(embeddings_2d[index,:].tolist())]]["chunk_text"]
-                            elif index == len(self.chunks):
-                                text = query_text
-                            else:
-                                # Clicked outside any data point, close the Tkinter window if it's open
-                                plt.close('all')
-                                return
-
-                            # Open a new Tkinter window with the content of the text
-                            root = Tk()
-                            root.title(f"Text for Index {index}")
-                            frame = Frame(root)
-                            frame.pack(fill=BOTH, expand=True)
-
-                            label = Label(frame, text="Text:")
-                            label.pack(side=TOP, padx=5, pady=5)
-
-                            text_box = Text(frame)
-                            text_box.pack(side=TOP, padx=5, pady=5, fill=BOTH, expand=True)
-                            text_box.insert(END, text)
-
-                            scrollbar = Scrollbar(frame)
-                            scrollbar.pack(side=RIGHT, fill=Y)
-                            scrollbar.config(command=text_box.yview)
-                            text_box.config(yscrollcommand=scrollbar.set)
-
-                            text_box.config(state="disabled")
-
-                            root.mainloop()
-
-
-                # Connect the click event handler to the figure
-                plt.gcf().canvas.mpl_connect("button_press_event", on_click)
-
-            if save_fig_path:
-                try:
-                    plt.savefig(save_fig_path)
-                except Exception as ex:
-                    trace_exception(ex)
-
-            if show_interactive_form:
-                plt.show()
-
+        pass
     
     def document_exists(self, document_id: str) -> bool:
         """
@@ -454,7 +284,7 @@ class TextVectorizer:
             # Store chunk ID, embeddings, and original text
             try:
                 if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER:
-                    chunk["embeddings"] = self.vectorizer.transform([chunk["chunk_text"]]).toarray()
+                    chunk["embeddings"] = self.vectorizer.transform([chunk["chunk_text"]])
                 elif self.vectorization_method==VectorizationMethod.BM25_VECTORIZER:
                     chunk["BM25_data"] = (self.vectorizer.doc_term_freqs, self.vectorizer.doc_lengths) 
                 elif self.vectorization_method==VectorizationMethod.SENTENCE_TRANSFORMER_EMBEDDING:
@@ -483,7 +313,7 @@ class TextVectorizer:
         """
         # Generate query embeddings
         if self.vectorization_method == VectorizationMethod.TFIDF_VECTORIZER:
-            query_embedding = self.vectorizer.transform([query_text]).toarray()
+            query_embedding = self.vectorizer.transform([query_text])
         elif self.vectorization_method == VectorizationMethod.SENTENCE_TRANSFORMER_EMBEDDING:
             query_embedding = self.embed(query_text)
         elif self.vectorization_method == VectorizationMethod.BM25_VECTORIZER:
@@ -493,7 +323,7 @@ class TextVectorizer:
             if query_embedding is None:
                 ASCIIColors.warning("The model doesn't implement embeddings extraction")
                 self.vectorization_method = VectorizationMethod.TFIDF_VECTORIZER
-                query_embedding = self.vectorizer.transform([query_text]).toarray()
+                query_embedding = self.vectorizer.transform([query_text])
         return query_embedding
 
 
@@ -537,15 +367,11 @@ class TextVectorizer:
             Tuple[List[str], np.ndarray]: A tuple containing a list of the most similar texts and an array of the corresponding similarity scores.
         """
         if self.vectorization_method==VectorizationMethod.TFIDF_VECTORIZER or self.vectorization_method==VectorizationMethod.MODEL_EMBEDDING:
-            from sklearn.metrics.pairwise import cosine_similarity
             similarities = {}
             query_embedding = self.embed_query(query)
             for chunk_id, chunk in self.chunks.items():
-                if type(chunk["embeddings"])==np.ndarray:
-                    similarity = cosine_similarity(query_embedding, chunk["embeddings"])
-                    similarities[chunk_id] = similarity
-                else:
-                    similarities[chunk_id] = 1e10
+                similarity = self.vectorizer.cosine_similarity(query_embedding[0], chunk["embeddings"][0])
+                similarities[chunk_id] = similarity
             # Sort the similarities and retrieve the top-k most similar embeddings
             sorted_similarities = sorted(similarities.items(), key=lambda x: x[1], reverse=True)[:top_k]
 

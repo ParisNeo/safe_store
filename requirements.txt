@@ -1,4 +1,3 @@
-scikit-learn
 ascii_colors
 matplotlib
 seaborn

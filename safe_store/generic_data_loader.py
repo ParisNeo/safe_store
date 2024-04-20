@@ -283,7 +283,7 @@ class GenericDataLoader:
             str: The content of the text file.
         """
         # Implementation details omitted for brevity
-        with open(file_path, 'r', encoding='utf-8') as file:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
             content = file.read()
         return content
 
