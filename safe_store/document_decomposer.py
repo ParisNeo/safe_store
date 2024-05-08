@@ -6,6 +6,7 @@ class DocumentDecomposer:
     def clean_text(text):
         # Remove extra returns and leading/trailing spaces
         text = text.replace('\r', '').strip()
+        text = re.sub(r'\n{3,}', '\n\n', text)
         return text
 
     @staticmethod
@@ -50,16 +51,18 @@ class DocumentDecomposer:
                         clean_chunks.append(current_chunk)
                         tokens = tokens[max_chunk_size - l - 1 - overlap_size:]
                         nb_tokens -= max_chunk_size - l - 1 - overlap_size
-                        l = 0
                         current_chunk = current_chunk[-overlap_size:]
+                        l = len(current_chunk)
                 else:
                     if l + nb_tokens + 1 > max_chunk_size:
                         clean_chunks.append(current_chunk)
                         if overlap_size == 0:
                             current_chunk = []
+                            l = 0
                         else:
                             current_chunk = current_chunk[-overlap_size:]
-                        l = 0
+                            l = len(current_chunk)
+                        
 
                     # Add the current sentence to the chunk
                     current_chunk += tokens

@@ -4,21 +4,22 @@ from safe_store.tf_idf_vectorizer import TfidfVectorizer
 class TFIDFLoader:
     @staticmethod
     def create_vectorizer_from_dict(tfidf_info):
-        vectorizer = TfidfVectorizer(**tfidf_info['params'])
-        vectorizer.ngram_range = tuple(vectorizer.ngram_range)
-        vectorizer.vocab = tfidf_info['vocabulary']
-        vectorizer.idf = tfidf_info['idf_values']
-        dt = vectorizer.dtype[8:-2]
-        vectorizer.dtype = eval(dt)
+        vectorizer = TfidfVectorizer()
+        vectorizer.df = tfidf_info['df']
+        vectorizer.idf = tfidf_info['idf']
+        vectorizer.document_count = tfidf_info['document_count']
+        vectorizer.vocab = tfidf_info['vocab']
+        vectorizer.vocab_inv = tfidf_info['vocab_inv']
         return vectorizer
 
     @staticmethod
-    def create_dict_from_vectorizer(vectorizer):
+    def create_dict_from_vectorizer(vectorizer: TfidfVectorizer):
         tfidf_info = {
-            "vocabulary": vectorizer.vocab,
-            "idf_values": vectorizer.idf,# dict(zip(vectorizer.get_feature_names(), )),
-            "params": vectorizer.get_params()
+            "df": vectorizer.df,
+            "idf": vectorizer.idf,# dict(zip(vectorizer.get_feature_names(), )),
+            "document_count": vectorizer.document_count,
+            "vocab": vectorizer.vocab,
+            "vocab_inv": vectorizer.vocab_inv
         }
-        tfidf_info["params"]["dtype"]=str(tfidf_info["params"]["dtype"])
 
         return tfidf_info
