@@ -1,4 +1,4 @@
-ascii_colors
+ascii-colors>=0.3.2
 matplotlib
 seaborn
 python-docx
