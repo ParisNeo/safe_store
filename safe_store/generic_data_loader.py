@@ -38,10 +38,12 @@ class GenericDataLoader:
             return GenericDataLoader.read_html_file(file_path)
         elif file_path.suffix.lower() == ".pptx":
             return GenericDataLoader.read_pptx_file(file_path)
-        if file_path.suffix.lower() in [".pcap"]:
+        elif file_path.suffix.lower() in [".pcap"]:
             return GenericDataLoader.read_pcap_file(file_path)
-        if file_path.suffix.lower() in ['.sh', '.json', '.sym', '.log', '.snippet', '.se', '.yml', '.snippets', '.lua', '.pdf', '.md', '.docx', '.yaml', '.inc', '.txt', '.ini', '.pas', '.pptx', '.map', '.php', '.xlsx', '.rtf', '.hpp', '.h', '.asm', '.xml', '.hh', '.sql', '.java', '.c', '.html', '.inf', '.rb', '.py', '.cs', '.js', '.bat', '.css', '.s', '.cpp', '.csv']:
+        elif file_path.suffix.lower() in ['.sh', '.json', '.sym', '.log', '.snippet', '.se', '.yml', '.snippets', '.lua', '.pdf', '.md', '.docx', '.yaml', '.inc', '.txt', '.ini', '.pas', '.pptx', '.map', '.php', '.xlsx', '.rtf', '.hpp', '.h', '.asm', '.xml', '.hh', '.sql', '.java', '.c', '.html', '.inf', '.rb', '.py', '.cs', '.js', '.bat', '.css', '.s', '.cpp', '.csv']:
             return GenericDataLoader.read_text_file(file_path)
+        elif file_path.suffix.lower() in [".msg"]:
+            return GenericDataLoader.read_msg_file(file_path)
         else:
             raise ValueError("Unknown file type")
         
@@ -53,7 +55,7 @@ class GenericDataLoader:
         Returns:
             List[str]: The list of supported file types.
         """
-        return ['.sh', '.json', '.sym', '.log', '.snippet', '.se', '.yml', '.snippets', '.lua', '.pdf', '.md', '.docx', '.yaml', '.inc', '.txt', '.ini', '.pas', '.pptx', '.map', '.php', '.xlsx', '.rtf', '.hpp', '.h', '.asm', '.xml', '.hh', '.sql', '.java', '.c', '.html', '.inf', '.rb', '.py', '.cs', '.js', '.bat', '.css', '.s', '.cpp', '.csv']    
+        return ['.sh', '.json', '.sym', '.log', '.snippet', '.se', '.yml', '.snippets', '.lua', '.pdf', '.md', '.docx', '.yaml', '.inc', '.txt', '.ini', '.pas', '.pptx', '.map', '.php', '.xlsx', '.rtf', '.hpp', '.h', '.asm', '.xml', '.hh', '.sql', '.java', '.c', '.html', '.inf', '.rb', '.py', '.cs', '.js', '.bat', '.css', '.s', '.cpp', '.csv', '.msg']    
     
     @staticmethod
     def read_pcap_file(file_path):
@@ -286,4 +288,34 @@ class GenericDataLoader:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
             content = file.read()
         return content
+    @staticmethod
+    def read_msg_file(file_path: Path) -> str:
+        """
+        Read a text file and return its content as a string.
 
+        Args:
+            file_path (Path): The path to the text file.
+
+        Returns:
+            str: The content of the text file.
+        """
+        import extract_msg
+        # Implementation details omitted for brevity
+        msg = extract_msg.Message(file_path)
+        msg_message = msg.body
+        return msg_message
+
+    def load_msg_as_text(file_path):
+        import extract_msg
+        msg = extract_msg.Message(file_path)
+        # Extract the relevant parts of the email
+        subject = f"Subject: {msg.subject}\n"
+        sender = f"From: {msg.sender}\n"
+        to = f"To: {msg.to}\n"
+        cc = f"Cc: {msg.cc}\n" if msg.cc else ""
+        bcc = f"Bcc: {msg.bcc}\n" if msg.bcc else ""
+        body = f"\n{msg.body}"
+        
+        # Combine them into a single text string
+        msg_text = subject + sender + to + cc + bcc + body
+        return msg_text

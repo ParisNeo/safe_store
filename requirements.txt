@@ -10,3 +10,4 @@ PyPDF2
 dpkt
 pipmaster
 sentence-transformers
+extract-msg
