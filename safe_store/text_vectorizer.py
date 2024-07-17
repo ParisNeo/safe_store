@@ -5,7 +5,7 @@ from safe_store.BM25Vectorizer import BM25Vectorizer, split_string  # Import BM2
 import numpy as np
 from pathlib import Path
 import json
-from safe_store.document_decomposer import DocumentDecomposer
+from lollmsvectordb.text_chunker import TextChunker
 from safe_store.tfidf_loader import TFIDFLoader
 from safe_store.utils import NumpyEncoderDecoder
 from typing import Union, Tuple, List, Dict, Any

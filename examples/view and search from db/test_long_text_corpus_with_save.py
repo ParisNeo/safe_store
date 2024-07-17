@@ -1,6 +1,6 @@
 from safe_store import TextVectorizer
 from safe_store import TextVectorizer, VectorizationMethod, VisualizationMethod
-from safe_store.generic_data_loader import GenericDataLoader
+from lollmsvectordb.text_document_loader import TextDocumentsLoader
 from pathlib import Path
 # Create an instance of TextVectorizer
 vectorizer = TextVectorizer(
