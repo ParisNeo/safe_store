@@ -1,5 +1,4 @@
-from pipmaster import PackageManager
-pm = PackageManager()
+import pipmaster as pm
 from ascii_colors import ASCIIColors, trace_exception
 from safe_store.BM25Vectorizer import BM25Vectorizer, split_string  # Import BM25Vectorizer
 import numpy as np
