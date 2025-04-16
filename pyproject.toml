@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "safestore"
+version = "1.0.0"
+description = "SQLite-based vector database utility optimized for LLM RAG integration."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { file = "LICENSE" } # Add a LICENSE file (e.g., Apache 2.0)
+authors = [
+    { name = "ParisNeo", email = "parisneo_ai@gmail.com" },
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.21",
+    "ascii_colors>=0.7.0", # Specify the version you tested with
+    "filelock>=3.8", # For future concurrency
+]
+
+[project.optional-dependencies]
+parsing = [] # Will add PDF/DOCX libs later
+sentence-transformers = ["sentence-transformers>=2.2.0"]
+# Add other vectorizer deps later:
+# tfidf = ["scikit-learn"]
+# openai = ["openai>=1.0"]
+# ollama = ["ollama"]
+
+[project.urls]
+Homepage = "https://github.com/ParisNeo/safestore" # Replace with your repo URL
+Repository = "https://github.com/your-username/safestore"
+
+# Optional: Configure tools like black, ruff via pyproject.toml
+# [tool.black]
+# line-length = 88
+#
+# [tool.ruff]
+# select = ["E", "F", "W", "I", "UP", "PL", "T20"] # Example selections
+# ignore = []
+# line-length = 88
