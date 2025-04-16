@@ -1,6 +1,6 @@
 from safe_store import TextVectorizer
 from safe_store import TextVectorizer, VectorizationMethod, VisualizationMethod
-from safe_store.generic_data_loader import GenericDataLoader
+from lollmsvectordb.text_document_loader import TextDocumentsLoader
 from pathlib import Path
 # Create an instance of TextVectorizer
 vectorizer = TextVectorizer(
@@ -22,7 +22,7 @@ vectorizer.index()
 
 # Embed a query and retrieve similar documents
 query_text = "What are future space technologies"
-similar_texts, _ = vectorizer.recover_text(query_text, top_k=3)
+similar_texts, _, _ = vectorizer.recover_text(query_text, top_k=3)
 
 vectorizer.show_document(query_text,show_interactive_form=True)
 
