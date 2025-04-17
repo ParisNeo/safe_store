@@ -1,9 +1,55 @@
+# CHANGELOG.md
 # Changelog
 
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [1.1.0] - 2025-04-17
+
+### Added
+
+*   **Querying:**
+    *   Implemented the `SafeStore.query()` method for retrieving document chunks based on semantic similarity to a query text.
+    *   Uses cosine similarity (`safestore.search.similarity.cosine_similarity`) for ranking.
+    *   Supports specifying the `vectorizer_name` to use for the query, ensuring consistency with indexed vectors.
+    *   Returns `top_k` results containing chunk text, similarity score, document path, and positional information.
+    *   Includes logging (`ascii_colors`) for query steps (vectorization, loading, similarity calculation).
+    *   Initial implementation loads all candidate vectors for the specified method into memory for comparison (potential performance bottleneck for very large datasets noted).
+
+*   **Multiple Vectorization Methods:**
+    *   Added support for TF-IDF vectorization using `scikit-learn`.
+        *   Requires `pip install safestore[tfidf]`.
+        *   Added `safestore.vectorization.methods.tfidf.TfidfVectorizerWrapper`.
+        *   Handles fitting the TF-IDF model:
+            *   During `add_document`: Fits only on the chunks of the *current* document if the method is new and unfitted (with a warning).
+            *   During `add_vectorization`: Fits on chunks from *all* specified documents (or the entire store) if the method is new and unfitted.
+        *   Stores fitted state (vocabulary, IDF weights) in the `vectorization_methods.params` JSON column in the database.
+        *   Loads fitted state when the vectorizer is requested via `VectorizationManager`.
+    *   Updated `VectorizationManager` (`get_vectorizer`) to handle different vectorizer types (`st:`, `tfidf:`) and manage their state (including loading/saving TF-IDF fitted parameters).
+    *   Added `safestore.vectorization.manager.VectorizationManager.update_method_params` to update DB record after fitting TF-IDF.
+    *   Added `[tfidf]` and `[all-vectorizers]` optional dependencies in `pyproject.toml`.
+
+*   **Vectorizer Management Methods:**
+    *   Implemented `SafeStore.add_vectorization()`: Allows adding embeddings for a new vectorization method to documents already in the store, without re-parsing/re-chunking. Handles fitting for TF-IDF if needed. Supports targeting all documents or a specific document.
+    *   Implemented `SafeStore.remove_vectorization()`: Deletes a specific vectorization method and all associated vector embeddings from the database and cache.
+
+*   **Testing:**
+    *   Added new test file `tests/test_store_phase2.py`.
+    *   Included integration tests for `query()`, covering basic usage, non-existent vectorizers, and methods with no vectors.
+    *   Added tests for using TF-IDF during `add_document`.
+    *   Added tests for `add_vectorization()` with both Sentence Transformers and TF-IDF.
+    *   Added tests for `remove_vectorization()`.
+    *   Enhanced mocking for `sentence-transformers` and added mocking for `scikit-learn`'s `TfidfVectorizer` to allow testing without the dependencies necessarily installed.
+
+### Changed
+
+*   `safestore.vectorization.manager.VectorizationManager`: Now caches the database parameters alongside the instance and method ID. Invalidates cache entries when parameters are updated (e.g., TF-IDF fitting). Includes helper `_get_method_details_from_db`.
+*   `safestore.store.SafeStore`:
+    *   `add_document()` now checks for existing vectors for the *specific* vectorizer being used when deciding whether to skip processing an unchanged document. It also handles the initial fitting of TF-IDF if necessary. Accepts optional `vectorizer_params`.
+*   `safestore.search.similarity.cosine_similarity`: Added handling for case where `vectors` input is 1D (representing a single vector). Added type checking.
+*   `pyproject.toml`: Bumped version to 1.1.0. Added `scikit-learn` to `[tfidf]` extra. Added `[all-vectorizers]` extra. Added Python 3.12 classifier.
 
 ## [1.0.0] - 2025-04-16
 

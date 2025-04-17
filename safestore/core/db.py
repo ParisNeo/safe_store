@@ -1,23 +1,28 @@
+# safestore/core/db.py
 import sqlite3
 import numpy as np
 from pathlib import Path
-from typing import Optional, Any, Tuple
+from typing import Optional, Any, Tuple, List, Dict
+import json # Needed for tags
 from ascii_colors import ASCIIColors
 
+# --- Adapters (remain the same) ---
 def adapt_array(arr: np.ndarray) -> sqlite3.Binary:
-    """See: https://stackoverflow.com/questions/18621513/python-insert-numpy-array-into-sqlite3-database"""
     return sqlite3.Binary(arr.tobytes())
 
-def convert_array(text: bytes) -> np.ndarray:
-    # This assumes the dtype is stored separately or is fixed (e.g., float32)
-    # We will store dtype in the vectorization_methods table
-    # For now, let's assume float32, will refine when retrieving
-    return np.frombuffer(text, dtype=np.float32) # Placeholder dtype
-
-# Register the adapters
 sqlite3.register_adapter(np.ndarray, adapt_array)
-# Converter will be used dynamically based on stored dtype during retrieval
+# NB: We will NOT register a global converter. Conversion will happen dynamically.
 
+
+def reconstruct_vector(blob: bytes, dtype_str: str) -> np.ndarray:
+    """Safely reconstructs a numpy array from blob data and dtype string."""
+    try:
+        dtype = np.dtype(dtype_str)
+        return np.frombuffer(blob, dtype=dtype)
+    except (TypeError, ValueError) as e:
+        ASCIIColors.error(f"Failed to reconstruct vector: invalid dtype '{dtype_str}'? Error: {e}")
+        # Return an empty array of a default type or raise? Raising might be safer.
+        raise ValueError(f"Could not reconstruct vector with dtype '{dtype_str}'") from e
 
 def connect_db(db_path: str | Path) -> sqlite3.Connection:
     """Establishes a connection to the SQLite database."""

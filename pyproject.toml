@@ -1,10 +1,12 @@
+# pyproject.toml
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
 name = "safestore"
-version = "1.0.0"
+# Bump version for Phase 2 features
+version = "1.1.0" # <-- BUMPED VERSION
 description = "SQLite-based vector database utility optimized for LLM RAG integration."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -18,6 +20,7 @@ classifiers = [
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12", # Added 3.12
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Topic :: Database",
@@ -25,21 +28,28 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=1.21",
-    "ascii_colors>=0.7.0", # Specify the version you tested with
+    "ascii_colors>=0.7.0",
     "filelock>=3.8", # For future concurrency
 ]
 
 [project.optional-dependencies]
 parsing = [] # Will add PDF/DOCX libs later
 sentence-transformers = ["sentence-transformers>=2.2.0"]
+tfidf = ["scikit-learn>=1.0"] # Added scikit-learn dependency
 # Add other vectorizer deps later:
-# tfidf = ["scikit-learn"]
 # openai = ["openai>=1.0"]
 # ollama = ["ollama"]
 
+# Convenience extra to install all vectorizers currently supported
+all-vectorizers = [
+    "safestore[sentence-transformers]",
+    "safestore[tfidf]",
+]
+all = ["safestore[all-vectorizers]", "safestore[parsing]"] # Future combined extra
+
 [project.urls]
-Homepage = "https://github.com/ParisNeo/safestore" # Replace with your repo URL
-Repository = "https://github.com/your-username/safestore"
+Homepage = "https://github.com/ParisNeo/safestore"
+Repository = "https://github.com/ParisNeo/safestore" # Updated repo URL assumption
 
 # Optional: Configure tools like black, ruff via pyproject.toml
 # [tool.black]
