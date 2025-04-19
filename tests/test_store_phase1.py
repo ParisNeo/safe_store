@@ -294,14 +294,13 @@ def test_add_document_hash_failure(mock_store_colors, safestore_instance: SafeSt
 def test_add_document_unsupported_type(mock_store_colors, mock_parser_colors, safestore_instance: SafeStore, tmp_path: Path):
     """Test adding a file with an unsupported extension."""
     store = safestore_instance
-    unsupported_file = tmp_path / "document.pdf"
-    unsupported_file.write_text("PDF content", encoding='utf-8') # Content doesn't matter
+    unsupported_file = tmp_path / "document.xyz"
+    unsupported_file.write_text("Some content", encoding='utf-8')
 
-    # Expect ValueError from parser, wrapped by store's error handling
-    with pytest.raises(ValueError, match="Unsupported file type: .pdf"):
+    with pytest.raises(ValueError, match="Unsupported file type: .xyz"):
         store.add_document(unsupported_file)
 
     # Check logs
-    assert_log_call_containing(mock_parser_colors.warning, f"Unsupported file type '.pdf' for file: {unsupported_file}. Skipping parsing.")
-    # Check that the store logged the error during indexing
-    assert_log_call_containing(mock_store_colors.error, f"Error during indexing of '{unsupported_file.name}': Unsupported file type: .pdf")
+    # *** CORRECTED expected warning log message ***
+    assert_log_call_containing(mock_parser_colors.warning, f"Unsupported file type '.xyz' for file: {unsupported_file}. No parser available.")
+    assert_log_call_containing(mock_store_colors.error, f"Error during indexing of '{unsupported_file.name}': Unsupported file type: .xyz")

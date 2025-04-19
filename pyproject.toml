@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "safestore"
-# Bump version for Phase 2 features
-version = "1.1.0" # <-- BUMPED VERSION
+# Bump version for Phase 3 features
+version = "1.2.0" # <-- BUMPED VERSION
 description = "SQLite-based vector database utility optimized for LLM RAG integration."
 readme = "README.md"
 requires-python = ">=3.8"
-license = { file = "LICENSE" } # Add a LICENSE file (e.g., Apache 2.0)
+license = { file = "LICENSE" }
 authors = [
     { name = "ParisNeo", email = "parisneo_ai@gmail.com" },
 ]
@@ -20,36 +20,53 @@ classifiers = [
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12", # Added 3.12
+    "Programming Language :: Python :: 3.12",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Topic :: Database",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
 ]
 dependencies = [
     "numpy>=1.21",
     "ascii_colors>=0.7.0",
-    "filelock>=3.8", # For future concurrency
+    "filelock>=3.9", # Added filelock dependency
 ]
 
 [project.optional-dependencies]
-parsing = [] # Will add PDF/DOCX libs later
+# --- Parsing Libraries ---
+# Use pypdf instead of PyPDF2 if possible (maintained fork)
+# requires python-docx for .docx
+# requires beautifulsoup4 and lxml for .html
+parsing = ["pypdf>=3.10", "python-docx>=1.0", "beautifulsoup4>=4.11", "lxml>=4.9"]
+
+# --- Vectorizer Libraries ---
 sentence-transformers = ["sentence-transformers>=2.2.0"]
-tfidf = ["scikit-learn>=1.0"] # Added scikit-learn dependency
+tfidf = ["scikit-learn>=1.0"]
 # Add other vectorizer deps later:
 # openai = ["openai>=1.0"]
 # ollama = ["ollama"]
 
+# --- Encryption Library ---
+encryption = ["cryptography>=40.0"] # Added cryptography
+
+# --- Combined Extras ---
 # Convenience extra to install all vectorizers currently supported
 all-vectorizers = [
     "safestore[sentence-transformers]",
     "safestore[tfidf]",
 ]
-all = ["safestore[all-vectorizers]", "safestore[parsing]"] # Future combined extra
+# Combined extra for everything (including planned future vectorizers if added)
+all = [
+    "safestore[all-vectorizers]",
+    "safestore[parsing]",
+    "safestore[encryption]",
+]
 
 [project.urls]
 Homepage = "https://github.com/ParisNeo/safestore"
-Repository = "https://github.com/ParisNeo/safestore" # Updated repo URL assumption
+Repository = "https://github.com/ParisNeo/safestore"
 
 # Optional: Configure tools like black, ruff via pyproject.toml
 # [tool.black]

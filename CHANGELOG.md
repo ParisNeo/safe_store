@@ -6,6 +6,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2025-04-18 <!-- Update Date -->
+
+### Added
+
+*   **Concurrency Handling:**
+    *   Added `filelock` dependency for inter-process concurrency control.
+    *   Implemented exclusive file-based locking (`.db.lock` file) around database write operations (`add_document`, `add_vectorization`, `remove_vectorization`). This prevents race conditions when multiple processes access the same `SafeStore` database file.
+    *   Added `lock_timeout` parameter to `SafeStore.__init__` (default 60 seconds) to control how long to wait for the lock.
+    *   Added basic `threading.RLock` for intra-process thread safety around critical sections and connection handling.
+    *   Added logging (`ascii_colors`) for lock acquisition attempts, success, release, and timeouts.
+    *   Refactored write methods (`add_document`, `add_vectorization`, `remove_vectorization`) into internal `_impl` methods that assume the lock is held.
+*   **Parsing Infrastructure (Foundation):**
+    *   Added optional dependencies for parsing PDF (`pypdf`), DOCX (`python-docx`), and HTML (`beautifulsoup4`, `lxml`) files via the `safestore[parsing]` extra.
+    *   Added placeholder functions (`parse_pdf`, `parse_docx`, `parse_html`) in `safestore.indexing.parser`.
+    *   Updated the `parse_document` dispatcher in `safestore.indexing.parser` to recognize `.pdf`, `.docx`, and `.html` extensions (implementation pending).
+
+### Changed
+
+*   `safestore.store.SafeStore`:
+    *   `__init__`: Now accepts `lock_timeout`, resolves database path, creates `.lock` file path, connects and initializes DB within a lock, initializes threading and file locks.
+    *   `close()`: Now safer with instance lock and better error handling.
+    *   `__enter__` / `__exit__`: Ensure connection exists and handle closure.
+    *   Write methods now acquire instance and file locks before calling internal implementation methods.
+    *   `query()`: Uses instance lock for thread safety; relies on SQLite WAL mode for read concurrency (no explicit file lock for reads currently). Added connection check.
+*   `pyproject.toml`: Bumped version to 1.2.0. Added `filelock`, `pypdf`, `python-docx`, `beautifulsoup4`, `lxml`, `cryptography` dependencies. Defined `[parsing]`, `[encryption]`, `[all]` extras.
+
+### Fixed
+
+*   Minor fix in `VectorizationManager.update_method_params` to correctly format the SQL update statement when `new_dim` is provided.
+*   Corrected assertion in `test_add_vectorization_tfidf_all_docs` (`test_store_phase2.py`) related to TF-IDF fitting log message.
+*   Corrected mock target and assertion in `test_remove_vectorization` (`test_store_phase2.py`) related to cache removal log message.
+
+
 ## [1.1.0] - 2025-04-17
 
 ### Added

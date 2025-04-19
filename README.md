@@ -5,9 +5,10 @@
 [![PyPI license](https://img.shields.io/pypi/l/safe-store.svg)](https://github.com/ParisNeo/safe_store/blob/main/LICENSE)
 [![PyPI downloads](https://img.shields.io/pypi/dm/safe-store.svg)](https://pypi.org/project/safe-store/)
 
+
 SafeStore is a Python utility library providing a lightweight, efficient, and file-based vector database using **SQLite**. It's specifically designed and optimized for easy integration into **Retrieval-Augmented Generation (RAG)** pipelines for Large Language Models (LLMs).
 
-Need a simple way to index your documents locally, manage different vector embeddings, and find relevant chunks without setting up complex databases or relying on external services? SafeStore is your answer!
+Need a simple way to index your documents locally, manage different vector embeddings, find relevant chunks, and handle **concurrent access** safely? SafeStore is your answer!
 
 ---
 
@@ -19,23 +20,26 @@ Need a simple way to index your documents locally, manage different vector embed
 *   **🧠 Multiple Vectorizers:** Supports different embedding models (Sentence Transformers, TF-IDF currently) side-by-side for the same documents.
 *   **🔍 Querying:** Find relevant document chunks based on semantic similarity using your chosen vectorization method.
 *   **🔄 Change Aware:** Automatically detects changes in source files (via hashing) and handles re-indexing efficiently.
+*   **✍️ Concurrent Safe:** Uses file-based locking (`filelock`) to safely handle writes from multiple processes.
 *   ** гибкий (Flexible):** Configurable chunking, add/remove vectorization methods as needed.
-*   **🔒 Secure (Future):** Optional data encryption at rest is planned.
+*   **🔒 Secure (Planned):** Optional data encryption at rest is planned.
 *   **🗣️ Informative:** Uses `ascii_colors` for clear, leveled console feedback.
 
 ---
 
-## ⚠️ Breaking Changes in v1.1.0?
+## ⚠️ Breaking Changes in v1.2.0?
 
-While v1.1.0 adds features, the core `add_document` API and database schema from v1.0.0 remain compatible. Existing databases created with v1.0.0 should work with v1.1.0. However, the internal handling of TF-IDF state is new.
+*   No breaking API changes introduced in v1.2.0.
+*   A `.db.lock` file will now be created alongside the `.db` file to manage concurrency. Ensure your application has write permissions in the database directory.
 
 ---
 
 ## ⚙️ Features
 
-*   **SQLite Backend:** Stores all data (documents, chunks, vectors) in a single SQLite file.
+*   **SQLite Backend:** Stores all data in a single file.
+*   **Concurrency Control:** Uses `filelock` for safe multi-process write access. Configurable lock timeout.
 *   **Document Ingestion (`add_document`):**
-    *   Process files (currently `.txt`).
+    *   Process files (currently `.txt`, framework for `.pdf`, `.docx`, `.html` added). Requires `safestore[parsing]`.
     *   Stores full original text.
     *   Configurable chunking (`chunk_size`, `chunk_overlap`).
     *   Stores start/end character positions.
@@ -50,11 +54,8 @@ While v1.1.0 adds features, the core `add_document` API and database schema from
 *   **Vectorizer Management:**
     *   **`add_vectorization`:** Add embeddings for a *new* method to existing documents without re-parsing. Fits TF-IDF if needed.
     *   **`remove_vectorization`:** Delete a vectorization method and all its associated vectors.
-*   **Change Detection:**
-    *   Uses file hashes to detect content changes.
-    *   Skips indexing if file is unchanged *and* vectors for the specified method exist.
-    *   Automatically deletes old data and re-indexes if a file has changed or `force_reindex=True`.
-*   **Logging:** Uses `ascii_colors` for console output (INFO level by default).
+*   **Change Detection:** Uses file hashes, skips unchanged files, re-indexes changed files.
+*   **Logging:** Uses `ascii_colors` for console output.
 
 ---
 
@@ -64,7 +65,7 @@ While v1.1.0 adds features, the core `add_document` API and database schema from
 pip install safe-store
 ```
 
-Install optional dependencies for the vectorizers you need:
+Install optional dependencies as needed:
 
 ```bash
 # For Sentence Transformers (recommended default)
@@ -73,9 +74,15 @@ pip install safe-store[sentence-transformers]
 # For TF-IDF (requires scikit-learn)
 pip install safe-store[tfidf]
 
-# To install both:
-pip install safe-store[all-vectorizers]
-# Or: pip install safe-store[sentence-transformers,tfidf]
+# For parsing PDF, DOCX, HTML files
+pip install safe-store[parsing]
+
+# For upcoming encryption features
+pip install safe-store[encryption]
+
+# To install everything:
+pip install safe-store[all]
+# Or combine: pip install safe-store[sentence-transformers,parsing]
 ```
 
 ---
@@ -87,81 +94,45 @@ from pathlib import Path
 from safestore import SafeStore, LogLevel
 
 # --- 1. Prepare documents ---
-doc1_content = """
-This is the first sentence for SafeStore.
-It helps demonstrate the basic indexing process.
-SafeStore uses SQLite and is designed for RAG.
-This is the final sentence.
-"""
+doc1_content = "First document content."
 doc1_path = Path("my_document1.txt")
 doc1_path.write_text(doc1_content, encoding='utf-8')
 
-doc2_content = "A second document, shorter and simpler."
-doc2_path = Path("my_document2.txt")
-doc2_path.write_text(doc2_content, encoding='utf-8')
-
 # --- 2. Initialize SafeStore ---
-# Use 'with' for automatic connection closing
-with SafeStore("my_vector_store.db", log_level=LogLevel.INFO) as store:
+# The store manages a .db file and a .db.lock file
+# Use a timeout if multiple processes might access the db heavily
+store = SafeStore("my_vector_store.db", log_level=LogLevel.INFO, lock_timeout=60)
 
-    # --- 3. Add documents with default vectorizer ---
-    store.add_document(doc1_path, chunk_size=100, chunk_overlap=20)
-    store.add_document(doc2_path) # Uses default chunk size
+# Use 'with' for automatic connection closing and lock handling context
+with store:
+    # --- 3. Add documents (acquires write lock) ---
+    store.add_document(doc1_path)
 
-    # --- 4. Add a different vectorization (TF-IDF) ---
-    # Requires: pip install safe-store[tfidf]
-    try:
-        print("\n--- Adding TF-IDF Vectors ---")
-        # This will fit TF-IDF on all documents currently in the store
-        store.add_vectorization("tfidf:my_tfidf")
-    except ImportError:
-        print("Skipping TF-IDF: scikit-learn not installed (pip install safe-store[tfidf])")
-    except Exception as e:
-        print(f"An error occurred adding TF-IDF: {e}")
+    # --- 4. Query (doesn't require write lock with WAL) ---
+    print("\n--- Querying ---")
+    query = "document"
+    results = store.query(query, top_k=1)
+    for res in results:
+        print(f"Result: Score={res['similarity']:.4f}, Text='{res['chunk_text'][:80]}...'")
 
-
-    # --- 5. Query using the default vectorizer ---
-    print("\n--- Querying with Default (Sentence Transformer) ---")
-    query = "What is SafeStore used for?"
-    results_st = store.query(query, top_k=2) # Uses default vectorizer implicitly
-    for i, res in enumerate(results_st):
-        print(f"Result {i+1} (ST): Score={res['similarity']:.4f}, Doc='{Path(res['file_path']).name}'")
-        print(f"  Text: '{res['chunk_text'][:80]}...'")
-
-
-    # --- 6. Query using the TF-IDF vectorizer ---
-    # Requires TF-IDF to have been added successfully
-    print("\n--- Querying with TF-IDF ---")
-    try:
-        results_tfidf = store.query(query, vectorizer_name="tfidf:my_tfidf", top_k=2)
-        if results_tfidf: # Check if TF-IDF was added and returned results
-            for i, res in enumerate(results_tfidf):
-                print(f"Result {i+1} (TF-IDF): Score={res['similarity']:.4f}, Doc='{Path(res['file_path']).name}'")
-                print(f"  Text: '{res['chunk_text'][:80]}...'")
-        else:
-            print("TF-IDF query returned no results (was it added successfully?).")
-    except ValueError as e: # Catch if method doesn't exist
-         print(f"Could not query with TF-IDF: {e}")
-    except Exception as e: # Catch other potential errors
-         print(f"An error occurred querying with TF-IDF: {e}")
+# Connection is automatically closed here
 
 # --- Cleanup (optional) ---
 # doc1_path.unlink()
-# doc2_path.unlink()
 # Path("my_vector_store.db").unlink()
+# Path("my_vector_store.db.lock").unlink() # Remove lock file too
 
-print("\nCheck 'my_vector_store.db' file and console logs.")
+print("\nCheck 'my_vector_store.db' and console logs.")
 ```
 
 ---
 
 ## 🔮 Future Work (Planned Features)
 
-*   **More Parsers:** Add support for PDF, DOCX, HTML, etc. (`[parsing]` extra).
+*   **Parser Implementation:** Finish PDF, DOCX, HTML parsing logic.
 *   **More Vectorizers:** OpenAI Embeddings (`[openai]`), Ollama models (`[ollama]`).
-*   **Re-indexing:** Allow manual re-chunking/re-vectorizing without changing the source file (`reindex()` method).
+*   **Re-indexing:** Allow manual re-chunking/re-vectorizing (`reindex()` method).
 *   **Encryption:** Add optional encryption for content stored in the database (`[encryption]` extra).
-*   **Concurrency:** Improve handling for multiple processes accessing the same database file (using `filelock`).
 *   **Metadata Filtering:** Allow filtering query results based on document metadata.
 *   **Tagging:** Optional automatic tag extraction from chunks.
 *   **Performance:** Optimize vector loading/search (e.g., approximate nearest neighbors).
