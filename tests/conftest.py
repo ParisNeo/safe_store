@@ -2,35 +2,135 @@
 import pytest
 from pathlib import Path
 import sqlite3
-from safestore import SafeStore, LogLevel # Adjust import if needed
-import shutil # Import shutil for copying fixtures
+import shutil
+import numpy as np
+from unittest.mock import MagicMock
+
+# Import the class for type hinting
+from safestore import SafeStore, LogLevel
 
 # --- Fixture Directory ---
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
-print(f"DEBUG [conftest.py]: Conftest __file__ is {__file__}")
-print(f"DEBUG [conftest.py]: Calculated FIXTURES_DIR is {FIXTURES_DIR}")
-# Check if the directory itself exists
-if not FIXTURES_DIR.is_dir():
-    print(f"ERROR [conftest.py]: FIXTURES_DIR {FIXTURES_DIR} does not exist or is not a directory!")
+
+# --- Dependency Availability Check ---
+# Check for sentence-transformers
+try:
+    from sentence_transformers import SentenceTransformer
+    SENTENCE_TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    SENTENCE_TRANSFORMERS_AVAILABLE = False
+    SentenceTransformer = None # Define as None if not available
+
+# Check for scikit-learn
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.exceptions import NotFittedError
+    SKLEARN_AVAILABLE = True
+except ImportError:
+    SKLEARN_AVAILABLE = False
+    TfidfVectorizer = None
+    NotFittedError = None
+
+# --- Global Mocking Fixtures ---
+
+# Mock SentenceTransformer if not available
+if not SENTENCE_TRANSFORMERS_AVAILABLE:
+    class MockSentenceTransformer:
+        DEFAULT_MODEL = "mock-st-model"
+        def __init__(self, model_name):
+            self.model_name = model_name
+            self._dim = 384
+            self._dtype = np.float32
+        def encode(self, texts, convert_to_numpy=True, show_progress_bar=False):
+             if not texts: return np.empty((0, self._dim), dtype=self._dtype)
+             return np.random.rand(len(texts), self._dim).astype(self._dtype)
+        def get_sentence_embedding_dimension(self): return self._dim
+        @property
+        def dim(self): return self._dim
+        @property
+        def dtype(self): return self._dtype
+
+    @pytest.fixture(scope="session", autouse=True)
+    def mock_st_globally(session_mocker):
+        # Use session_mocker if available, otherwise regular monkeypatch might work in module scope
+        # Using monkeypatch fixture is generally preferred within test functions/fixtures
+        # For autouse session scope, directly patching might be necessary if mocker isn't standard
+        # Let's use monkeypatch fixture within other fixtures instead for safety.
+        pass # We will apply this mock conditionally in test files or fixtures needing it
+
+# Mock Scikit-learn if not available
+if not SKLEARN_AVAILABLE:
+    class MockTfidfVectorizer:
+        def __init__(self, **kwargs):
+            self.params = kwargs; self._fitted = False; self.vocabulary_ = {}; self.idf_ = np.array([])
+            self.dtype = np.float64
+            if 'dtype' in kwargs:
+                 try: self.dtype = np.dtype(kwargs['dtype'])
+                 except: pass
+            class MockTfidfInternal: _idf_diag = MagicMock()
+            self._tfidf = MockTfidfInternal(); self._dim = None
+        def fit(self, texts):
+            if not texts: self.vocabulary_ = {}; self.idf_ = np.array([], dtype=self.dtype); self._dim = 0
+            else:
+                words = set(w for t in texts for w in t.lower().split())
+                self.vocabulary_ = {w: i for i, w in enumerate(sorted(list(words)))}
+                if not self.vocabulary_: self._dim = 0; self.idf_ = np.array([], dtype=self.dtype)
+                else: self._dim = len(self.vocabulary_); self.idf_ = np.random.rand(self._dim).astype(self.dtype)*5+1
+            self._fitted = True
+            if hasattr(self, '_tfidf') and hasattr(self._tfidf, '_idf_diag'): self._tfidf._idf_diag.dtype = self.dtype
+            return self
+        def transform(self, texts):
+            if not self._fitted: raise (NotFittedError or Exception)("MockTfidfVectorizer not fitted")
+            if not texts: return MagicMock(**{'toarray.return_value': np.empty((0, self._dim or 0), dtype=self.dtype)})
+            num_samples=len(texts); vocab_size=self._dim if self._dim is not None else 0
+            if vocab_size is None: vocab_size = 0
+            dense_array = np.random.rand(num_samples, vocab_size).astype(self.dtype)
+            return MagicMock(**{'toarray.return_value': dense_array, 'shape': dense_array.shape})
+        def get_params(self, deep=True): return self.params
+        @property
+        def dim(self): return self._dim
+
+    @pytest.fixture(scope="session", autouse=True)
+    def mock_sklearn_globally(session_mocker):
+        # Similar caveat as mock_st_globally - apply conditionally where needed
+        pass
 
 
+# --- Helper to conditionally apply mocks ---
+@pytest.fixture(autouse=True)
+def apply_mocks_conditionally(monkeypatch):
+    """Applies mocks only if the libraries are unavailable."""
+    if not SENTENCE_TRANSFORMERS_AVAILABLE:
+        monkeypatch.setattr("safestore.vectorization.methods.sentence_transformer.SentenceTransformer", MockSentenceTransformer, raising=False)
+        monkeypatch.setattr("safestore.vectorization.methods.sentence_transformer._SENTENCE_TRANSFORMERS_AVAILABLE", True, raising=False) # Make wrapper think it's ok
+    if not SKLEARN_AVAILABLE:
+        monkeypatch.setattr("safestore.vectorization.methods.tfidf.TfidfVectorizer", MockTfidfVectorizer, raising=False)
+        monkeypatch.setattr("safestore.vectorization.methods.tfidf.NotFittedError", NotFittedError or Exception, raising=False)
+        monkeypatch.setattr("safestore.vectorization.methods.tfidf._SKLEARN_AVAILABLE", True, raising=False) # Make wrapper think it's ok
+
+
+# --- Standard Fixtures ---
 @pytest.fixture(scope="function")
 def temp_db_path(tmp_path: Path) -> Path:
     """Provides a path to a temporary database file."""
     return tmp_path / "test_safestore.db"
 
-# Shorten lock timeout for testing by default
 @pytest.fixture(scope="function")
 def safestore_instance(temp_db_path: Path) -> SafeStore:
     """Provides a SafeStore instance with a clean temporary database."""
-    if temp_db_path.exists():
-        temp_db_path.unlink()
+    # Ensure clean slate
+    if temp_db_path.exists(): temp_db_path.unlink()
     lock_path = temp_db_path.with_suffix(".db.lock")
-    if lock_path.exists():
-        lock_path.unlink()
-    store = SafeStore(db_path=temp_db_path, log_level=LogLevel.DEBUG, lock_timeout=0.1) # Use shorter timeout
+    if lock_path.exists(): lock_path.unlink()
+    wal_path = temp_db_path.with_suffix(".db-wal")
+    if wal_path.exists(): wal_path.unlink(missing_ok=True)
+    shm_path = temp_db_path.with_suffix(".db-shm")
+    if shm_path.exists(): shm_path.unlink(missing_ok=True)
+
+    # Use DEBUG level for more verbose test output
+    store = SafeStore(db_path=temp_db_path, log_level=LogLevel.DEBUG, lock_timeout=0.1)
     yield store
-    store.close()
+    store.close() # Ensure closure after test function finishes
 
 @pytest.fixture(scope="session")
 def sample_text_content() -> str:
@@ -43,58 +143,53 @@ def sample_text_file(tmp_path: Path, sample_text_content: str) -> Path:
     p.write_text(sample_text_content, encoding='utf-8')
     return p
 
-# --- New Fixtures for Phase 3 ---
-
+# --- Phase 3 Fixtures ---
 @pytest.fixture
 def sample_pdf_file(tmp_path: Path) -> Path:
     """Copies the sample PDF to the temp directory."""
     source = FIXTURES_DIR / "sample.pdf"
-    print(f"DEBUG [sample_pdf_file fixture]: Source path: {source}") # DEBUG PRINT
-    if not source.exists():
-        print(f"ERROR [sample_pdf_file fixture]: Source file {source} does not exist!") # DEBUG PRINT
-        pytest.skip("sample.pdf fixture file not found")
+    if not source.exists(): pytest.skip("sample.pdf fixture file not found")
     dest = tmp_path / "sample.pdf"
-    print(f"DEBUG [sample_pdf_file fixture]: Dest path: {dest}") # DEBUG PRINT
-    try:
-        shutil.copy(source, dest)
-        print(f"DEBUG [sample_pdf_file fixture]: Copied {source} to {dest}") # DEBUG PRINT
-    except Exception as e:
-        print(f"ERROR [sample_pdf_file fixture]: Failed to copy {source} to {dest}: {e}") # DEBUG PRINT
-        pytest.fail(f"Failed to copy fixture file {source}: {e}")
+    try: shutil.copy(source, dest)
+    except Exception as e: pytest.fail(f"Failed to copy fixture file {source}: {e}")
     return dest
 
 @pytest.fixture
 def sample_docx_file(tmp_path: Path) -> Path:
     """Copies the sample DOCX to the temp directory."""
     source = FIXTURES_DIR / "sample.docx"
-    print(f"DEBUG [sample_docx_file fixture]: Source path: {source}") # DEBUG PRINT
-    if not source.exists():
-        print(f"ERROR [sample_docx_file fixture]: Source file {source} does not exist!") # DEBUG PRINT
-        pytest.skip("sample.docx fixture file not found")
+    if not source.exists(): pytest.skip("sample.docx fixture file not found")
     dest = tmp_path / "sample.docx"
-    print(f"DEBUG [sample_docx_file fixture]: Dest path: {dest}") # DEBUG PRINT
-    try:
-        shutil.copy(source, dest)
-        print(f"DEBUG [sample_docx_file fixture]: Copied {source} to {dest}") # DEBUG PRINT
-    except Exception as e:
-        print(f"ERROR [sample_docx_file fixture]: Failed to copy {source} to {dest}: {e}") # DEBUG PRINT
-        pytest.fail(f"Failed to copy fixture file {source}: {e}")
+    try: shutil.copy(source, dest)
+    except Exception as e: pytest.fail(f"Failed to copy fixture file {source}: {e}")
     return dest
 
 @pytest.fixture
 def sample_html_file(tmp_path: Path) -> Path:
     """Copies the sample HTML to the temp directory."""
     source = FIXTURES_DIR / "sample.html"
-    print(f"DEBUG [sample_html_file fixture]: Source path: {source}") # DEBUG PRINT
-    if not source.exists():
-        print(f"ERROR [sample_html_file fixture]: Source file {source} does not exist!") # DEBUG PRINT
-        pytest.skip("sample.html fixture file not found")
+    if not source.exists(): pytest.skip("sample.html fixture file not found")
     dest = tmp_path / "sample.html"
-    print(f"DEBUG [sample_html_file fixture]: Dest path: {dest}") # DEBUG PRINT
-    try:
-        shutil.copy(source, dest)
-        print(f"DEBUG [sample_html_file fixture]: Copied {source} to {dest}") # DEBUG PRINT
-    except Exception as e:
-        print(f"ERROR [sample_html_file fixture]: Failed to copy {source} to {dest}: {e}") # DEBUG PRINT
-        pytest.fail(f"Failed to copy fixture file {source}: {e}")
+    try: shutil.copy(source, dest)
+    except Exception as e: pytest.fail(f"Failed to copy fixture file {source}: {e}")
     return dest
+
+
+# --- Phase 2 Fixture ---
+@pytest.fixture
+def populated_store(safestore_instance: SafeStore, sample_text_file: Path, tmp_path: Path) -> SafeStore:
+    """Provides a SafeStore instance with two documents added using the default ST vectorizer."""
+    store = safestore_instance
+    doc2_content = "Another document.\nWith different content for testing."
+    doc2_path = tmp_path / "sample2.txt"
+    doc2_path.write_text(doc2_content, encoding='utf-8')
+
+    # No need for availability check here due to global autouse fixture apply_mocks_conditionally
+    try:
+        with store:
+            store.add_document(sample_text_file, chunk_size=30, chunk_overlap=5)
+            store.add_document(doc2_path, chunk_size=25, chunk_overlap=5)
+    except Exception as e:
+         pytest.fail(f"Populated store fixture setup failed: {e}")
+
+    return store

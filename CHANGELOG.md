@@ -1,4 +1,3 @@
-# CHANGELOG.md
 # Changelog
 
 All notable changes to this project will be documented in this file.
@@ -6,121 +5,362 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.2.0] - 2025-04-18 <!-- Update Date -->
+## [1.3.0] - 2025-04-19 <!-- Update Date -->
+
+### Added
+
+*   **API Polish & Type Hinting:**
+    *   Added comprehensive type hints across the library (`SafeStore`, `db.py`, vectorizers, parsers, etc.) using `typing`.
+    *   Improved docstrings for public classes and methods, explaining parameters, return values, and potential exceptions.
+*   **Error Handling:**
+    *   Consistently raise specific custom exceptions defined in `safestore.core.exceptions` (e.g., `DatabaseError`, `FileHandlingError`, `ParsingError`, `ConfigurationError`, `VectorizationError`, `QueryError`, `ConcurrencyError`) instead of generic exceptions.
+    *   Ensured proper exception chaining using `raise ... from e`.
+    *   Improved error messages for clarity.
+*   **Documentation Structure:**
+    *   Created basic Sphinx documentation structure under `docs/`.
+    *   Added placeholder files for `conf.py`, `index.rst`, `installation.rst`, `quickstart.rst`, `api.rst`, `logging.rst`.
+    *   Added `docs/requirements.txt`. (Full content writing pending).
+*   **Examples:**
+    *   Added `examples/basic_usage.py` demonstrating core indexing and querying workflow.
+    *   Added `examples/custom_logging.py` showing how users can configure `ascii_colors` globally (e.g., set level, log to file).
+*   **Helper Methods:**
+    *   Added `SafeStore.list_documents()` to retrieve metadata about stored documents.
+    *   Added `SafeStore.list_vectorization_methods()` to retrieve details about registered vectorizers.
+*   **Testing:**
+    *   Added basic tests for `SafeStore.close()` and context manager (`__enter__`/`__exit__`) behavior.
+    *   Added tests for new `list_documents` and `list_vectorization_methods`.
+    *   Refined existing tests for clarity and robustness.
+
+### Changed
+
+*   **Dependencies:** Finalized optional dependencies and extras in `pyproject.toml`. Added `[dev]` extra for testing/linting/building/docs dependencies.
+*   `pyproject.toml`: Bumped version to 1.3.0. Added project keywords, refined classifiers. Added URLs for Docs/Issues. Configured `hatch` for version management. Added `black` config.
+*   `README.md`: Significantly updated with latest features, improved explanations (concurrency, logging), clearer installation instructions, refined Quick Start, and links to examples/repo.
+*   `safestore.core.db`: Enabled SQLite `PRAGMA foreign_keys = ON` for better data integrity. Set `check_same_thread=False` for `sqlite3.connect` as external locking (`filelock`) is used. Improved error handling in DB functions.
+*   `safestore.indexing.parser`: Improved error handling for specific file I/O and parsing library exceptions.
+*   `safestore.vectorization.manager`: Improved error handling, especially around missing dependencies and DB interactions. Added `remove_from_cache_by_id` helper.
+*   `safestore.vectorization.methods`: Improved error handling for model loading and vectorization failures. Ensured vectorizers handle empty input lists gracefully. Refined TF-IDF state loading/saving logic for robustness.
+*   `safestore.search.similarity`: Added handling for empty input `vectors` matrix. Improved validation messages.
+*   `safestore.__init__`: Exposed core exceptions for user convenience.
+
+### Fixed
+
+*   Corrected potential race condition in `VectorizationManager.get_vectorizer` when multiple processes try to add the same new method concurrently (now handles UNIQUE constraint error).
+*   Ensured `TfidfVectorizerWrapper.load_fitted_state` correctly reconstructs the internal state required for `transform` to work after loading.
+*   Fixed `TfidfVectorizerWrapper.vectorize` dimension check logic and error message for clarity.
+*   Ensured `SafeStore` context manager (`__enter__`) properly re-initializes connection if closed previously.
+*   Corrected minor inconsistencies in log messages and error handling across various modules.
+
+## [1.2.0] - 2025-04-18
 
 ### Added
 
 *   **Concurrency Handling:**
     *   Added `filelock` dependency for inter-process concurrency control.
-    *   Implemented exclusive file-based locking (`.db.lock` file) around database write operations (`add_document`, `add_vectorization`, `remove_vectorization`). This prevents race conditions when multiple processes access the same `SafeStore` database file.
-    *   Added `lock_timeout` parameter to `SafeStore.__init__` (default 60 seconds) to control how long to wait for the lock.
-    *   Added basic `threading.RLock` for intra-process thread safety around critical sections and connection handling.
-    *   Added logging (`ascii_colors`) for lock acquisition attempts, success, release, and timeouts.
-    *   Refactored write methods (`add_document`, `add_vectorization`, `remove_vectorization`) into internal `_impl` methods that assume the lock is held.
-*   **Parsing Infrastructure (Foundation):**
-    *   Added optional dependencies for parsing PDF (`pypdf`), DOCX (`python-docx`), and HTML (`beautifulsoup4`, `lxml`) files via the `safestore[parsing]` extra.
-    *   Added placeholder functions (`parse_pdf`, `parse_docx`, `parse_html`) in `safestore.indexing.parser`.
-    *   Updated the `parse_document` dispatcher in `safestore.indexing.parser` to recognize `.pdf`, `.docx`, and `.html` extensions (implementation pending).
+    *   Implemented exclusive file-based locking (`.db.lock` file) around database write operations (`add_document`, `add_vectorization`, `remove_vectorization`).
+    *   Added `lock_timeout` parameter to `SafeStore.__init__` (default 60 seconds).
+    *   Added basic `threading.RLock` for intra-process thread safety.
+    *   Added logging (`ascii_colors`) for lock acquisition/release/timeouts.
+    *   Refactored write methods into internal `_impl` methods assuming lock is held.
+*   **Parsing Infrastructure (Implemented):**
+    *   Added optional dependencies for parsing PDF (`pypdf`), DOCX (`python-docx`), and HTML (`beautifulsoup4`, `lxml`) via the `safestore[parsing]` extra.
+    *   Implemented `parse_pdf`, `parse_docx`, `parse_html` in `safestore.indexing.parser` using respective libraries.
+    *   Updated the `parse_document` dispatcher to correctly call implemented parsers for `.pdf`, `.docx`, `.html`, `.htm` extensions. Added error handling for parsing failures and missing dependencies.
 
 ### Changed
 
 *   `safestore.store.SafeStore`:
-    *   `__init__`: Now accepts `lock_timeout`, resolves database path, creates `.lock` file path, connects and initializes DB within a lock, initializes threading and file locks.
+    *   `__init__`: Now accepts `lock_timeout`, resolves paths, connects/initializes DB within a lock, initializes threading/file locks.
     *   `close()`: Now safer with instance lock and better error handling.
     *   `__enter__` / `__exit__`: Ensure connection exists and handle closure.
-    *   Write methods now acquire instance and file locks before calling internal implementation methods.
-    *   `query()`: Uses instance lock for thread safety; relies on SQLite WAL mode for read concurrency (no explicit file lock for reads currently). Added connection check.
-*   `pyproject.toml`: Bumped version to 1.2.0. Added `filelock`, `pypdf`, `python-docx`, `beautifulsoup4`, `lxml`, `cryptography` dependencies. Defined `[parsing]`, `[encryption]`, `[all]` extras.
+    *   Write methods now acquire instance and file locks before calling internal `_impl` methods.
+    *   `query()`: Uses instance lock; relies on SQLite WAL mode for read concurrency. Added connection check.
+*   `pyproject.toml`: Bumped version to 1.2.0. Added `filelock`, `pypdf`, `python-docx`, `beautifulsoup4`, `lxml`. Defined `[parsing]`, `[all]` extras.
+*   `safestore.core.db`: Now uses `Union[str, Path]` for path types.
 
 ### Fixed
 
-*   Minor fix in `VectorizationManager.update_method_params` to correctly format the SQL update statement when `new_dim` is provided.
-*   Corrected assertion in `test_add_vectorization_tfidf_all_docs` (`test_store_phase2.py`) related to TF-IDF fitting log message.
-*   Corrected mock target and assertion in `test_remove_vectorization` (`test_store_phase2.py`) related to cache removal log message.
-
+*   Minor fix in `VectorizationManager.update_method_params` SQL statement format.
+*   Corrected assertions in `test_store_phase2.py` related to TF-IDF fitting log and cache removal log.
+*   Resolved issues in parser implementations and dispatcher logic found during testing.
+*   Fixed fixture copying in `conftest.py` for reliability.
 
 ## [1.1.0] - 2025-04-17
 
 ### Added
 
-*   **Querying:**
-    *   Implemented the `SafeStore.query()` method for retrieving document chunks based on semantic similarity to a query text.
-    *   Uses cosine similarity (`safestore.search.similarity.cosine_similarity`) for ranking.
-    *   Supports specifying the `vectorizer_name` to use for the query, ensuring consistency with indexed vectors.
-    *   Returns `top_k` results containing chunk text, similarity score, document path, and positional information.
-    *   Includes logging (`ascii_colors`) for query steps (vectorization, loading, similarity calculation).
-    *   Initial implementation loads all candidate vectors for the specified method into memory for comparison (potential performance bottleneck for very large datasets noted).
-
-*   **Multiple Vectorization Methods:**
-    *   Added support for TF-IDF vectorization using `scikit-learn`.
-        *   Requires `pip install safestore[tfidf]`.
-        *   Added `safestore.vectorization.methods.tfidf.TfidfVectorizerWrapper`.
-        *   Handles fitting the TF-IDF model:
-            *   During `add_document`: Fits only on the chunks of the *current* document if the method is new and unfitted (with a warning).
-            *   During `add_vectorization`: Fits on chunks from *all* specified documents (or the entire store) if the method is new and unfitted.
-        *   Stores fitted state (vocabulary, IDF weights) in the `vectorization_methods.params` JSON column in the database.
-        *   Loads fitted state when the vectorizer is requested via `VectorizationManager`.
-    *   Updated `VectorizationManager` (`get_vectorizer`) to handle different vectorizer types (`st:`, `tfidf:`) and manage their state (including loading/saving TF-IDF fitted parameters).
-    *   Added `safestore.vectorization.manager.VectorizationManager.update_method_params` to update DB record after fitting TF-IDF.
-    *   Added `[tfidf]` and `[all-vectorizers]` optional dependencies in `pyproject.toml`.
-
-*   **Vectorizer Management Methods:**
-    *   Implemented `SafeStore.add_vectorization()`: Allows adding embeddings for a new vectorization method to documents already in the store, without re-parsing/re-chunking. Handles fitting for TF-IDF if needed. Supports targeting all documents or a specific document.
-    *   Implemented `SafeStore.remove_vectorization()`: Deletes a specific vectorization method and all associated vector embeddings from the database and cache.
-
-*   **Testing:**
-    *   Added new test file `tests/test_store_phase2.py`.
-    *   Included integration tests for `query()`, covering basic usage, non-existent vectorizers, and methods with no vectors.
-    *   Added tests for using TF-IDF during `add_document`.
-    *   Added tests for `add_vectorization()` with both Sentence Transformers and TF-IDF.
-    *   Added tests for `remove_vectorization()`.
-    *   Enhanced mocking for `sentence-transformers` and added mocking for `scikit-learn`'s `TfidfVectorizer` to allow testing without the dependencies necessarily installed.
+*   **Querying:** Implemented `SafeStore.query()` using cosine similarity. Loads candidate vectors into memory.
+*   **Multiple Vectorization Methods:** Added TF-IDF support (`tfidf:` prefix) using `scikit-learn`. Handles fitting during `add_document` (local fit) or `add_vectorization` (global/targeted fit). Stores fitted state in DB. Requires `safestore[tfidf]`.
+*   **Vectorizer Management:** Implemented `SafeStore.add_vectorization()` and `SafeStore.remove_vectorization()`.
+*   **Testing:** Added `tests/test_store_phase2.py` covering query, TF-IDF, add/remove vectorization. Added mocking for `scikit-learn`.
 
 ### Changed
 
-*   `safestore.vectorization.manager.VectorizationManager`: Now caches the database parameters alongside the instance and method ID. Invalidates cache entries when parameters are updated (e.g., TF-IDF fitting). Includes helper `_get_method_details_from_db`.
-*   `safestore.store.SafeStore`:
-    *   `add_document()` now checks for existing vectors for the *specific* vectorizer being used when deciding whether to skip processing an unchanged document. It also handles the initial fitting of TF-IDF if necessary. Accepts optional `vectorizer_params`.
-*   `safestore.search.similarity.cosine_similarity`: Added handling for case where `vectors` input is 1D (representing a single vector). Added type checking.
-*   `pyproject.toml`: Bumped version to 1.1.0. Added `scikit-learn` to `[tfidf]` extra. Added `[all-vectorizers]` extra. Added Python 3.12 classifier.
+*   `VectorizationManager`: Caches DB parameters; invalidates cache on param update (e.g., TF-IDF fit).
+*   `SafeStore.add_document()`: Checks for specific vectorizer existence for skipping; handles initial TF-IDF fit.
+*   `search.similarity.cosine_similarity`: Handles 1D `vectors` input. Added type checking.
+*   `pyproject.toml`: Bumped version to 1.1.0. Added `scikit-learn` to `[tfidf]` extra. Added `[all-vectorizers]` extra.
 
 ## [1.0.0] - 2025-04-16
 
-This is the initial public release of SafeStore! 🎉 This version establishes the core foundation for indexing and vectorizing text documents.
+Initial public release.
 
 ### Added
 
-*   **Core Functionality:**
-    *   Introduced the main `SafeStore` class for managing the vector store.
-    *   Established SQLite3 as the database backend, creating the file if it doesn't exist.
-    *   Defined the core database schema including tables for `documents`, `chunks`, `vectorization_methods`, and `vectors`, with appropriate relationships and indexes.
-    *   Implemented robust database connection handling (`connect_db`) and schema initialization (`initialize_schema`).
-    *   Enabled SQLite's WAL (Write-Ahead Logging) mode for potential future concurrency improvements.
+*   Core `SafeStore` class and SQLite backend setup (WAL mode enabled).
+*   Database schema (`documents`, `chunks`, `vectorization_methods`, `vectors`).
+*   Indexing pipeline (`add_document`):
+    *   Parses `.txt` files.
+    *   Stores full text.
+    *   Configurable chunking (`chunk_text`) with position tracking.
+    *   File hashing (SHA256) for change detection.
+    *   Handles new, unchanged (skip), and changed (re-index) documents.
+*   Vectorization foundation:
+    *   `VectorizationManager`.
+    *   Initial support for `sentence-transformers` (`st:` prefix). Requires `safestore[sentence-transformers]`.
+    *   Stores NumPy vectors as BLOBs.
+*   Utilities: `ascii_colors` for logging.
+*   Testing: `pytest` suite (`test_chunking.py`, `test_store_phase1.py`) with mocking.
+*   Packaging: `pyproject.toml` setup.
+```
 
-*   **Indexing Pipeline:**
-    *   Created the primary `add_document` method to handle the end-to-end ingestion of files.
-    *   Added support for parsing plain text (`.txt`) files using `safestore.indexing.parser`.
-    *   Implemented configurable text chunking (`chunk_text`) based on character count (`chunk_size`) and overlap (`chunk_overlap`).
-    *   Included tracking and storage of chunk start/end character positions relative to the original document.
-    *   Stored the full, unmodified text of ingested documents in the `documents` table to enable future re-chunking or re-indexing with different parameters.
-    *   Integrated file hashing (SHA256) to detect content changes between `add_document` calls for the same file path.
-    *   Implemented logic within `add_document` to handle different scenarios:
-        *   **New Documents:** Parses, chunks, vectorizes, and stores all related data.
-        *   **Unchanged Documents:** Checks file hash; if unchanged *and* vectors for the specified method exist, skips reprocessing efficiently.
-        *   **Changed Documents:** Detects hash mismatch, automatically deletes old chunks/vectors for that document, updates the document record, and then re-parses, re-chunks, and re-vectorizes the new content.
+### Create `examples/` directory and files:
 
-*   **Vectorization:**
-    *   Laid the foundation for supporting multiple vectorization methods via `VectorizationManager`.
-    *   Added initial support for vectorization using `sentence-transformers` models (using `st:model-name` format, e.g., `st:all-MiniLM-L6-v2` as default).
-    *   Implemented storage of NumPy vector embeddings as SQLite BLOBs using custom adapters.
-    *   Created mechanisms (`add_or_get_vectorization_method`) to register and retrieve vectorization method details (name, type, dimensions, data type) in the `vectorization_methods` table.
+**`examples/basic_usage.py`**
 
-*   **Utilities & Development:**
-    *   Integrated `ascii_colors` for clear, leveled, and colorful console logging and user feedback throughout the library's operations. Configured default log level via `SafeStore` initialization.
-    *   Established the basic project structure using a flat layout (`safestore` directory at the root).
-    *   Developed an initial test suite using `pytest` and `unittest.mock`, covering:
-        *   Unit tests for text chunking logic with various edge cases.
-        *   Integration tests for the `add_document` workflow verifying correct behavior and database state for new, unchanged, and changed documents.
-        *   Mocking of external dependencies (`sentence-transformers`) for testing.
-        *   Verification of logging calls using mock objects.
-    *   Configured project metadata, dependencies, and optional dependencies (`[sentence-transformers]`) in `pyproject.toml`.
+```python
+# examples/basic_usage.py
+import safestore
+from pathlib import Path
+import time
+import shutil
+
+# --- Configuration ---
+DB_FILE = "basic_usage_store.db"
+DOC_DIR = Path("temp_docs_basic")
+USE_ST = True       # Set to False if sentence-transformers not installed
+USE_TFIDF = True    # Set to False if scikit-learn not installed
+USE_PARSING = True  # Set to False if parsing libs not installed
+
+# --- Helper Functions ---
+def print_header(title):
+    print("\n" + "="*10 + f" {title} " + "="*10)
+
+def cleanup():
+    print_header("Cleaning Up")
+    db_path = Path(DB_FILE)
+    lock_path = Path(f"{DB_FILE}.lock")
+    wal_path = Path(f"{DB_FILE}-wal")
+    shm_path = Path(f"{DB_FILE}-shm")
+
+    if DOC_DIR.exists():
+        shutil.rmtree(DOC_DIR)
+        print(f"- Removed directory: {DOC_DIR}")
+    if db_path.exists():
+        db_path.unlink()
+        print(f"- Removed database: {db_path}")
+    if lock_path.exists():
+        lock_path.unlink(missing_ok=True)
+        print(f"- Removed lock file: {lock_path}")
+    if wal_path.exists():
+        wal_path.unlink(missing_ok=True)
+        print(f"- Removed WAL file: {wal_path}")
+    if shm_path.exists():
+        shm_path.unlink(missing_ok=True)
+        print(f"- Removed SHM file: {shm_path}")
+
+# --- Main Script ---
+if __name__ == "__main__":
+    cleanup() # Start fresh
+
+    # --- 1. Prepare Sample Documents ---
+    print_header("Preparing Documents")
+    DOC_DIR.mkdir(exist_ok=True)
+
+    # Document 1 (Text)
+    doc1_path = DOC_DIR / "intro.txt"
+    doc1_content = """
+    SafeStore is a Python library for local vector storage.
+    It uses SQLite as its backend, making it lightweight and file-based.
+    Key features include concurrency control and support for multiple vectorizers.
+    """
+    doc1_path.write_text(doc1_content.strip(), encoding='utf-8')
+    print(f"- Created: {doc1_path.name}")
+
+    # Document 2 (HTML) - Requires [parsing]
+    doc2_path = DOC_DIR / "web_snippet.html"
+    doc2_content = """
+    <!DOCTYPE html>
+    <html>
+    <head><title>Example Page</title></head>
+    <body>
+        <h1>Information Retrieval</h1>
+        <p>Efficient retrieval is crucial for RAG pipelines.</p>
+        <p>SafeStore helps manage embeddings for semantic search.</p>
+    </body>
+    </html>
+    """
+    if USE_PARSING:
+        doc2_path.write_text(doc2_content.strip(), encoding='utf-8')
+        print(f"- Created: {doc2_path.name}")
+    else:
+        print(f"- Skipping {doc2_path.name} (requires [parsing])")
+
+    # Document 3 (Text) - Will be added later to show updates
+    doc3_path = DOC_DIR / "update_later.txt"
+    doc3_content_v1 = "Initial content for update testing."
+    doc3_path.write_text(doc3_content_v1, encoding='utf-8')
+    print(f"- Created: {doc3_path.name}")
+
+    print(f"Documents prepared in: {DOC_DIR.resolve()}")
+
+    # --- 2. Initialize SafeStore ---
+    print_header("Initializing SafeStore")
+    # Use INFO level for less verbose output in basic example
+    store = safestore.SafeStore(DB_FILE, log_level=safestore.LogLevel.INFO)
+
+    # --- 3. Indexing Documents ---
+    try:
+        with store:
+            print_header("Indexing Documents")
+            # --- Index doc1 with Sentence Transformer (default) ---
+            if USE_ST:
+                print(f"\nIndexing {doc1_path.name} with ST...")
+                try:
+                    store.add_document(
+                        doc1_path,
+                        vectorizer_name="st:all-MiniLM-L6-v2", # Default, but explicit here
+                        chunk_size=80,
+                        chunk_overlap=15,
+                        metadata={"source": "manual", "topic": "introduction"}
+                    )
+                except safestore.ConfigurationError as e:
+                    print(f"  [SKIP] Could not index with Sentence Transformer: {e}")
+                    USE_ST = False # Disable ST for later steps if failed here
+            else:
+                 print(f"\nSkipping ST indexing for {doc1_path.name}")
+
+            # --- Index doc2 (HTML) ---
+            if USE_PARSING:
+                print(f"\nIndexing {doc2_path.name} with ST...")
+                if USE_ST:
+                    try:
+                        store.add_document(doc2_path, metadata={"source": "web", "language": "en"})
+                    except safestore.ConfigurationError as e:
+                         print(f"  [SKIP] Could not index {doc2_path.name} with ST: {e}")
+                else:
+                    print(f"  [SKIP] ST vectorizer not available.")
+            else:
+                print(f"\nSkipping HTML indexing for {doc2_path.name}")
+
+            # --- Index doc3 (initial version) ---
+            print(f"\nIndexing {doc3_path.name} (v1) with ST...")
+            if USE_ST:
+                try:
+                    store.add_document(doc3_path, metadata={"version": 1})
+                except safestore.ConfigurationError as e:
+                     print(f"  [SKIP] Could not index {doc3_path.name} with ST: {e}")
+            else:
+                print(f"  [SKIP] ST vectorizer not available.")
+
+
+            # --- Add TF-IDF Vectorization to all docs ---
+            if USE_TFIDF:
+                print_header("Adding TF-IDF Vectorization")
+                try:
+                    store.add_vectorization(
+                        vectorizer_name="tfidf:my_tfidf",
+                        # Let SafeStore handle fitting on all docs
+                    )
+                except safestore.ConfigurationError as e:
+                    print(f"  [SKIP] Could not add TF-IDF vectorization: {e}")
+                    USE_TFIDF = False # Disable TFIDF if failed
+            else:
+                print_header("Skipping TF-IDF Vectorization")
+
+
+            # --- 4. Querying ---
+            print_header("Querying")
+            query_text = "vector database features"
+
+            if USE_ST:
+                print("\nQuerying with Sentence Transformer...")
+                results_st = store.query(query_text, vectorizer_name="st:all-MiniLM-L6-v2", top_k=2)
+                if results_st:
+                    for i, res in enumerate(results_st):
+                        print(f"  ST Result {i+1}: Score={res['similarity']:.4f}, Path='{Path(res['file_path']).name}', Text='{res['chunk_text'][:60]}...'")
+                        print(f"    Metadata: {res.get('metadata')}")
+                else:
+                    print("  No results found.")
+            else:
+                print("\nSkipping ST Query.")
+
+            if USE_TFIDF:
+                print("\nQuerying with TF-IDF...")
+                results_tfidf = store.query(query_text, vectorizer_name="tfidf:my_tfidf", top_k=2)
+                if results_tfidf:
+                    for i, res in enumerate(results_tfidf):
+                        print(f"  TFIDF Result {i+1}: Score={res['similarity']:.4f}, Path='{Path(res['file_path']).name}', Text='{res['chunk_text'][:60]}...'")
+                        print(f"    Metadata: {res.get('metadata')}")
+                else:
+                    print("  No results found.")
+            else:
+                print("\nSkipping TF-IDF Query.")
+
+
+            # --- 5. File Updates & Re-indexing ---
+            print_header("Updating and Re-indexing")
+            print(f"Updating content of {doc3_path.name}...")
+            doc3_content_v2 = "This content has been significantly updated for testing re-indexing."
+            doc3_path.write_text(doc3_content_v2, encoding='utf-8')
+            time.sleep(0.1) # Ensure file timestamp changes
+
+            print(f"Running add_document again for {doc3_path.name}...")
+            if USE_ST:
+                store.add_document(doc3_path, metadata={"version": 2}) # Should detect change and re-index with ST
+            else:
+                 print("  Skipping re-indexing (ST not available).")
+            # Note: TF-IDF vectors for the old chunks of doc3 were deleted by the re-index.
+            # If we wanted TF-IDF for the *new* chunks, we'd need to run add_vectorization again.
+            # Or, ideally, add_document could optionally re-vectorize for *all* methods. (Future enhancement)
+
+            # --- 6. Listing ---
+            print_header("Listing Contents")
+            print("\n--- Documents ---")
+            docs = store.list_documents()
+            for doc in docs:
+                print(f"- ID: {doc['doc_id']}, Path: {Path(doc['file_path']).name}, Hash: {doc['file_hash'][:8]}..., Meta: {doc.get('metadata')}")
+
+            print("\n--- Vectorization Methods ---")
+            methods = store.list_vectorization_methods()
+            for method in methods:
+                print(f"- ID: {method['method_id']}, Name: {method['method_name']}, Type: {method['method_type']}, Dim: {method['vector_dim']}, Fitted: {method.get('params',{}).get('fitted', 'N/A')}")
+
+            # --- 7. Removing a Vectorization ---
+            if USE_TFIDF:
+                 print_header("Removing Vectorization")
+                 print("Removing TF-IDF vectors...")
+                 store.remove_vectorization("tfidf:my_tfidf")
+
+                 print("\n--- Vectorization Methods After Removal ---")
+                 methods_after = store.list_vectorization_methods()
+                 for method in methods_after:
+                      print(f"- ID: {method['method_id']}, Name: {method['method_name']}")
+            else:
+                 print_header("Skipping Vectorization Removal")
+
+
+    except safestore.ConfigurationError as e:
+        print(f"\n[ERROR] Missing dependency: {e}")
+        print("Please install the required extras (e.g., pip install safestore[all])")
+    except safestore.ConcurrencyError as e:
+        print(f"\n[ERROR] Lock timeout or concurrency issue: {e}")
+    except Exception as e:
+        print(f"\n[ERROR] An unexpected error occurred: {e.__class__.__name__}: {e}")
+        import traceback
+        traceback.print_exc() # Print traceback for unexpected errors
+    finally:
+        # Connection is closed automatically by 'with' statement
+        print("\n--- End of Script ---")
+        # Optional: uncomment cleanup() to remove files after run
+        # cleanup()
