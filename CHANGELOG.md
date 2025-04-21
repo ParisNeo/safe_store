@@ -10,10 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 *   **API Polish & Type Hinting:**
-    *   Added comprehensive type hints across the library (`SafeStore`, `db.py`, vectorizers, parsers, etc.) using `typing`.
+    *   Added comprehensive type hints across the library (`safe_store`, `db.py`, vectorizers, parsers, etc.) using `typing`.
     *   Improved docstrings for public classes and methods, explaining parameters, return values, and potential exceptions.
 *   **Error Handling:**
-    *   Consistently raise specific custom exceptions defined in `safestore.core.exceptions` (e.g., `DatabaseError`, `FileHandlingError`, `ParsingError`, `ConfigurationError`, `VectorizationError`, `QueryError`, `ConcurrencyError`) instead of generic exceptions.
+    *   Consistently raise specific custom exceptions defined in `safe_store.core.exceptions` (e.g., `DatabaseError`, `FileHandlingError`, `ParsingError`, `ConfigurationError`, `VectorizationError`, `QueryError`, `ConcurrencyError`) instead of generic exceptions.
     *   Ensured proper exception chaining using `raise ... from e`.
     *   Improved error messages for clarity.
 *   **Documentation Structure:**
@@ -24,10 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     *   Added `examples/basic_usage.py` demonstrating core indexing and querying workflow.
     *   Added `examples/custom_logging.py` showing how users can configure `ascii_colors` globally (e.g., set level, log to file).
 *   **Helper Methods:**
-    *   Added `SafeStore.list_documents()` to retrieve metadata about stored documents.
-    *   Added `SafeStore.list_vectorization_methods()` to retrieve details about registered vectorizers.
+    *   Added `safe_store.list_documents()` to retrieve metadata about stored documents.
+    *   Added `safe_store.list_vectorization_methods()` to retrieve details about registered vectorizers.
 *   **Testing:**
-    *   Added basic tests for `SafeStore.close()` and context manager (`__enter__`/`__exit__`) behavior.
+    *   Added basic tests for `safe_store.close()` and context manager (`__enter__`/`__exit__`) behavior.
     *   Added tests for new `list_documents` and `list_vectorization_methods`.
     *   Refined existing tests for clarity and robustness.
 
@@ -36,19 +36,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 *   **Dependencies:** Finalized optional dependencies and extras in `pyproject.toml`. Added `[dev]` extra for testing/linting/building/docs dependencies.
 *   `pyproject.toml`: Bumped version to 1.3.0. Added project keywords, refined classifiers. Added URLs for Docs/Issues. Configured `hatch` for version management. Added `black` config.
 *   `README.md`: Significantly updated with latest features, improved explanations (concurrency, logging), clearer installation instructions, refined Quick Start, and links to examples/repo.
-*   `safestore.core.db`: Enabled SQLite `PRAGMA foreign_keys = ON` for better data integrity. Set `check_same_thread=False` for `sqlite3.connect` as external locking (`filelock`) is used. Improved error handling in DB functions.
-*   `safestore.indexing.parser`: Improved error handling for specific file I/O and parsing library exceptions.
-*   `safestore.vectorization.manager`: Improved error handling, especially around missing dependencies and DB interactions. Added `remove_from_cache_by_id` helper.
-*   `safestore.vectorization.methods`: Improved error handling for model loading and vectorization failures. Ensured vectorizers handle empty input lists gracefully. Refined TF-IDF state loading/saving logic for robustness.
-*   `safestore.search.similarity`: Added handling for empty input `vectors` matrix. Improved validation messages.
-*   `safestore.__init__`: Exposed core exceptions for user convenience.
+*   `safe_store.core.db`: Enabled SQLite `PRAGMA foreign_keys = ON` for better data integrity. Set `check_same_thread=False` for `sqlite3.connect` as external locking (`filelock`) is used. Improved error handling in DB functions.
+*   `safe_store.indexing.parser`: Improved error handling for specific file I/O and parsing library exceptions.
+*   `safe_store.vectorization.manager`: Improved error handling, especially around missing dependencies and DB interactions. Added `remove_from_cache_by_id` helper.
+*   `safe_store.vectorization.methods`: Improved error handling for model loading and vectorization failures. Ensured vectorizers handle empty input lists gracefully. Refined TF-IDF state loading/saving logic for robustness.
+*   `safe_store.search.similarity`: Added handling for empty input `vectors` matrix. Improved validation messages.
+*   `safe_store.__init__`: Exposed core exceptions for user convenience.
 
 ### Fixed
 
 *   Corrected potential race condition in `VectorizationManager.get_vectorizer` when multiple processes try to add the same new method concurrently (now handles UNIQUE constraint error).
 *   Ensured `TfidfVectorizerWrapper.load_fitted_state` correctly reconstructs the internal state required for `transform` to work after loading.
 *   Fixed `TfidfVectorizerWrapper.vectorize` dimension check logic and error message for clarity.
-*   Ensured `SafeStore` context manager (`__enter__`) properly re-initializes connection if closed previously.
+*   Ensured `safe_store` context manager (`__enter__`) properly re-initializes connection if closed previously.
 *   Corrected minor inconsistencies in log messages and error handling across various modules.
 
 ## [1.2.0] - 2025-04-18
@@ -58,25 +58,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 *   **Concurrency Handling:**
     *   Added `filelock` dependency for inter-process concurrency control.
     *   Implemented exclusive file-based locking (`.db.lock` file) around database write operations (`add_document`, `add_vectorization`, `remove_vectorization`).
-    *   Added `lock_timeout` parameter to `SafeStore.__init__` (default 60 seconds).
+    *   Added `lock_timeout` parameter to `safe_store.__init__` (default 60 seconds).
     *   Added basic `threading.RLock` for intra-process thread safety.
     *   Added logging (`ascii_colors`) for lock acquisition/release/timeouts.
     *   Refactored write methods into internal `_impl` methods assuming lock is held.
 *   **Parsing Infrastructure (Implemented):**
-    *   Added optional dependencies for parsing PDF (`pypdf`), DOCX (`python-docx`), and HTML (`beautifulsoup4`, `lxml`) via the `safestore[parsing]` extra.
-    *   Implemented `parse_pdf`, `parse_docx`, `parse_html` in `safestore.indexing.parser` using respective libraries.
+    *   Added optional dependencies for parsing PDF (`pypdf`), DOCX (`python-docx`), and HTML (`beautifulsoup4`, `lxml`) via the `safe_store[parsing]` extra.
+    *   Implemented `parse_pdf`, `parse_docx`, `parse_html` in `safe_store.indexing.parser` using respective libraries.
     *   Updated the `parse_document` dispatcher to correctly call implemented parsers for `.pdf`, `.docx`, `.html`, `.htm` extensions. Added error handling for parsing failures and missing dependencies.
 
 ### Changed
 
-*   `safestore.store.SafeStore`:
+*   `safe_store.store.safe_store`:
     *   `__init__`: Now accepts `lock_timeout`, resolves paths, connects/initializes DB within a lock, initializes threading/file locks.
     *   `close()`: Now safer with instance lock and better error handling.
     *   `__enter__` / `__exit__`: Ensure connection exists and handle closure.
     *   Write methods now acquire instance and file locks before calling internal `_impl` methods.
     *   `query()`: Uses instance lock; relies on SQLite WAL mode for read concurrency. Added connection check.
 *   `pyproject.toml`: Bumped version to 1.2.0. Added `filelock`, `pypdf`, `python-docx`, `beautifulsoup4`, `lxml`. Defined `[parsing]`, `[all]` extras.
-*   `safestore.core.db`: Now uses `Union[str, Path]` for path types.
+*   `safe_store.core.db`: Now uses `Union[str, Path]` for path types.
 
 ### Fixed
 
@@ -89,15 +89,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-*   **Querying:** Implemented `SafeStore.query()` using cosine similarity. Loads candidate vectors into memory.
-*   **Multiple Vectorization Methods:** Added TF-IDF support (`tfidf:` prefix) using `scikit-learn`. Handles fitting during `add_document` (local fit) or `add_vectorization` (global/targeted fit). Stores fitted state in DB. Requires `safestore[tfidf]`.
-*   **Vectorizer Management:** Implemented `SafeStore.add_vectorization()` and `SafeStore.remove_vectorization()`.
+*   **Querying:** Implemented `safe_store.query()` using cosine similarity. Loads candidate vectors into memory.
+*   **Multiple Vectorization Methods:** Added TF-IDF support (`tfidf:` prefix) using `scikit-learn`. Handles fitting during `add_document` (local fit) or `add_vectorization` (global/targeted fit). Stores fitted state in DB. Requires `safe_store[tfidf]`.
+*   **Vectorizer Management:** Implemented `safe_store.add_vectorization()` and `safe_store.remove_vectorization()`.
 *   **Testing:** Added `tests/test_store_phase2.py` covering query, TF-IDF, add/remove vectorization. Added mocking for `scikit-learn`.
 
 ### Changed
 
 *   `VectorizationManager`: Caches DB parameters; invalidates cache on param update (e.g., TF-IDF fit).
-*   `SafeStore.add_document()`: Checks for specific vectorizer existence for skipping; handles initial TF-IDF fit.
+*   `safe_store.add_document()`: Checks for specific vectorizer existence for skipping; handles initial TF-IDF fit.
 *   `search.similarity.cosine_similarity`: Handles 1D `vectors` input. Added type checking.
 *   `pyproject.toml`: Bumped version to 1.1.0. Added `scikit-learn` to `[tfidf]` extra. Added `[all-vectorizers]` extra.
 
@@ -107,7 +107,7 @@ Initial public release.
 
 ### Added
 
-*   Core `SafeStore` class and SQLite backend setup (WAL mode enabled).
+*   Core `safe_store` class and SQLite backend setup (WAL mode enabled).
 *   Database schema (`documents`, `chunks`, `vectorization_methods`, `vectors`).
 *   Indexing pipeline (`add_document`):
     *   Parses `.txt` files.
@@ -117,7 +117,7 @@ Initial public release.
     *   Handles new, unchanged (skip), and changed (re-index) documents.
 *   Vectorization foundation:
     *   `VectorizationManager`.
-    *   Initial support for `sentence-transformers` (`st:` prefix). Requires `safestore[sentence-transformers]`.
+    *   Initial support for `sentence-transformers` (`st:` prefix). Requires `safe_store[sentence-transformers]`.
     *   Stores NumPy vectors as BLOBs.
 *   Utilities: `ascii_colors` for logging.
 *   Testing: `pytest` suite (`test_chunking.py`, `test_store_phase1.py`) with mocking.
@@ -130,7 +130,7 @@ Initial public release.
 
 ```python
 # examples/basic_usage.py
-import safestore
+import safe_store
 from pathlib import Path
 import time
 import shutil
@@ -180,7 +180,7 @@ if __name__ == "__main__":
     # Document 1 (Text)
     doc1_path = DOC_DIR / "intro.txt"
     doc1_content = """
-    SafeStore is a Python library for local vector storage.
+    safe_store is a Python library for local vector storage.
     It uses SQLite as its backend, making it lightweight and file-based.
     Key features include concurrency control and support for multiple vectorizers.
     """
@@ -196,7 +196,7 @@ if __name__ == "__main__":
     <body>
         <h1>Information Retrieval</h1>
         <p>Efficient retrieval is crucial for RAG pipelines.</p>
-        <p>SafeStore helps manage embeddings for semantic search.</p>
+        <p>safe_store helps manage embeddings for semantic search.</p>
     </body>
     </html>
     """
@@ -214,10 +214,10 @@ if __name__ == "__main__":
 
     print(f"Documents prepared in: {DOC_DIR.resolve()}")
 
-    # --- 2. Initialize SafeStore ---
-    print_header("Initializing SafeStore")
+    # --- 2. Initialize safe_store ---
+    print_header("Initializing safe_store")
     # Use INFO level for less verbose output in basic example
-    store = safestore.SafeStore(DB_FILE, log_level=safestore.LogLevel.INFO)
+    store = safe_store.safe_store(DB_FILE, log_level=safe_store.LogLevel.INFO)
 
     # --- 3. Indexing Documents ---
     try:
@@ -234,7 +234,7 @@ if __name__ == "__main__":
                         chunk_overlap=15,
                         metadata={"source": "manual", "topic": "introduction"}
                     )
-                except safestore.ConfigurationError as e:
+                except safe_store.ConfigurationError as e:
                     print(f"  [SKIP] Could not index with Sentence Transformer: {e}")
                     USE_ST = False # Disable ST for later steps if failed here
             else:
@@ -246,7 +246,7 @@ if __name__ == "__main__":
                 if USE_ST:
                     try:
                         store.add_document(doc2_path, metadata={"source": "web", "language": "en"})
-                    except safestore.ConfigurationError as e:
+                    except safe_store.ConfigurationError as e:
                          print(f"  [SKIP] Could not index {doc2_path.name} with ST: {e}")
                 else:
                     print(f"  [SKIP] ST vectorizer not available.")
@@ -258,7 +258,7 @@ if __name__ == "__main__":
             if USE_ST:
                 try:
                     store.add_document(doc3_path, metadata={"version": 1})
-                except safestore.ConfigurationError as e:
+                except safe_store.ConfigurationError as e:
                      print(f"  [SKIP] Could not index {doc3_path.name} with ST: {e}")
             else:
                 print(f"  [SKIP] ST vectorizer not available.")
@@ -270,9 +270,9 @@ if __name__ == "__main__":
                 try:
                     store.add_vectorization(
                         vectorizer_name="tfidf:my_tfidf",
-                        # Let SafeStore handle fitting on all docs
+                        # Let safe_store handle fitting on all docs
                     )
-                except safestore.ConfigurationError as e:
+                except safe_store.ConfigurationError as e:
                     print(f"  [SKIP] Could not add TF-IDF vectorization: {e}")
                     USE_TFIDF = False # Disable TFIDF if failed
             else:
@@ -350,10 +350,10 @@ if __name__ == "__main__":
                  print_header("Skipping Vectorization Removal")
 
 
-    except safestore.ConfigurationError as e:
+    except safe_store.ConfigurationError as e:
         print(f"\n[ERROR] Missing dependency: {e}")
-        print("Please install the required extras (e.g., pip install safestore[all])")
-    except safestore.ConcurrencyError as e:
+        print("Please install the required extras (e.g., pip install safe_store[all])")
+    except safe_store.ConcurrencyError as e:
         print(f"\n[ERROR] Lock timeout or concurrency issue: {e}")
     except Exception as e:
         print(f"\n[ERROR] An unexpected error occurred: {e.__class__.__name__}: {e}")

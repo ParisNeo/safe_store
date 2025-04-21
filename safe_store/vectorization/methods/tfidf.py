@@ -1,4 +1,4 @@
-# safestore/vectorization/methods/tfidf.py
+# safe_store/vectorization/methods/tfidf.py
 import numpy as np
 from typing import List, Optional, Dict, Any
 import json
@@ -19,7 +19,7 @@ except ImportError:
 
 class TfidfVectorizerWrapper(BaseVectorizer):
     """
-    Wraps scikit-learn's TfidfVectorizer for use within SafeStore.
+    Wraps scikit-learn's TfidfVectorizer for use within safe_store.
 
     This vectorizer requires fitting on a corpus before it can transform text.
     The fitting process determines the vocabulary and Inverse Document Frequency (IDF)
@@ -27,7 +27,7 @@ class TfidfVectorizerWrapper(BaseVectorizer):
     parameters) is managed and can be stored/loaded via the `get_params_to_store`
     and `load_fitted_state` methods, enabling persistence in the database.
 
-    Requires `scikit-learn` to be installed (`pip install safestore[tfidf]`).
+    Requires `scikit-learn` to be installed (`pip install safe_store[tfidf]`).
 
     Attributes:
         vectorizer (TfidfVectorizer): The underlying scikit-learn TfidfVectorizer instance.
@@ -50,7 +50,7 @@ class TfidfVectorizerWrapper(BaseVectorizer):
             VectorizationError: If provided parameters are invalid for TfidfVectorizer.
         """
         if not _SKLEARN_AVAILABLE or TfidfVectorizer is None:
-            msg = "TfidfVectorizerWrapper requires 'scikit-learn' library. Install with: pip install safestore[tfidf]"
+            msg = "TfidfVectorizerWrapper requires 'scikit-learn' library. Install with: pip install safe_store[tfidf]"
             ASCIIColors.error(msg)
             raise ConfigurationError(msg)
 
@@ -166,7 +166,7 @@ class TfidfVectorizerWrapper(BaseVectorizer):
                                 the transformation process fails.
         """
         if not self._fitted or NotFittedError is None: # Check flag and availability of exception
-            # Raise error if not fitted. Fitting should be handled explicitly by SafeStore logic.
+            # Raise error if not fitted. Fitting should be handled explicitly by safe_store logic.
             msg = "TF-IDF vectorizer must be fitted before vectorizing."
             ASCIIColors.error(msg)
             raise VectorizationError(msg) # Use custom error

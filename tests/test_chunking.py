@@ -1,5 +1,5 @@
 import pytest
-from safestore.indexing.chunking import chunk_text
+from safe_store.indexing.chunking import chunk_text
 
 def test_chunk_simple():
     text = "abcdefghijklmnopqrstuvwxyz"

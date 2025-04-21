@@ -1,4 +1,4 @@
-# safestore/search/similarity.py
+# safe_store/search/similarity.py
 import numpy as np
 from ascii_colors import ASCIIColors
 from typing import Union

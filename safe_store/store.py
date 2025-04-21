@@ -1,4 +1,4 @@
-# safestore/store.py
+# safe_store/store.py
 import sqlite3
 import json
 from pathlib import Path
@@ -17,7 +17,7 @@ from .core.exceptions import ( # Import specific exceptions
     VectorizationError,
     QueryError,
     ConcurrencyError,
-    SafeStoreError,
+    safe_storeError,
 )
 from .indexing import parser, chunking
 from .search import similarity
@@ -29,7 +29,7 @@ import numpy as np
 # Default lock timeout in seconds
 DEFAULT_LOCK_TIMEOUT: int = 60
 
-class SafeStore:
+class safe_store:
     """
     Manages a local vector store backed by an SQLite database.
 
@@ -50,18 +50,18 @@ class SafeStore:
 
     def __init__(
         self,
-        db_path: Union[str, Path] = "safestore.db",
+        db_path: Union[str, Path] = "safe_store.db",
         log_level: LogLevel = LogLevel.INFO,
         lock_timeout: int = DEFAULT_LOCK_TIMEOUT
     ):
         """
-        Initializes the SafeStore instance.
+        Initializes the safe_store instance.
 
         Connects to the database (creating it if necessary), initializes the
         schema, sets up logging, and prepares concurrency controls.
 
         Args:
-            db_path: Path to the SQLite database file. Defaults to "safestore.db"
+            db_path: Path to the SQLite database file. Defaults to "safe_store.db"
                      in the current working directory.
             log_level: Minimum log level for console output via `ascii_colors`.
                        Defaults to `LogLevel.INFO`.
@@ -80,7 +80,7 @@ class SafeStore:
         self.lock_path: str = str(_db_file_path.parent / f"{_db_file_path.name}.lock")
 
         ASCIIColors.set_log_level(log_level)
-        ASCIIColors.info(f"Initializing SafeStore with database: {self.db_path}")
+        ASCIIColors.info(f"Initializing safe_store with database: {self.db_path}")
         ASCIIColors.debug(f"Using lock file: {self.lock_path} with timeout: {self.lock_timeout}s")
 
         self.conn: Optional[sqlite3.Connection] = None
@@ -97,7 +97,7 @@ class SafeStore:
         try:
             self._connect_and_initialize()
         except (DatabaseError, Timeout, ConcurrencyError) as e:
-            ASCIIColors.critical(f"SafeStore initialization failed: {e}")
+            ASCIIColors.critical(f"safe_store initialization failed: {e}")
             raise # Re-raise critical initialization errors
 
     def _connect_and_initialize(self) -> None:
@@ -159,13 +159,13 @@ class SafeStore:
                  finally:
                      self.conn = None
                      self._is_closed = True
-            raise SafeStoreError(msg) from e # Wrap in generic SafeStoreError
+            raise safe_storeError(msg) from e # Wrap in generic safe_storeError
 
     def close(self) -> None:
         """
         Closes the database connection and clears the vectorizer cache.
 
-        It's recommended to use `SafeStore` as a context manager (`with SafeStore(...)`)
+        It's recommended to use `safe_store` as a context manager (`with safe_store(...)`)
         to ensure the connection is closed automatically.
         """
         with self._instance_lock:
@@ -186,7 +186,7 @@ class SafeStore:
             # Clear vectorizer cache upon closing
             if hasattr(self, 'vectorizer_manager'):
                 self.vectorizer_manager.clear_cache()
-            ASCIIColors.info("SafeStore connection closed.")
+            ASCIIColors.info("safe_store connection closed.")
 
     def __enter__(self):
         """Enter the runtime context related to this object."""
@@ -195,7 +195,7 @@ class SafeStore:
                 ASCIIColors.debug("Re-establishing connection on context manager entry.")
                 try:
                     self._connect_and_initialize()
-                except (DatabaseError, ConcurrencyError, SafeStoreError) as e:
+                except (DatabaseError, ConcurrencyError, safe_storeError) as e:
                     ASCIIColors.error(f"Failed to re-establish connection in __enter__: {e}")
                     raise # Re-raise critical errors
             return self
@@ -204,9 +204,9 @@ class SafeStore:
         """Exit the runtime context related to this object."""
         self.close()
         if exc_type:
-            ASCIIColors.error(f"SafeStore context closed with error: {exc_val}", exc_info=(exc_type, exc_val, exc_tb))
+            ASCIIColors.error(f"safe_store context closed with error: {exc_val}", exc_info=(exc_type, exc_val, exc_tb))
         else:
-            ASCIIColors.debug("SafeStore context closed cleanly.")
+            ASCIIColors.debug("safe_store context closed cleanly.")
 
     def _get_file_hash(self, file_path: Path) -> str:
         """
@@ -259,7 +259,7 @@ class SafeStore:
         vectorizer_params: Optional[Dict[str, Any]] = None
     ) -> None:
         """
-        Adds or updates a document in the SafeStore.
+        Adds or updates a document in the safe_store.
 
         This method handles parsing the file based on its extension, chunking the
         text content, generating vector embeddings using the specified vectorizer,
@@ -277,7 +277,7 @@ class SafeStore:
             file_path: Path to the document file to add.
             vectorizer_name: Name of the vectorizer method to use (e.g.,
                              'st:all-MiniLM-L6-v2', 'tfidf:my_tfidf'). Defaults
-                             to `SafeStore.DEFAULT_VECTORIZER`.
+                             to `safe_store.DEFAULT_VECTORIZER`.
             chunk_size: Target size of text chunks in characters. Defaults to 1000.
             chunk_overlap: Number of characters to overlap between consecutive chunks.
                            Defaults to 150. Must be less than `chunk_size`.
@@ -300,7 +300,7 @@ class SafeStore:
             DatabaseError: If there's an error interacting with the database.
             ConcurrencyError: If the write lock cannot be acquired within the timeout.
             ConnectionError: If the database connection is not available.
-            SafeStoreError: For other unexpected errors during the process.
+            safe_storeError: For other unexpected errors during the process.
         """
         _file_path = Path(file_path)
         if chunk_overlap >= chunk_size:
@@ -323,14 +323,14 @@ class SafeStore:
                 ASCIIColors.error(msg)
                 raise ConcurrencyError(msg) from e # Wrap in ConcurrencyError
             except (DatabaseError, FileHandlingError, ParsingError, ConfigurationError,
-                    VectorizationError, QueryError, ValueError, ConnectionError, SafeStoreError) as e:
+                    VectorizationError, QueryError, ValueError, ConnectionError, safe_storeError) as e:
                 # Log the caught known error type and message
                 ASCIIColors.error(f"Error during add_document: {e.__class__.__name__}: {e}", exc_info=False)
                 raise # Re-raise the caught exception
             except Exception as e:
                 msg = f"Unexpected error during add_document (lock scope) for '{_file_path.name}': {e}"
                 ASCIIColors.error(msg, exc_info=True)
-                raise SafeStoreError(msg) from e
+                raise safe_storeError(msg) from e
 
 
     def _add_document_impl(
@@ -412,11 +412,11 @@ class SafeStore:
             ASCIIColors.error(msg, exc_info=True)
             if self.conn: self.conn.rollback()
             raise DatabaseError(msg) from e
-        except SafeStoreError as e: raise e
+        except safe_storeError as e: raise e
         except Exception as e:
              msg = f"Unexpected error preparing indexing for '{file_path.name}': {e}"
              ASCIIColors.error(msg, exc_info=True)
-             raise SafeStoreError(msg) from e
+             raise safe_storeError(msg) from e
 
         if not needs_parsing_chunking and not needs_vectorization:
              return
@@ -471,7 +471,7 @@ class SafeStore:
             # --- Retrieve Existing Chunks if Only Vectorizing ---
             else:
                 if doc_id is None:
-                     raise SafeStoreError(f"Inconsistent state: doc_id is None but parsing/chunking was skipped for {file_path.name}")
+                     raise safe_storeError(f"Inconsistent state: doc_id is None but parsing/chunking was skipped for {file_path.name}")
                 ASCIIColors.debug(f"Retrieving existing chunks for doc_id={doc_id} to add new vectors...")
                 cursor.execute("SELECT chunk_id, chunk_text FROM chunks WHERE doc_id = ? ORDER BY chunk_seq", (doc_id,))
                 results = cursor.fetchall()
@@ -537,7 +537,7 @@ class SafeStore:
             ASCIIColors.success(f"Successfully processed '{file_path.name}' with vectorizer '{_vectorizer_name}'.")
 
         except (sqlite3.Error, DatabaseError, FileHandlingError, ParsingError, ConfigurationError,
-                VectorizationError, ValueError, SafeStoreError) as e:
+                VectorizationError, ValueError, safe_storeError) as e:
             ASCIIColors.error(f"Error during indexing transaction for '{file_path.name}': {e.__class__.__name__}: {e}", exc_info=False)
             if self.conn: self.conn.rollback()
             raise
@@ -545,7 +545,7 @@ class SafeStore:
             msg = f"Unexpected error during indexing transaction for '{file_path.name}': {e}"
             ASCIIColors.error(msg, exc_info=True)
             if self.conn: self.conn.rollback()
-            raise SafeStoreError(msg) from e
+            raise safe_storeError(msg) from e
 
     # --- Add Vectorization ---
     def add_vectorization(
@@ -591,7 +591,7 @@ class SafeStore:
             DatabaseError: If there's an error interacting with the database.
             ConcurrencyError: If the write lock cannot be acquired within the timeout.
             ConnectionError: If the database connection is not available.
-            SafeStoreError: For other unexpected errors during the process.
+            safe_storeError: For other unexpected errors during the process.
         """
         with self._instance_lock:
             ASCIIColors.debug(f"Attempting to acquire write lock for add_vectorization: {vectorizer_name}")
@@ -608,13 +608,13 @@ class SafeStore:
                 ASCIIColors.error(msg)
                 raise ConcurrencyError(msg) from e
             except (DatabaseError, FileHandlingError, ConfigurationError, VectorizationError,
-                     QueryError, ValueError, ConnectionError, SafeStoreError) as e:
+                     QueryError, ValueError, ConnectionError, safe_storeError) as e:
                 ASCIIColors.error(f"Error during add_vectorization: {e.__class__.__name__}: {e}", exc_info=False)
                 raise
             except Exception as e:
                 msg = f"Unexpected error during add_vectorization (lock scope) for '{vectorizer_name}': {e}"
                 ASCIIColors.error(msg, exc_info=True)
-                raise SafeStoreError(msg) from e
+                raise safe_storeError(msg) from e
 
     def _add_vectorization_impl(
         self,
@@ -756,13 +756,13 @@ class SafeStore:
             except Exception as e:
                  msg = f"Unexpected error during vectorization batch processing for '{vectorizer_name}': {e}"
                  ASCIIColors.error(msg, exc_info=True)
-                 raise SafeStoreError(msg) from e
+                 raise safe_storeError(msg) from e
 
             # --- Commit the entire transaction ---
             self.conn.commit()
             ASCIIColors.success(f"Successfully added {num_added} vector embeddings using '{vectorizer_name}'.")
 
-        except (sqlite3.Error, DatabaseError, FileHandlingError, ConfigurationError, VectorizationError, SafeStoreError) as e:
+        except (sqlite3.Error, DatabaseError, FileHandlingError, ConfigurationError, VectorizationError, safe_storeError) as e:
              ASCIIColors.error(f"Error during add_vectorization transaction: {e.__class__.__name__}: {e}", exc_info=False)
              if self.conn: self.conn.rollback()
              raise
@@ -770,7 +770,7 @@ class SafeStore:
              msg = f"Unexpected error during add_vectorization transaction for '{vectorizer_name}': {e}"
              ASCIIColors.error(msg, exc_info=True)
              if self.conn: self.conn.rollback()
-             raise SafeStoreError(msg) from e
+             raise safe_storeError(msg) from e
 
     # --- Remove Vectorization ---
     def remove_vectorization(self, vectorizer_name: str) -> None:
@@ -787,7 +787,7 @@ class SafeStore:
             DatabaseError: If there's an error interacting with the database.
             ConcurrencyError: If the write lock cannot be acquired within the timeout.
             ConnectionError: If the database connection is not available.
-            SafeStoreError: For other unexpected errors during the process.
+            safe_storeError: For other unexpected errors during the process.
         """
         with self._instance_lock:
             ASCIIColors.debug(f"Attempting to acquire write lock for remove_vectorization: {vectorizer_name}")
@@ -801,13 +801,13 @@ class SafeStore:
                 msg = f"Timeout ({self.lock_timeout}s) acquiring write lock for remove_vectorization: {vectorizer_name}"
                 ASCIIColors.error(msg)
                 raise ConcurrencyError(msg) from e
-            except (DatabaseError, ConnectionError, SafeStoreError) as e:
+            except (DatabaseError, ConnectionError, safe_storeError) as e:
                 ASCIIColors.error(f"Error during remove_vectorization: {e.__class__.__name__}: {e}", exc_info=False)
                 raise
             except Exception as e:
                 msg = f"Unexpected error during remove_vectorization (lock scope) for '{vectorizer_name}': {e}"
                 ASCIIColors.error(msg, exc_info=True)
-                raise SafeStoreError(msg) from e
+                raise safe_storeError(msg) from e
 
     def _remove_vectorization_impl(self, vectorizer_name: str) -> None:
         """Internal implementation of remove_vectorization (assumes lock is held and connection is valid)."""
@@ -845,7 +845,7 @@ class SafeStore:
              msg = f"Unexpected error during removal of '{vectorizer_name}': {e}"
              ASCIIColors.error(msg, exc_info=True)
              if self.conn: self.conn.rollback()
-             raise SafeStoreError(msg) from e
+             raise safe_storeError(msg) from e
 
 
     # === Read methods ===
@@ -870,7 +870,7 @@ class SafeStore:
             query_text: The text to search for.
             vectorizer_name: The name of the vectorization method to use for the
                              query. Must match a method used during indexing.
-                             Defaults to `SafeStore.DEFAULT_VECTORIZER`.
+                             Defaults to `safe_store.DEFAULT_VECTORIZER`.
             top_k: The maximum number of similar chunks to return. Defaults to 5.
 
         Returns:
@@ -892,20 +892,20 @@ class SafeStore:
             DatabaseError: If fetching vectorizer details or stored vectors fails.
             QueryError: If calculating similarity fails or other query logic errors occur.
             ConnectionError: If the database connection is not available.
-            SafeStoreError: For other unexpected errors.
+            safe_storeError: For other unexpected errors.
         """
         with self._instance_lock:
             self._ensure_connection()
             try:
                 return self._query_impl(query_text, vectorizer_name, top_k)
             except (DatabaseError, ConfigurationError, VectorizationError, QueryError,
-                     ValueError, ConnectionError, SafeStoreError) as e:
+                     ValueError, ConnectionError, safe_storeError) as e:
                 ASCIIColors.error(f"Error during query: {e.__class__.__name__}: {e}", exc_info=False)
                 raise
             except Exception as e:
                 msg = f"Unexpected error during query for '{query_text[:50]}...': {e}"
                 ASCIIColors.error(msg, exc_info=True)
-                raise SafeStoreError(msg) from e
+                raise safe_storeError(msg) from e
 
 
     def _query_impl(
@@ -1053,7 +1053,7 @@ class SafeStore:
         except Exception as e:
              msg = f"Unexpected error during query implementation for '{query_text[:50]}...': {e}"
              ASCIIColors.error(msg, exc_info=True)
-             raise SafeStoreError(msg) from e
+             raise safe_storeError(msg) from e
 
     # --- Helper Methods ---
     def list_documents(self) -> List[Dict[str, Any]]:

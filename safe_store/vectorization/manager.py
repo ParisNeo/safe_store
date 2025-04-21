@@ -1,11 +1,11 @@
-# safestore/vectorization/manager.py
+# safe_store/vectorization/manager.py
 import sqlite3
 import json
 from typing import Tuple, Optional, Dict, Any
 import numpy as np
 
 from ..core import db
-from ..core.exceptions import ConfigurationError, VectorizationError, DatabaseError, SafeStoreError
+from ..core.exceptions import ConfigurationError, VectorizationError, DatabaseError, safe_storeError
 from .base import BaseVectorizer
 from .methods.sentence_transformer import SentenceTransformerVectorizer
 from .methods.tfidf import TfidfVectorizerWrapper
@@ -57,7 +57,7 @@ class VectorizationManager:
                                 format is unknown.
             VectorizationError: If initializing the vectorizer model fails.
             DatabaseError: If database interaction fails.
-            SafeStoreError: For unexpected errors.
+            safe_storeError: For unexpected errors.
         """
         # Check cache first
         if name in self._cache:
@@ -122,8 +122,8 @@ class VectorizationManager:
         except ImportError as e:
             # Raised by vectorizer __init__ if dependency missing
             dep_map = {
-                "sentence_transformer": "safestore[sentence-transformers]",
-                "tfidf": "safestore[tfidf]"
+                "sentence_transformer": "safe_store[sentence-transformers]",
+                "tfidf": "safe_store[tfidf]"
             }
             install_cmd = dep_map.get(method_type, f"the required library for '{method_type}'")
             msg = f"Missing dependency for {method_type} vectorizer '{name}'. Please install '{install_cmd}'. Error: {e}"
@@ -137,11 +137,11 @@ class VectorizationManager:
 
         if not vectorizer:
             # Should not be reachable if instantiation logic is correct
-            raise SafeStoreError(f"Vectorizer instance could not be created for '{name}'.")
+            raise safe_storeError(f"Vectorizer instance could not be created for '{name}'.")
 
 
         # --- 3. Add/Get Method Record in DB ---
-        # Transaction should be handled by the caller (e.g., SafeStore._add_document_impl)
+        # Transaction should be handled by the caller (e.g., safe_store._add_document_impl)
         if method_id is None:
             # Registering a new method
             current_params: Dict[str, Any] = {}
@@ -192,7 +192,7 @@ class VectorizationManager:
 
         # --- 4. Cache Result ---
         if method_id is None: # Defensive check
-             raise SafeStoreError(f"Failed to obtain a valid method_id for '{name}'.")
+             raise safe_storeError(f"Failed to obtain a valid method_id for '{name}'.")
 
         self._cache[name] = (vectorizer, method_id, params_from_db)
         ASCIIColors.debug(f"Vectorizer '{name}' ready and cached (method_id {method_id}).")
@@ -245,7 +245,7 @@ class VectorizationManager:
 
         Raises:
             DatabaseError: If the update fails.
-            SafeStoreError: For unexpected errors.
+            safe_storeError: For unexpected errors.
         """
         sql_parts = ["UPDATE vectorization_methods SET params = ?"]
         # Use list for params, convert dict to JSON string
@@ -274,7 +274,7 @@ class VectorizationManager:
         except Exception as e:
             msg = f"Database error updating vectorization method params for ID {method_id}: {e}"
             ASCIIColors.error(msg, exc_info=True)
-            raise SafeStoreError(msg) from e
+            raise safe_storeError(msg) from e
 
     def remove_from_cache_by_id(self, method_id: int, log_reason: str = "removal") -> None:
         """Removes cache entries associated with a given method ID."""

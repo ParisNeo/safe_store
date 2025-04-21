@@ -1,11 +1,11 @@
-# safestore/vectorization/base.py
+# safe_store/vectorization/base.py
 from abc import ABC, abstractmethod
 import numpy as np
 from typing import List, Optional
 
 class BaseVectorizer(ABC):
     """
-    Abstract base class for all vectorizer implementations within SafeStore.
+    Abstract base class for all vectorizer implementations within safe_store.
 
     Defines the common interface for converting text into numerical vectors.
     """

@@ -1,4 +1,4 @@
-# safestore/vectorization/methods/sentence_transformer.py
+# safe_store/vectorization/methods/sentence_transformer.py
 import numpy as np
 from typing import List, Optional # Added Optional
 from ..base import BaseVectorizer
@@ -18,7 +18,7 @@ class SentenceTransformerVectorizer(BaseVectorizer):
     """
     Vectorizes text using models from the sentence-transformers library.
 
-    Requires `sentence-transformers` to be installed (`pip install safestore[sentence-transformers]`).
+    Requires `sentence-transformers` to be installed (`pip install safe_store[sentence-transformers]`).
 
     Attributes:
         model_name (str): The name of the sentence-transformer model being used.
@@ -43,7 +43,7 @@ class SentenceTransformerVectorizer(BaseVectorizer):
             VectorizationError: If the specified model cannot be loaded.
         """
         if not _SENTENCE_TRANSFORMERS_AVAILABLE or SentenceTransformer is None:
-            msg = "SentenceTransformerVectorizer requires 'sentence-transformers' library. Install with: pip install safestore[sentence-transformers]"
+            msg = "SentenceTransformerVectorizer requires 'sentence-transformers' library. Install with: pip install safe_store[sentence-transformers]"
             ASCIIColors.error(msg)
             raise ConfigurationError(msg)
 

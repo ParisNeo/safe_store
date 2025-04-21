@@ -1,4 +1,4 @@
-# safestore/indexing/chunking.py
+# safe_store/indexing/chunking.py
 from typing import List, Tuple
 from ascii_colors import ASCIIColors
 

@@ -1,4 +1,4 @@
-# safestore/indexing/parser.py
+# safe_store/indexing/parser.py
 from pathlib import Path
 from typing import Callable, Dict, Union # Added Union
 from ascii_colors import ASCIIColors
@@ -90,7 +90,7 @@ def parse_pdf(file_path: Union[str, Path]) -> str:
         from pypdf import PdfReader
         from pypdf.errors import PdfReadError, EmptyFileError
     except ImportError as e:
-        msg = "Parsing PDF files requires 'pypdf'. Install with: pip install safestore[parsing]"
+        msg = "Parsing PDF files requires 'pypdf'. Install with: pip install safe_store[parsing]"
         ASCIIColors.error(msg)
         raise ConfigurationError(msg) from e
 
@@ -167,7 +167,7 @@ def parse_docx(file_path: Union[str, Path]) -> str:
         from docx import Document
         from docx.opc.exceptions import PackageNotFoundError
     except ImportError as e:
-        msg = "Parsing DOCX files requires 'python-docx'. Install with: pip install safestore[parsing]"
+        msg = "Parsing DOCX files requires 'python-docx'. Install with: pip install safe_store[parsing]"
         ASCIIColors.error(msg)
         raise ConfigurationError(msg) from e
 
@@ -230,7 +230,7 @@ def parse_html(file_path: Union[str, Path]) -> str:
             HTML_PARSER = 'html.parser'
     except ImportError as e:
         # This catches missing BeautifulSoup4
-        msg = "Parsing HTML files requires 'BeautifulSoup4'. Install with: pip install safestore[parsing]"
+        msg = "Parsing HTML files requires 'BeautifulSoup4'. Install with: pip install safe_store[parsing]"
         ASCIIColors.error(msg)
         raise ConfigurationError(msg) from e
 

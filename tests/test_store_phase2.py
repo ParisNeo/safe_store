@@ -8,14 +8,14 @@ from unittest.mock import patch, MagicMock, call, ANY
 import re
 
 # Import specific exceptions and modules
-from safestore import store as safestore_store_module # Target for patching
-from safestore import SafeStore, LogLevel
-from safestore.core import db
-from safestore.core.exceptions import (
-    ConfigurationError, VectorizationError, DatabaseError, QueryError, SafeStoreError, FileHandlingError
+from safe_store import store as safe_store_store_module # Target for patching
+from safe_store import safe_store, LogLevel
+from safe_store.core import db
+from safe_store.core.exceptions import (
+    ConfigurationError, VectorizationError, DatabaseError, QueryError, safe_storeError, FileHandlingError
 )
-from safestore.vectorization.methods.tfidf import TfidfVectorizerWrapper
-from safestore.vectorization.manager import VectorizationManager
+from safe_store.vectorization.methods.tfidf import TfidfVectorizerWrapper
+from safe_store.vectorization.manager import VectorizationManager
 
 # --- REMOVE Availability Checks and Mock Fixtures ---
 # try:
@@ -66,9 +66,9 @@ def assert_log_call_containing(mock_logger, expected_substring):
 
 # --- Query Tests ---
 # Remove skipif conditions relying on local variables
-@patch('safestore.search.similarity.ASCIIColors')
-@patch(f'{safestore_store_module.__name__}.ASCIIColors', new_callable=MagicMock)
-def test_query_simple(mock_store_colors, mock_sim_colors, populated_store: SafeStore):
+@patch('safe_store.search.similarity.ASCIIColors')
+@patch(f'{safe_store_store_module.__name__}.ASCIIColors', new_callable=MagicMock)
+def test_query_simple(mock_store_colors, mock_sim_colors, populated_store: safe_store):
     """Test basic query functionality."""
     store = populated_store
     query = "second sentence"
@@ -89,8 +89,8 @@ def test_query_simple(mock_store_colors, mock_sim_colors, populated_store: SafeS
     if len(results) > 1: assert results[0]["similarity"] >= results[1]["similarity"]
 
 
-@patch(f'{safestore_store_module.__name__}.ASCIIColors', new_callable=MagicMock)
-def test_query_vectorizer_not_found(mock_store_colors, populated_store: SafeStore):
+@patch(f'{safe_store_store_module.__name__}.ASCIIColors', new_callable=MagicMock)
+def test_query_vectorizer_not_found(mock_store_colors, populated_store: safe_store):
     """Test querying with a vectorizer method that doesn't exist."""
     store = populated_store
     query = "test"
@@ -110,8 +110,8 @@ def test_query_vectorizer_not_found(mock_store_colors, populated_store: SafeStor
     assert_log_call_containing(mock_store_colors.error, f"Error during query: VectorizationError: {error_message}")
 
 
-@patch(f'{safestore_store_module.__name__}.ASCIIColors', new_callable=MagicMock)
-def test_query_no_vectors_for_method(mock_store_colors, populated_store: SafeStore):
+@patch(f'{safe_store_store_module.__name__}.ASCIIColors', new_callable=MagicMock)
+def test_query_no_vectors_for_method(mock_store_colors, populated_store: safe_store):
     """Test querying when the method exists but has no vectors."""
     store = populated_store
     method_name = "empty:method"
@@ -155,12 +155,12 @@ def test_query_no_vectors_for_method(mock_store_colors, populated_store: SafeSto
 
 # --- TF-IDF and Multiple Vectorizer Tests ---
 # Remove skipif conditions relying on local variables
-@patch('safestore.vectorization.methods.tfidf.ASCIIColors')
-@patch('safestore.vectorization.manager.ASCIIColors')
-@patch('safestore.store.ASCIIColors')
-def test_add_document_with_tfidf(mock_store_colors, mock_manager_colors, mock_tfidf_colors, safestore_instance: SafeStore, sample_text_file: Path):
+@patch('safe_store.vectorization.methods.tfidf.ASCIIColors')
+@patch('safe_store.vectorization.manager.ASCIIColors')
+@patch('safe_store.store.ASCIIColors')
+def test_add_document_with_tfidf(mock_store_colors, mock_manager_colors, mock_tfidf_colors, safe_store_instance: safe_store, sample_text_file: Path):
     """Test adding a document using a TF-IDF vectorizer for the first time."""
-    store = safestore_instance
+    store = safe_store_instance
     tfidf_vectorizer_name = "tfidf:test1"
 
     with store:
@@ -201,8 +201,8 @@ def test_add_document_with_tfidf(mock_store_colors, mock_manager_colors, mock_tf
     conn.close()
 
 
-@patch('safestore.store.ASCIIColors')
-def test_add_vectorization_st(mock_store_colors, populated_store: SafeStore, sample_text_file: Path):
+@patch('safe_store.store.ASCIIColors')
+def test_add_vectorization_st(mock_store_colors, populated_store: safe_store, sample_text_file: Path):
     """Test adding a NEW Sentence Transformer vectorization to existing docs."""
     store = populated_store
     new_st_vectorizer = "st:paraphrase-MiniLM-L3-v2"
@@ -238,10 +238,10 @@ def test_add_vectorization_st(mock_store_colors, populated_store: SafeStore, sam
     conn.close()
 
 
-@patch('safestore.vectorization.methods.tfidf.ASCIIColors')
-@patch('safestore.vectorization.manager.ASCIIColors')
-@patch('safestore.store.ASCIIColors')
-def test_add_vectorization_tfidf_all_docs(mock_store_colors, mock_manager_colors, mock_tfidf_colors, populated_store: SafeStore):
+@patch('safe_store.vectorization.methods.tfidf.ASCIIColors')
+@patch('safe_store.vectorization.manager.ASCIIColors')
+@patch('safe_store.store.ASCIIColors')
+def test_add_vectorization_tfidf_all_docs(mock_store_colors, mock_manager_colors, mock_tfidf_colors, populated_store: safe_store):
     """Test adding TF-IDF vectorization to ALL existing docs."""
     store = populated_store
     tfidf_vectorizer_name = "tfidf:global"
@@ -275,9 +275,9 @@ def test_add_vectorization_tfidf_all_docs(mock_store_colors, mock_manager_colors
     conn.close()
 
 
-@patch('safestore.vectorization.manager.ASCIIColors') # Patch manager's logger
-@patch('safestore.store.ASCIIColors')               # Patch store's logger
-def test_remove_vectorization(mock_store_colors, mock_manager_colors, populated_store: SafeStore):
+@patch('safe_store.vectorization.manager.ASCIIColors') # Patch manager's logger
+@patch('safe_store.store.ASCIIColors')               # Patch store's logger
+def test_remove_vectorization(mock_store_colors, mock_manager_colors, populated_store: safe_store):
     """Test removing a vectorization method."""
     store = populated_store
     vectorizer_to_remove = store.DEFAULT_VECTORIZER
@@ -319,8 +319,8 @@ def test_remove_vectorization(mock_store_colors, mock_manager_colors, populated_
     assert vectorizer_to_remove not in store.vectorizer_manager._cache
 
 
-@patch('safestore.store.ASCIIColors')
-def test_remove_vectorization_not_found(mock_store_colors, populated_store: SafeStore):
+@patch('safe_store.store.ASCIIColors')
+def test_remove_vectorization_not_found(mock_store_colors, populated_store: safe_store):
     """Test attempting to remove a non-existent vectorization method."""
     store = populated_store
     non_existent_vectorizer = "non:existent"

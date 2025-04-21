@@ -6,10 +6,10 @@ from unittest.mock import patch, MagicMock, call
 import re
 
 # Import exceptions and modules
-from safestore import store as safestore_store_module
-from safestore import SafeStore, LogLevel
-from safestore.core import db
-from safestore.core.exceptions import ConcurrencyError, FileHandlingError, ConfigurationError, SafeStoreError
+from safe_store import store as safe_store_store_module
+from safe_store import safe_store, LogLevel
+from safe_store.core import db
+from safe_store.core.exceptions import ConcurrencyError, FileHandlingError, ConfigurationError, safe_storeError
 
 # Import filelock components
 from filelock import Timeout, FileLock
@@ -52,11 +52,11 @@ def assert_log_call_containing(mock_logger, expected_substring):
 
 # Use the locally defined PARSING_LIBS_AVAILABLE for skipif
 @pytest.mark.skipif(not PARSING_LIBS_AVAILABLE, reason="Requires parsing dependencies (pypdf, python-docx, beautifulsoup4, lxml)")
-@patch('safestore.indexing.parser.ASCIIColors')
-@patch('safestore.store.ASCIIColors')
-def test_add_document_pdf(mock_store_colors, mock_parser_colors, safestore_instance: SafeStore, sample_pdf_file: Path):
-    """Test adding a PDF document via SafeStore.add_document."""
-    store = safestore_instance
+@patch('safe_store.indexing.parser.ASCIIColors')
+@patch('safe_store.store.ASCIIColors')
+def test_add_document_pdf(mock_store_colors, mock_parser_colors, safe_store_instance: safe_store, sample_pdf_file: Path):
+    """Test adding a PDF document via safe_store.add_document."""
+    store = safe_store_instance
     with store:
         store.add_document(sample_pdf_file, chunk_size=50, chunk_overlap=10)
 
@@ -81,11 +81,11 @@ def test_add_document_pdf(mock_store_colors, mock_parser_colors, safestore_insta
 
 
 @pytest.mark.skipif(not PARSING_LIBS_AVAILABLE, reason="Requires parsing dependencies (pypdf, python-docx, beautifulsoup4, lxml)")
-@patch('safestore.indexing.parser.ASCIIColors')
-@patch('safestore.store.ASCIIColors')
-def test_add_document_docx(mock_store_colors, mock_parser_colors, safestore_instance: SafeStore, sample_docx_file: Path):
-    """Test adding a DOCX document via SafeStore.add_document."""
-    store = safestore_instance
+@patch('safe_store.indexing.parser.ASCIIColors')
+@patch('safe_store.store.ASCIIColors')
+def test_add_document_docx(mock_store_colors, mock_parser_colors, safe_store_instance: safe_store, sample_docx_file: Path):
+    """Test adding a DOCX document via safe_store.add_document."""
+    store = safe_store_instance
     with store:
         store.add_document(sample_docx_file, chunk_size=50, chunk_overlap=10)
 
@@ -109,11 +109,11 @@ def test_add_document_docx(mock_store_colors, mock_parser_colors, safestore_inst
 
 
 @pytest.mark.skipif(not PARSING_LIBS_AVAILABLE, reason="Requires parsing dependencies (pypdf, python-docx, beautifulsoup4, lxml)")
-@patch('safestore.indexing.parser.ASCIIColors')
-@patch('safestore.store.ASCIIColors')
-def test_add_document_html(mock_store_colors, mock_parser_colors, safestore_instance: SafeStore, sample_html_file: Path):
-    """Test adding an HTML document via SafeStore.add_document."""
-    store = safestore_instance
+@patch('safe_store.indexing.parser.ASCIIColors')
+@patch('safe_store.store.ASCIIColors')
+def test_add_document_html(mock_store_colors, mock_parser_colors, safe_store_instance: safe_store, sample_html_file: Path):
+    """Test adding an HTML document via safe_store.add_document."""
+    store = safe_store_instance
     with store:
         store.add_document(sample_html_file, chunk_size=50, chunk_overlap=10)
 
@@ -136,10 +136,10 @@ def test_add_document_html(mock_store_colors, mock_parser_colors, safestore_inst
     conn.close()
 
 # --- Concurrency Tests ---
-@patch('safestore.store.ASCIIColors')
-def test_add_document_lock_acquired(mock_store_colors, safestore_instance: SafeStore, sample_text_file: Path):
+@patch('safe_store.store.ASCIIColors')
+def test_add_document_lock_acquired(mock_store_colors, safe_store_instance: safe_store, sample_text_file: Path):
     """Test that add_document acquires and releases the lock."""
-    store = safestore_instance
+    store = safe_store_instance
     with patch.object(store, '_file_lock', autospec=True) as mock_lock_instance:
         mock_lock_instance.__enter__.return_value = None
         mock_lock_instance.__exit__.return_value = None
@@ -154,10 +154,10 @@ def test_add_document_lock_acquired(mock_store_colors, safestore_instance: SafeS
     assert_log_call_containing(mock_store_colors.success, f"Successfully processed '{sample_text_file.name}'")
 
 
-@patch('safestore.store.ASCIIColors')
-def test_add_document_lock_timeout(mock_store_colors, safestore_instance: SafeStore, sample_text_file: Path):
+@patch('safe_store.store.ASCIIColors')
+def test_add_document_lock_timeout(mock_store_colors, safe_store_instance: safe_store, sample_text_file: Path):
     """Test that add_document handles a lock timeout."""
-    store = safestore_instance
+    store = safe_store_instance
     mock_lock_instance = MagicMock(spec=FileLock)
     timeout_exception = Timeout(store.lock_path)
     mock_lock_instance.__enter__.side_effect = timeout_exception

@@ -1,5 +1,5 @@
 
-**Project Name:** SafeStore
+**Project Name:** safe_store
 
 **Goal:** A Python library providing an SQLite3-based vector database optimized for LLM RAG integration. It features on-demand vector loading, support for multiple document types, multiple vectorization methods, optional encryption, concurrency considerations, re-indexing capabilities, and utilizes `ascii_colors` for rich, leveled logging and console feedback.
 
@@ -19,7 +19,7 @@
 *   **Objective:** Set up the project structure, development environment, basic database schema, initial configuration, and integrate `ascii_colors` for logging.
 *   **Tasks:**
     1.  **Project Initialization:**
-        *   Create the main project directory (`safestore-project`).
+        *   Create the main project directory (`safe_store-project`).
         *   Initialize Git repository (`git init`).
         *   Create `pyproject.toml` using a modern build backend (e.g., `hatch`, `flit`). Define project metadata, dependencies (`sqlite3`, `numpy`, `ascii_colors`), and optional dependencies.
         *   Create `.gitignore`.
@@ -27,8 +27,8 @@
         *   Install initial dependencies (`pip install -e .`).
     2.  **Directory Structure:** (Remains the same as the previous plan)
         ```
-        safestore-project/
-        ├── safestore/
+        safe_store-project/
+        ├── safe_store/
         │       ├── __init__.py       # Public API exports
         │       ├── core/             # Core functionalities
         │       │   ├── __init__.py
@@ -104,8 +104,8 @@
         *   Define `BaseVectorizer` abstract class.
         *   Implement `SentenceTransformerVectorizer`. Add `sentence-transformers` as optional dependency (`[sentence-transformers]`).
         *   Add `VectorizationManager` (`vectorization/manager.py`). Use `ASCIIColors.info` or `ASCIIColors.debug` for vectorizer loading messages.
-    4.  **Indexing Workflow (`SafeStore` class method `add_document`):**
-        *   Create the main `SafeStore` class (`safestore/store.py` or similar).
+    4.  **Indexing Workflow (`safe_store` class method `add_document`):**
+        *   Create the main `safe_store` class (`safe_store/store.py` or similar).
         *   Implement `add_document(...)`.
         *   Use `ASCIIColors.info()`, `ASCIIColors.debug()`, `ASCIIColors.warning()`, `ASCIIColors.error()` to report progress, issues, and details (e.g., `ASCIIColors.info(f"Starting indexing for file: {filename}")`, `ASCIIColors.debug("Parsed document content.")`, `ASCIIColors.info(f"Vectorizing {num_chunks} chunks using '{vectorizer_name}'...")`, `ASCIIColors.warning(f"Document {filename} already exists, skipping/updating.")`).
         *   Parse, store `full_text`, chunk, get vectorizer, register method in DB, vectorize chunks, store chunks and vectors. Use DB transactions.
@@ -119,7 +119,7 @@
 *   **Objective:** Implement core querying and support adding/using multiple vectorization methods, logging with `ascii_colors`.
 *   **Tasks:**
     1.  **Similarity Search (`search/similarity.py`):** Implement efficient cosine similarity using `numpy`.
-    2.  **Query Workflow (`SafeStore` method `query`):**
+    2.  **Query Workflow (`safe_store` method `query`):**
         *   Implement `query(self, query_text: str, vectorizer_name: str, top_k: int = 5) -> list[dict]`.
         *   Use `ASCIIColors` to log query steps (e.g., `ASCIIColors.info("Received query.")`, `ASCIIColors.debug(f"Vectorizing query with method '{vectorizer_name}'")`, `ASCIIColors.debug(f"Loading {top_k} candidate vectors from DB")`, `ASCIIColors.debug("Calculating similarities...")`, `ASCIIColors.info(f"Found {len(results)} relevant chunks.")`).
         *   Get vectorizer, vectorize query, load vectors, calculate similarities, retrieve chunk/doc details, return results.
@@ -139,13 +139,13 @@
 *   **Objective:** Add more parsers, encryption, re-indexing, and concurrency handling, with `ascii_colors` logging.
 *   **Tasks:**
     1.  **Expanded Document Parsing (`indexing/parser.py`):** Add PDF, DOCX, HTML support. Add dependencies (`[pdf]`, `[docx]`, `[html]`). Refactor parser selection logic. Log which parser is being used (`ASCIIColors.debug`).
-    2.  **Encryption (`security/encryption.py`, `SafeStore` methods):**
+    2.  **Encryption (`security/encryption.py`, `safe_store` methods):**
         *   Add `cryptography` dependency (`[encryption]`).
         *   Implement symmetric encryption.
         *   Modify `add_document` and `query` to handle optional encryption/decryption. Log clearly when encryption is active/inactive (`ASCIIColors.info("Encryption enabled.")` or `ASCIIColors.debug("Encrypting chunk data...")`). Log errors using `ASCIIColors.error`.
         *   Update `chunks` table schema.
         *   **Crucially document:** User manages the key.
-    3.  **Re-indexing (`SafeStore` method `reindex`):**
+    3.  **Re-indexing (`safe_store` method `reindex`):**
         *   Implement `reindex(self, new_chunk_size: int = None, ...)`:
         *   Log start/end (`ASCIIColors.info("Starting re-indexing process...")`) and parameters (`ASCIIColors.debug(f"Using new chunk size: {new_chunk_size}")`).
         *   Log progress per document (`ASCIIColors.debug(f"Re-indexing document ID {doc_id}...")`).
@@ -168,7 +168,7 @@
     3.  **Documentation (`docs/`):**
         *   Set up Sphinx.
         *   Write comprehensive docs: Installation, Quick Start, API Reference, Tutorials.
-        *   **Add a dedicated "Logging / Console Output" section:** Explain that SafeStore uses `ascii_colors` internally, providing colorful console output by default (INFO level and above). Show users how *they* can configure `ascii_colors` in *their application* to:
+        *   **Add a dedicated "Logging / Console Output" section:** Explain that safe_store uses `ascii_colors` internally, providing colorful console output by default (INFO level and above). Show users how *they* can configure `ascii_colors` in *their application* to:
             *   Change the global level: `ASCIIColors.set_log_level(LogLevel.DEBUG)`
             *   Add file logging: `ASCIIColors.add_handler(FileHandler(...))`
             *   Use JSON logging: `ASCIIColors.add_handler(FileHandler(..., formatter=JSONFormatter(...)))`

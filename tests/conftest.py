@@ -7,7 +7,7 @@ import numpy as np
 from unittest.mock import MagicMock
 
 # Import the class for type hinting
-from safestore import SafeStore, LogLevel
+from safe_store import safe_store, LogLevel
 
 # --- Fixture Directory ---
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -101,23 +101,23 @@ if not SKLEARN_AVAILABLE:
 def apply_mocks_conditionally(monkeypatch):
     """Applies mocks only if the libraries are unavailable."""
     if not SENTENCE_TRANSFORMERS_AVAILABLE:
-        monkeypatch.setattr("safestore.vectorization.methods.sentence_transformer.SentenceTransformer", MockSentenceTransformer, raising=False)
-        monkeypatch.setattr("safestore.vectorization.methods.sentence_transformer._SENTENCE_TRANSFORMERS_AVAILABLE", True, raising=False) # Make wrapper think it's ok
+        monkeypatch.setattr("safe_store.vectorization.methods.sentence_transformer.SentenceTransformer", MockSentenceTransformer, raising=False)
+        monkeypatch.setattr("safe_store.vectorization.methods.sentence_transformer._SENTENCE_TRANSFORMERS_AVAILABLE", True, raising=False) # Make wrapper think it's ok
     if not SKLEARN_AVAILABLE:
-        monkeypatch.setattr("safestore.vectorization.methods.tfidf.TfidfVectorizer", MockTfidfVectorizer, raising=False)
-        monkeypatch.setattr("safestore.vectorization.methods.tfidf.NotFittedError", NotFittedError or Exception, raising=False)
-        monkeypatch.setattr("safestore.vectorization.methods.tfidf._SKLEARN_AVAILABLE", True, raising=False) # Make wrapper think it's ok
+        monkeypatch.setattr("safe_store.vectorization.methods.tfidf.TfidfVectorizer", MockTfidfVectorizer, raising=False)
+        monkeypatch.setattr("safe_store.vectorization.methods.tfidf.NotFittedError", NotFittedError or Exception, raising=False)
+        monkeypatch.setattr("safe_store.vectorization.methods.tfidf._SKLEARN_AVAILABLE", True, raising=False) # Make wrapper think it's ok
 
 
 # --- Standard Fixtures ---
 @pytest.fixture(scope="function")
 def temp_db_path(tmp_path: Path) -> Path:
     """Provides a path to a temporary database file."""
-    return tmp_path / "test_safestore.db"
+    return tmp_path / "test_safe_store.db"
 
 @pytest.fixture(scope="function")
-def safestore_instance(temp_db_path: Path) -> SafeStore:
-    """Provides a SafeStore instance with a clean temporary database."""
+def safe_store_instance(temp_db_path: Path) -> safe_store:
+    """Provides a safe_store instance with a clean temporary database."""
     # Ensure clean slate
     if temp_db_path.exists(): temp_db_path.unlink()
     lock_path = temp_db_path.with_suffix(".db.lock")
@@ -128,7 +128,7 @@ def safestore_instance(temp_db_path: Path) -> SafeStore:
     if shm_path.exists(): shm_path.unlink(missing_ok=True)
 
     # Use DEBUG level for more verbose test output
-    store = SafeStore(db_path=temp_db_path, log_level=LogLevel.DEBUG, lock_timeout=0.1)
+    store = safe_store(db_path=temp_db_path, log_level=LogLevel.DEBUG, lock_timeout=0.1)
     yield store
     store.close() # Ensure closure after test function finishes
 
@@ -177,9 +177,9 @@ def sample_html_file(tmp_path: Path) -> Path:
 
 # --- Phase 2 Fixture ---
 @pytest.fixture
-def populated_store(safestore_instance: SafeStore, sample_text_file: Path, tmp_path: Path) -> SafeStore:
-    """Provides a SafeStore instance with two documents added using the default ST vectorizer."""
-    store = safestore_instance
+def populated_store(safe_store_instance: safe_store, sample_text_file: Path, tmp_path: Path) -> safe_store:
+    """Provides a safe_store instance with two documents added using the default ST vectorizer."""
+    store = safe_store_instance
     doc2_content = "Another document.\nWith different content for testing."
     doc2_path = tmp_path / "sample2.txt"
     doc2_path.write_text(doc2_content, encoding='utf-8')

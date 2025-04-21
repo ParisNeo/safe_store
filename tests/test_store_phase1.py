@@ -7,9 +7,9 @@ from unittest.mock import patch, MagicMock, call
 import re
 
 # Import specific exceptions and modules
-from safestore import SafeStore, LogLevel
-from safestore.core import db
-from safestore.core.exceptions import FileHandlingError, ConfigurationError, SafeStoreError
+from safe_store import safe_store, LogLevel
+from safe_store.core import db
+from safe_store.core.exceptions import FileHandlingError, ConfigurationError, safe_storeError
 
 # --- REMOVE SentenceTransformer Check and Mock Fixture ---
 # try:
@@ -42,19 +42,19 @@ def assert_log_call_containing(mock_logger, expected_substring):
 # --- Tests (keep) ---
 # Remove skipif conditions that rely on the local SENTENCE_TRANSFORMERS_AVAILABLE
 # @pytest.mark.skipif(not SENTENCE_TRANSFORMERS_AVAILABLE and "mock_st" not in globals(), reason="Requires sentence-transformers or mocking")
-@patch('safestore.vectorization.methods.sentence_transformer.ASCIIColors')
-@patch('safestore.vectorization.manager.ASCIIColors')
-@patch('safestore.indexing.chunking.ASCIIColors')
-@patch('safestore.indexing.parser.ASCIIColors')
-@patch('safestore.core.db.ASCIIColors')
-@patch('safestore.store.ASCIIColors')
+@patch('safe_store.vectorization.methods.sentence_transformer.ASCIIColors')
+@patch('safe_store.vectorization.manager.ASCIIColors')
+@patch('safe_store.indexing.chunking.ASCIIColors')
+@patch('safe_store.indexing.parser.ASCIIColors')
+@patch('safe_store.core.db.ASCIIColors')
+@patch('safe_store.store.ASCIIColors')
 def test_add_document_new(
     mock_store_colors, mock_db_colors, mock_parser_colors,
     mock_chunking_colors, mock_manager_colors, mock_st_colors,
-    safestore_instance: SafeStore, sample_text_file: Path
+    safe_store_instance: safe_store, sample_text_file: Path
 ):
     """Test adding a completely new document using mocks."""
-    store = safestore_instance
+    store = safe_store_instance
     file_path = sample_text_file
     vectorizer_name_used = store.DEFAULT_VECTORIZER
 
@@ -98,15 +98,15 @@ def test_add_document_new(
     conn.close()
 
 
-@patch('safestore.core.db.ASCIIColors')
-@patch('safestore.vectorization.manager.ASCIIColors')
-@patch('safestore.store.ASCIIColors')
+@patch('safe_store.core.db.ASCIIColors')
+@patch('safe_store.vectorization.manager.ASCIIColors')
+@patch('safe_store.store.ASCIIColors')
 def test_add_document_unchanged(
     mock_store_colors, mock_manager_colors, mock_db_colors,
-    safestore_instance: SafeStore, sample_text_file: Path
+    safe_store_instance: safe_store, sample_text_file: Path
 ):
     """Test adding the same document again without changes using mocks."""
-    store = safestore_instance
+    store = safe_store_instance
     file_path = sample_text_file
     vectorizer_name_used = store.DEFAULT_VECTORIZER
 
@@ -125,19 +125,19 @@ def test_add_document_unchanged(
     assert not process_message_found, "Processing success message should NOT be logged when skipping."
 
 
-@patch('safestore.vectorization.methods.sentence_transformer.ASCIIColors')
-@patch('safestore.vectorization.manager.ASCIIColors')
-@patch('safestore.indexing.chunking.ASCIIColors')
-@patch('safestore.indexing.parser.ASCIIColors')
-@patch('safestore.core.db.ASCIIColors')
-@patch('safestore.store.ASCIIColors')
+@patch('safe_store.vectorization.methods.sentence_transformer.ASCIIColors')
+@patch('safe_store.vectorization.manager.ASCIIColors')
+@patch('safe_store.indexing.chunking.ASCIIColors')
+@patch('safe_store.indexing.parser.ASCIIColors')
+@patch('safe_store.core.db.ASCIIColors')
+@patch('safe_store.store.ASCIIColors')
 def test_add_document_changed(
     mock_store_colors, mock_db_colors, mock_parser_colors,
     mock_chunking_colors, mock_manager_colors, mock_st_colors,
-    safestore_instance: SafeStore, sample_text_file: Path
+    safe_store_instance: safe_store, sample_text_file: Path
 ):
     """Test adding a document that has changed content using mocks."""
-    store = safestore_instance
+    store = safe_store_instance
     file_path = sample_text_file
     vectorizer_name_used = store.DEFAULT_VECTORIZER
 
@@ -179,10 +179,10 @@ def test_add_document_changed(
     conn.close()
 
 
-@patch('safestore.store.ASCIIColors')
-def test_add_document_file_not_found(mock_store_colors, safestore_instance: SafeStore, tmp_path: Path):
+@patch('safe_store.store.ASCIIColors')
+def test_add_document_file_not_found(mock_store_colors, safe_store_instance: safe_store, tmp_path: Path):
     """Test adding a document when the source file doesn't exist."""
-    store = safestore_instance
+    store = safe_store_instance
     non_existent_path = tmp_path / "non_existent_file.txt"
     resolved_path_str = str(non_existent_path.resolve())
 
@@ -195,10 +195,10 @@ def test_add_document_file_not_found(mock_store_colors, safestore_instance: Safe
     mock_store_colors.success.assert_not_called()
 
 
-@patch('safestore.store.ASCIIColors')
-def test_add_document_empty_file(mock_store_colors, safestore_instance: SafeStore, tmp_path: Path):
+@patch('safe_store.store.ASCIIColors')
+def test_add_document_empty_file(mock_store_colors, safe_store_instance: safe_store, tmp_path: Path):
     """Test adding an empty document."""
-    store = safestore_instance
+    store = safe_store_instance
     empty_file = tmp_path / "empty.txt"
     empty_file.touch()
 
@@ -230,10 +230,10 @@ def test_add_document_empty_file(mock_store_colors, safestore_instance: SafeStor
     conn.close()
 
 
-@patch('safestore.store.ASCIIColors')
-def test_add_document_hash_failure(mock_store_colors, safestore_instance: SafeStore, sample_text_file: Path):
+@patch('safe_store.store.ASCIIColors')
+def test_add_document_hash_failure(mock_store_colors, safe_store_instance: safe_store, sample_text_file: Path):
     """Test behavior when file hashing fails."""
-    store = safestore_instance
+    store = safe_store_instance
     file_path = sample_text_file
     error_message = "Mock hashing failed due to permission error"
 
@@ -262,11 +262,11 @@ def test_add_document_hash_failure(mock_store_colors, safestore_instance: SafeSt
     assert final_doc_count == initial_doc_count
 
 
-@patch('safestore.indexing.parser.ASCIIColors')
-@patch('safestore.store.ASCIIColors')
-def test_add_document_unsupported_type(mock_store_colors, mock_parser_colors, safestore_instance: SafeStore, tmp_path: Path):
+@patch('safe_store.indexing.parser.ASCIIColors')
+@patch('safe_store.store.ASCIIColors')
+def test_add_document_unsupported_type(mock_store_colors, mock_parser_colors, safe_store_instance: safe_store, tmp_path: Path):
     """Test adding a file with an unsupported extension."""
-    store = safestore_instance
+    store = safe_store_instance
     unsupported_file = tmp_path / "document.xyz"
     unsupported_file.write_text("Some content", encoding='utf-8')
 

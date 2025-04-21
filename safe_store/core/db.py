@@ -1,4 +1,4 @@
-# safestore/core/db.py
+# safe_store/core/db.py
 import sqlite3
 import numpy as np
 from pathlib import Path
