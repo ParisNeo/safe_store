@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 [project]
 name = "safe-store"
 # Bump version for Phase 4 release
-version = "1.4.0" # <-- BUMPED VERSION
+version = "1.3.1" # <-- BUMPED VERSION
 description = "Simple, concurrent SQLite-based vector store optimized for local RAG pipelines."
 readme = "README.md"
 requires-python = ">=3.8"
