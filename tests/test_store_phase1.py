@@ -9,7 +9,7 @@ import re
 # Import specific exceptions and modules
 from safe_store import safe_store, LogLevel
 from safe_store.core import db
-from safe_store.core.exceptions import FileHandlingError, ConfigurationError, safe_storeError
+from safe_store.core.exceptions import FileHandlingError, ConfigurationError, SafeStoreError
 
 # --- REMOVE SentenceTransformer Check and Mock Fixture ---
 # try:

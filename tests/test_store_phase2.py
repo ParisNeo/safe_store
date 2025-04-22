@@ -12,7 +12,7 @@ from safe_store import store as safe_store_store_module # Target for patching
 from safe_store import safe_store, LogLevel
 from safe_store.core import db
 from safe_store.core.exceptions import (
-    ConfigurationError, VectorizationError, DatabaseError, QueryError, safe_storeError, FileHandlingError
+    ConfigurationError, VectorizationError, DatabaseError, QueryError, SafeStoreError, FileHandlingError
 )
 from safe_store.vectorization.methods.tfidf import TfidfVectorizerWrapper
 from safe_store.vectorization.manager import VectorizationManager

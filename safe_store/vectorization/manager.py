@@ -5,7 +5,7 @@ from typing import Tuple, Optional, Dict, Any
 import numpy as np
 
 from ..core import db
-from ..core.exceptions import ConfigurationError, VectorizationError, DatabaseError, safe_storeError
+from ..core.exceptions import ConfigurationError, VectorizationError, DatabaseError, SafeStoreError
 from .base import BaseVectorizer
 from .methods.sentence_transformer import SentenceTransformerVectorizer
 from .methods.tfidf import TfidfVectorizerWrapper
@@ -57,7 +57,7 @@ class VectorizationManager:
                                 format is unknown.
             VectorizationError: If initializing the vectorizer model fails.
             DatabaseError: If database interaction fails.
-            safe_storeError: For unexpected errors.
+            SafeStoreError: For unexpected errors.
         """
         # Check cache first
         if name in self._cache:
@@ -137,7 +137,7 @@ class VectorizationManager:
 
         if not vectorizer:
             # Should not be reachable if instantiation logic is correct
-            raise safe_storeError(f"Vectorizer instance could not be created for '{name}'.")
+            raise SafeStoreError(f"Vectorizer instance could not be created for '{name}'.")
 
 
         # --- 3. Add/Get Method Record in DB ---
@@ -192,7 +192,7 @@ class VectorizationManager:
 
         # --- 4. Cache Result ---
         if method_id is None: # Defensive check
-             raise safe_storeError(f"Failed to obtain a valid method_id for '{name}'.")
+             raise SafeStoreError(f"Failed to obtain a valid method_id for '{name}'.")
 
         self._cache[name] = (vectorizer, method_id, params_from_db)
         ASCIIColors.debug(f"Vectorizer '{name}' ready and cached (method_id {method_id}).")
@@ -245,7 +245,7 @@ class VectorizationManager:
 
         Raises:
             DatabaseError: If the update fails.
-            safe_storeError: For unexpected errors.
+            SafeStoreError: For unexpected errors.
         """
         sql_parts = ["UPDATE vectorization_methods SET params = ?"]
         # Use list for params, convert dict to JSON string
@@ -274,7 +274,7 @@ class VectorizationManager:
         except Exception as e:
             msg = f"Database error updating vectorization method params for ID {method_id}: {e}"
             ASCIIColors.error(msg, exc_info=True)
-            raise safe_storeError(msg) from e
+            raise SafeStoreError(msg) from e
 
     def remove_from_cache_by_id(self, method_id: int, log_reason: str = "removal") -> None:
         """Removes cache entries associated with a given method ID."""

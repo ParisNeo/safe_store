@@ -5,7 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.3.0] - 2025-04-19 <!-- Update Date -->
+## [1.4.0] - 2025-04-20
+### Added
+
+*   **Encryption:**
+    *   Added optional encryption at rest for `chunk_text` using `cryptography` (Fernet/AES-128-CBC). Requires `safe_store[encryption]`.
+    *   Added `encryption_key` parameter to `safe_store.__init__`.
+    *   Encryption/decryption is handled automatically during `add_document` and `query` if the key is present.
+    *   `add_vectorization` now attempts decryption when fitting TF-IDF on potentially encrypted chunks.
+    *   Added `safe_store.core.exceptions.EncryptionError`.
+    *   Implemented `safe_store.security.encryption.Encryptor` class for handling key derivation (PBKDF2) and encryption/decryption. Uses a fixed salt (documented limitation).
+    *   Added tests for encryption logic (`test_encryption.py`, `test_store_encryption.py`).
+    *   Added `examples/encryption_usage.py`.
+    *   Added documentation (`encryption.rst`) explaining the feature, usage, and security considerations.
+*   **Documentation:**
+    *   Created Sphinx documentation structure under `docs/`. (Moved from 1.3.0 plan to here as it aligns with final polish).
+    *   Added content for `conf.py`, `index.rst`, `installation.rst`, `quickstart.rst`, `api.rst`, `logging.rst`, `encryption.rst`.
+    *   Added `docs/requirements.txt`.
+    *   Added `sphinx` and `sphinx-rtd-theme` to `[dev]` extras in `pyproject.toml`.
+*   **Examples:**
+    *   Implemented `examples/custom_logging.py` demonstrating global `ascii_colors` configuration.
+*   **Testing:**
+    *   Added comprehensive tests for encryption functionality.
+    *   Added tests for store closure (`close()`) and context manager (`__enter__`/`__exit__`) behavior. (Moved from 1.3.0 plan).
+    *   Added tests for `list_documents` and `list_vectorization_methods`. (Moved from 1.3.0 plan).
+    *   Ensured tests relying on optional dependencies are skipped correctly or use mocks when dependencies are unavailable (refined mock setup in `conftest.py`).
+
+### Changed
+
+*   `pyproject.toml`: Bumped version to 1.4.0. Added `cryptography` dependency and `[encryption]` extra. Updated `[all]` and `[dev]` extras. Updated classifiers.
+*   `README.md`: Significantly updated with encryption feature, detailed logging section, refined quick start, installation instructions, and feature list.
+*   `safe_store/__init__.py`: Bumped version. Exposed `EncryptionError`.
+*   `safe_store/store.py`: Integrated `Encryptor`. Modified indexing and querying methods to handle encryption/decryption. Added related error handling.
+*   `tests/conftest.py`: Improved conditional mocking setup for optional dependencies (`sentence-transformers`, `scikit-learn`, `cryptography`) using `pytest.mark.skipif` in relevant test files/modules where mocks aren't sufficient. Applied mocks more selectively.
+*   Refined type hints and docstrings across modules for better clarity and consistency.
+
+### Fixed
+
+*   Corrected assertions in `test_store_phase2.py` related to TF-IDF fitting log and cache removal log messages. (Moved fix confirmation from 1.2.0 change list as it was related to test refinement).
+*   Ensured `TfidfVectorizerWrapper.load_fitted_state` robustly reconstructs the internal state required for `transform` to work after loading, including setting the internal IDF diagonal matrix.
+*   Addressed potential `TypeError` if encrypted chunk data was somehow stored as string instead of bytes during decryption.
+*   Fixed potential state inconsistencies in `TfidfVectorizerWrapper` if fitting failed or was performed on empty text.
+
+
+## [1.3.0] - 2025-04-19
 
 ### Added
 

@@ -5,18 +5,18 @@ build-backend = "hatchling.build"
 
 [project]
 name = "safe-store"
-# Bump version for Phase 4 release
-version = "1.3.1" # <-- BUMPED VERSION
-description = "Simple, concurrent SQLite-based vector store optimized for local RAG pipelines."
+# Bump version for this release
+version = "1.4.0" # <-- BUMPED VERSION
+description = "Simple, concurrent SQLite-based vector store optimized for local RAG pipelines, with optional encryption."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { file = "LICENSE" }
 authors = [
     { name = "ParisNeo", email = "parisneo_ai@gmail.com" },
 ]
-keywords = ["vector", "database", "sqlite", "rag", "llm", "embedding", "semantic search", "local", "concurrent"]
+keywords = ["vector", "database", "sqlite", "rag", "llm", "embedding", "semantic search", "local", "concurrent", "encryption"]
 classifiers = [
-    "Development Status :: 4 - Beta", # Updated status
+    "Development Status :: 4 - Beta", # Or "5 - Production/Stable" if ready
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
@@ -31,6 +31,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Text Processing :: Indexing",
+    "Topic :: Security :: Cryptography", # Added classifier
 ]
 # Core dependencies
 dependencies = [
@@ -41,10 +42,6 @@ dependencies = [
 
 [project.optional-dependencies]
 # --- Parsing Libraries ---
-# Requires pypdf for .pdf
-# Requires python-docx for .docx
-# Requires beautifulsoup4 for .html
-# Requires lxml for faster/robust .html parsing (recommended with beautifulsoup4)
 parsing = [
     "pypdf>=3.10",
     "python-docx>=1.0",
@@ -59,39 +56,38 @@ tfidf = ["scikit-learn>=1.0"]
 # openai = ["openai>=1.0"]
 # ollama = ["ollama"]
 
-# --- Encryption Library (Planned Feature) ---
-# encryption = ["cryptography>=40.0"]
+# --- Encryption Library ---
+encryption = ["cryptography>=40.0"] # Added Encryption
 
 # --- Combined Extras ---
-# Convenience extra to install all currently supported vectorizers
 all-vectorizers = [
     "safe_store[sentence-transformers]",
     "safe_store[tfidf]",
-    # "safe_store[openai]", # Add when implemented
-    # "safe_store[ollama]", # Add when implemented
 ]
-# Combined extra for everything (parsing, all vectorizers)
+# Combined extra for everything (parsing, all vectorizers, encryption)
 all = [
     "safe_store[parsing]",
     "safe_store[all-vectorizers]",
-    # "safe_store[encryption]", # Add when implemented
+    "safe_store[encryption]", # Added Encryption to 'all'
 ]
-# Extra for development dependencies (testing, linting, building)
+# Extra for development dependencies (testing, linting, building, docs)
 dev = [
     "pytest>=7.0",
-    "pytest-cov>=3.0", # For coverage reports
+    "pytest-cov>=3.0",
     "flake8>=5.0",     # Or ruff
     "black>=22.0",
     "mypy>=0.9",
-    "types-filelock",  # Type hints for filelock
-    "types-requests",  # If adding network features later
-    "hatchling",       # Build backend
+    "types-filelock",
+    "types-cryptography", # Added types for cryptography
     # Documentation tools
     "Sphinx>=5.0",
     "sphinx-rtd-theme>=1.0",
     "lxml", # Needed again for docutils used by sphinx if not already installed
+    # Build tools
+    "hatchling",
+    "wheel",
+    "twine", # For checking/uploading packages
 ]
-
 
 [project.urls]
 Homepage = "https://github.com/ParisNeo/safe_store"
@@ -99,26 +95,10 @@ Repository = "https://github.com/ParisNeo/safe_store"
 Documentation = "https://github.com/ParisNeo/safe_store#readme" # Link to README initially, update later if dedicated docs site exists
 Issues = "https://github.com/ParisNeo/safe_store/issues"
 
-
 # --- Tool Configurations ---
 [tool.black]
 line-length = 88
-target-version = ['py38'] # Minimum supported Python version
+target-version = ['py38']
 
 [tool.hatch.version]
-path = "safe_store/__init__.py" # Point hatch to the version string
-
-# Optional: Ruff configuration (example)
-# [tool.ruff]
-# select = ["E", "F", "W", "I", "UP", "PL", "T20", "NPY"] # Example selections including NumPy-specific rules
-# ignore = ["E501"] # Example: Ignore line too long if needed, handled by black
-# line-length = 88
-# target-version = "py38"
-
-# Optional: MyPy configuration (example)
-# [tool.mypy]
-# python_version = "3.8"
-# warn_return_any = true
-# warn_unused_configs = true
-# ignore_missing_imports = true # Can be strict or ignore certain libs
-# exclude = ["tests/"] # Exclude test files from strict type checking if desired
+path = "safe_store/__init__.py"
