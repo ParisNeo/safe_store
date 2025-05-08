@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.5.0] - 2025-05-08
+## [1.6.0] - 2025-05-08
 ### Fixed
 *   Big change: the main class `safe_store` is now called `SafeStore`.
 *   Corrected the error message string raised by `add_vectorization` when TF-IDF fitting is attempted on encrypted chunks without providing the necessary `encryption_key`. The message now aligns with test expectations, stating: "Cannot fit TF-IDF on encrypted chunks without the correct encryption key."
