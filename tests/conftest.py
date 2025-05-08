@@ -7,7 +7,7 @@ import numpy as np
 from unittest.mock import MagicMock
 
 # Import the class for type hinting
-from safe_store import safe_store, LogLevel
+from safe_store import SafeStore, LogLevel
 
 # --- Fixture Directory ---
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -116,7 +116,7 @@ def temp_db_path(tmp_path: Path) -> Path:
     return tmp_path / "test_safe_store.db"
 
 @pytest.fixture(scope="function")
-def safe_store_instance(temp_db_path: Path) -> safe_store:
+def safe_store_instance(temp_db_path: Path) -> SafeStore:
     """Provides a safe_store instance with a clean temporary database."""
     # Ensure clean slate
     if temp_db_path.exists(): temp_db_path.unlink()
@@ -128,7 +128,7 @@ def safe_store_instance(temp_db_path: Path) -> safe_store:
     if shm_path.exists(): shm_path.unlink(missing_ok=True)
 
     # Use DEBUG level for more verbose test output
-    store = safe_store(db_path=temp_db_path, log_level=LogLevel.DEBUG, lock_timeout=0.1)
+    store = SafeStore(db_path=temp_db_path, log_level=LogLevel.DEBUG, lock_timeout=0.1)
     yield store
     store.close() # Ensure closure after test function finishes
 
@@ -177,7 +177,7 @@ def sample_html_file(tmp_path: Path) -> Path:
 
 # --- Phase 2 Fixture ---
 @pytest.fixture
-def populated_store(safe_store_instance: safe_store, sample_text_file: Path, tmp_path: Path) -> safe_store:
+def populated_store(safe_store_instance: SafeStore, sample_text_file: Path, tmp_path: Path) -> SafeStore:
     """Provides a safe_store instance with two documents added using the default ST vectorizer."""
     store = safe_store_instance
     doc2_content = "Another document.\nWith different content for testing."

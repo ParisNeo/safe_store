@@ -67,7 +67,7 @@ safe_store is currently in Beta. The core API is stabilizing, but breaking chang
     *   **`remove_vectorization`:** Deletes a vectorization method and all its associated vectors from the database and cache.
     *   **`list_documents`:** Returns a list of stored documents and their metadata.
     *   **`list_vectorization_methods`:** Returns details of registered vectorization methods.
-*   **Logging:** Rich console logging via `ascii_colors`. Default level is `INFO`. Configurable via `safe_store(log_level=...)` or globally using `ASCIIColors` static methods (see [Logging](#-logging) section).
+*   **Logging:** Rich console logging via `ascii_colors`. Default level is `INFO`. Configurable via `SafeStore(log_level=...)` or globally using `ASCIIColors` static methods (see [Logging](#-logging) section).
 
 ---
 
@@ -123,7 +123,7 @@ print(f"Created sample files in: {doc_dir.resolve()}")
 # !! MANAGE YOUR KEY SECURELY IN REAL APPLICATIONS !!
 encryption_password = "your-secret-password" # Or None
 
-store = safe_store.safe_store(
+store = safe_store.SafeStore(
     "my_vector_store.db",
     log_level=safe_store.LogLevel.INFO, # Use INFO for less noise in example
     lock_timeout=10,
@@ -199,7 +199,7 @@ safe_store can optionally encrypt the text content of document chunks stored in 
 safe_store uses the [`ascii_colors`](https://github.com/ParisNeo/ascii_colors) library for flexible and colorful console logging.
 
 *   **Default Level:** `INFO`. Only INFO, SUCCESS, WARNING, ERROR, CRITICAL messages are shown.
-*   **Change Level:** Initialize with `safe_store(log_level=safe_store.LogLevel.DEBUG)` or `safe_store(log_level=safe_store.LogLevel.WARNING)` etc.
+*   **Change Level:** Initialize with `SafeStore(log_level=safe_store.LogLevel.DEBUG)` or `SafeStore(log_level=safe_store.LogLevel.WARNING)` etc.
 *   **Global Configuration:** You can configure `ascii_colors` globally in your application *before* initializing safe_store to control output destinations (console, file), formats (text, JSON), and levels:
     ```python
     import safe_store
@@ -218,7 +218,7 @@ safe_store uses the [`ascii_colors`](https://github.com/ParisNeo/ascii_colors) l
     # if default_console_handler: ASCIIColors.remove_handler(default_console_handler)
 
     # Now initialize safe_store - it will use the global settings
-    store = safe_store.safe_store("my_store.db")
+    store = safe_store.SafeStore("my_store.db")
     # ... use store ...
     ```
     *(See `examples/custom_logging.py` and the full documentation for more.)*

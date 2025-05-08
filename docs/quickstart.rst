@@ -23,7 +23,7 @@ Here's a basic example demonstrating indexing and querying:
     # --- 2. Initialize safe_store ---
     # Use DEBUG level for more verbose output, adjust lock timeout if needed
     # Add encryption_key="your-secret-password" to enable encryption
-    store = safe_store.safe_store(
+    store = safe_store.SafeStore(
         "my_vector_store.db",
         log_level=safe_store.LogLevel.DEBUG,
         lock_timeout=10 # Wait up to 10s for write lock

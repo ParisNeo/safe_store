@@ -22,10 +22,10 @@ You can easily change the minimum severity level displayed when initializing ``s
    from safe_store import LogLevel # Or from ascii_colors import LogLevel
 
    # Show only warnings and errors
-   store_warn = safe_store.safe_store("my_store_warn.db", log_level=LogLevel.WARNING)
+   store_warn = safe_store.SafeStore("my_store_warn.db", log_level=LogLevel.WARNING)
 
    # Show all messages, including detailed debug info
-   store_debug = safe_store.safe_store("my_store_debug.db", log_level=LogLevel.DEBUG)
+   store_debug = safe_store.SafeStore("my_store_debug.db", log_level=LogLevel.DEBUG)
 
 Advanced Configuration (Global)
 -------------------------------
@@ -71,7 +71,7 @@ Here's how to configure ``ascii_colors`` globally:
    print(f"Logging DEBUG and above to console (default) and {log_file}")
 
    # Now initialize safe_store - it will respect the global settings
-   store = safe_store.safe_store("my_store.db")
+   store = safe_store.SafeStore("my_store.db")
    # ... use store ...
    # safe_store's internal DEBUG messages will now appear in the file
 
@@ -91,7 +91,7 @@ Here's how to configure ``ascii_colors`` globally:
    # # default_console_handler = ASCIIColors.get_default_handler()
    # # if default_console_handler: ASCIIColors.remove_handler(default_console_handler)
 
-   # store_json = safe_store.safe_store("my_json_store.db")
+   # store_json = safe_store.SafeStore("my_json_store.db")
    # ... use store_json ...
 
 See the `ascii_colors documentation <https://github.com/ParisNeo/ascii_colors#usage>`_ for more details on handlers and formatters.

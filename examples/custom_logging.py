@@ -77,7 +77,7 @@ if __name__ == "__main__":
     print(f"Check the console output AND the '{LOG_FILE}' file.")
 
     try:
-        store = safe_store.safe_store(DB_FILE) # Uses global log level (DEBUG)
+        store = safe_store.SafeStore(DB_FILE) # Uses global log level (DEBUG)
 
         # Prepare a sample document
         DOC_DIR.mkdir(exist_ok=True)

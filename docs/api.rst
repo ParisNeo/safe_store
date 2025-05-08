@@ -7,15 +7,15 @@ This section provides detailed documentation for the ``safe_store`` library's pu
 Core Class
 ----------
 
-.. automodule:: safe_store.store
-   :members: safe_store, LogLevel
+.. automodule:: SafeStore.store
+   :members: SafeStore, LogLevel
    :undoc-members:
    :show-inheritance:
 
 Exceptions
 ----------
 
-.. automodule:: safe_store.core.exceptions
+.. automodule:: SafeStore.core.exceptions
    :members:
    :undoc-members:
    :show-inheritance:
@@ -23,15 +23,15 @@ Exceptions
 Vectorizers
 -----------
 
-.. automodule:: safe_store.vectorization.base
+.. automodule:: SafeStore.vectorization.base
    :members: BaseVectorizer
    :undoc-members:
 
-.. automodule:: safe_store.vectorization.methods.sentence_transformer
+.. automodule:: SafeStore.vectorization.methods.sentence_transformer
    :members: SentenceTransformerVectorizer
    :undoc-members:
 
-.. automodule:: safe_store.vectorization.methods.tfidf
+.. automodule:: SafeStore.vectorization.methods.tfidf
    :members: TfidfVectorizerWrapper
    :undoc-members:
 

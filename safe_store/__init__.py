@@ -8,7 +8,7 @@ Retrieval-Augmented Generation (RAG) pipelines for Large Language Models (LLMs).
 Includes optional encryption and concurrency control.
 """
 
-from .store import safe_store, LogLevel
+from .store import SafeStore, LogLevel
 from .core.exceptions import ( # Expose exceptions for users
     SafeStoreError,
     DatabaseError,
@@ -23,7 +23,7 @@ from .core.exceptions import ( # Expose exceptions for users
 )
 from ascii_colors import ASCIIColors # Expose for user configuration convenience
 
-__version__ = "1.4.0" # <-- BUMPED VERSION
+__version__ = "1.5.0" # <-- BUMPED VERSION to match pyproject.toml
 
 __all__ = [
     "safe_store",

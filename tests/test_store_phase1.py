@@ -7,7 +7,7 @@ from unittest.mock import patch, MagicMock, call
 import re
 
 # Import specific exceptions and modules
-from safe_store import safe_store, LogLevel
+from safe_store import SafeStore, LogLevel
 from safe_store.core import db
 from safe_store.core.exceptions import FileHandlingError, ConfigurationError, SafeStoreError
 
@@ -51,7 +51,7 @@ def assert_log_call_containing(mock_logger, expected_substring):
 def test_add_document_new(
     mock_store_colors, mock_db_colors, mock_parser_colors,
     mock_chunking_colors, mock_manager_colors, mock_st_colors,
-    safe_store_instance: safe_store, sample_text_file: Path
+    safe_store_instance: SafeStore, sample_text_file: Path
 ):
     """Test adding a completely new document using mocks."""
     store = safe_store_instance
@@ -103,7 +103,7 @@ def test_add_document_new(
 @patch('safe_store.store.ASCIIColors')
 def test_add_document_unchanged(
     mock_store_colors, mock_manager_colors, mock_db_colors,
-    safe_store_instance: safe_store, sample_text_file: Path
+    safe_store_instance: SafeStore, sample_text_file: Path
 ):
     """Test adding the same document again without changes using mocks."""
     store = safe_store_instance
@@ -134,7 +134,7 @@ def test_add_document_unchanged(
 def test_add_document_changed(
     mock_store_colors, mock_db_colors, mock_parser_colors,
     mock_chunking_colors, mock_manager_colors, mock_st_colors,
-    safe_store_instance: safe_store, sample_text_file: Path
+    safe_store_instance: SafeStore, sample_text_file: Path
 ):
     """Test adding a document that has changed content using mocks."""
     store = safe_store_instance
@@ -180,7 +180,7 @@ def test_add_document_changed(
 
 
 @patch('safe_store.store.ASCIIColors')
-def test_add_document_file_not_found(mock_store_colors, safe_store_instance: safe_store, tmp_path: Path):
+def test_add_document_file_not_found(mock_store_colors, safe_store_instance: SafeStore, tmp_path: Path):
     """Test adding a document when the source file doesn't exist."""
     store = safe_store_instance
     non_existent_path = tmp_path / "non_existent_file.txt"
@@ -196,7 +196,7 @@ def test_add_document_file_not_found(mock_store_colors, safe_store_instance: saf
 
 
 @patch('safe_store.store.ASCIIColors')
-def test_add_document_empty_file(mock_store_colors, safe_store_instance: safe_store, tmp_path: Path):
+def test_add_document_empty_file(mock_store_colors, safe_store_instance: SafeStore, tmp_path: Path):
     """Test adding an empty document."""
     store = safe_store_instance
     empty_file = tmp_path / "empty.txt"
@@ -231,7 +231,7 @@ def test_add_document_empty_file(mock_store_colors, safe_store_instance: safe_st
 
 
 @patch('safe_store.store.ASCIIColors')
-def test_add_document_hash_failure(mock_store_colors, safe_store_instance: safe_store, sample_text_file: Path):
+def test_add_document_hash_failure(mock_store_colors, safe_store_instance: SafeStore, sample_text_file: Path):
     """Test behavior when file hashing fails."""
     store = safe_store_instance
     file_path = sample_text_file
@@ -264,7 +264,7 @@ def test_add_document_hash_failure(mock_store_colors, safe_store_instance: safe_
 
 @patch('safe_store.indexing.parser.ASCIIColors')
 @patch('safe_store.store.ASCIIColors')
-def test_add_document_unsupported_type(mock_store_colors, mock_parser_colors, safe_store_instance: safe_store, tmp_path: Path):
+def test_add_document_unsupported_type(mock_store_colors, mock_parser_colors, safe_store_instance: SafeStore, tmp_path: Path):
     """Test adding a file with an unsupported extension."""
     store = safe_store_instance
     unsupported_file = tmp_path / "document.xyz"

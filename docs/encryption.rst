@@ -31,7 +31,7 @@ Enabling Encryption
 
        my_password = "your-very-strong-password-here" # Keep this safe!
 
-       store = safe_store.safe_store(
+       store = safe_store.SafeStore(
            "encrypted_store.db",
            encryption_key=my_password
        )

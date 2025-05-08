@@ -1,67 +1,178 @@
 # tests/test_store_encryption.py
 import pytest
-import sqlite3
 from pathlib import Path
-import base64
+import sqlite3
+import shutil
 
-from safe_store import safe_store, LogLevel
-from safe_store.core.exceptions import EncryptionError, ConfigurationError, SafeStoreError
-from safe_store.security.encryption import CRYPTOGRAPHY_AVAILABLE, Encryptor
+# Assuming safe_store and its components are importable
+from safe_store import SafeStore, LogLevel
+from safe_store.core.exceptions import ConfigurationError, EncryptionError
+from safe_store.security.encryption import Encryptor
 
-# Conditionally skip tests if cryptography is not installed
-pytestmark = pytest.mark.skipif(not CRYPTOGRAPHY_AVAILABLE, reason="Requires cryptography library")
+# --- Fixtures ---
 
 @pytest.fixture
 def encryption_password() -> str:
+    """Provides a standard password for encryption tests."""
     return "my-secret-rag-key-42"
 
 @pytest.fixture
-def encrypted_store(temp_db_path: Path, encryption_password: str) -> safe_store:
-    """Provides a safe_store instance configured with encryption."""
-    if temp_db_path.exists(): temp_db_path.unlink()
-    lock_path = temp_db_path.with_suffix(".db.lock")
-    if lock_path.exists(): lock_path.unlink()
+def encrypted_store(tmp_path, encryption_password) -> SafeStore:
+    """Creates a SafeStore instance initialized with encryption."""
+    db_path = tmp_path / "encrypted_test_store.db"
+    # Use DEBUG for potentially more info during test failures
+    store = SafeStore(db_path, log_level=LogLevel.DEBUG, encryption_key=encryption_password)
+    yield store # Provide the store to the test
+    # Teardown: Close the store connection explicitly
+    store.close()
+    # Optional: Remove DB and lock file if needed, though tmp_path usually handles cleanup
+    # db_path.unlink(missing_ok=True)
+    # Path(f"{db_path}.lock").unlink(missing_ok=True)
 
-    store = safe_store(
-        db_path=temp_db_path,
-        log_level=LogLevel.DEBUG,
-        encryption_key=encryption_password
-    )
+@pytest.fixture
+def unencrypted_store(tmp_path) -> SafeStore:
+    """Creates a SafeStore instance initialized without encryption."""
+    db_path = tmp_path / "unencrypted_test_store.db"
+    store = SafeStore(db_path, log_level=LogLevel.DEBUG, encryption_key=None)
     yield store
     store.close()
 
 @pytest.fixture
-def unencrypted_store(temp_db_path: Path) -> safe_store:
-    """Provides a safe_store instance WITHOUT encryption."""
-    # Use a different DB file or ensure cleanup
-    db_path = temp_db_path.parent / "unencrypted_test.db"
-    if db_path.exists(): db_path.unlink()
-    lock_path = db_path.with_suffix(".db.lock")
-    if lock_path.exists(): lock_path.unlink()
+def sample_encrypt_text_file(tmp_path) -> Path:
+    """Creates a sample text file for encryption tests."""
+    doc_dir = tmp_path / "docs"
+    doc_dir.mkdir()
+    file_path = doc_dir / "encrypt_me.txt"
+    # Content designed to split across chunks with size=30, overlap=5
+    file_path.write_text("This text should be encrypted.\nIt has multiple lines.", encoding='utf-8')
+    return file_path
 
-    store = safe_store(db_path=db_path, log_level=LogLevel.DEBUG)
-    yield store
-    store.close()
+# --- Test Cases ---
 
-@pytest.fixture
-def sample_encrypt_text_file(tmp_path: Path) -> Path:
-    """Creates a temporary text file specifically for encryption tests."""
-    p = tmp_path / "encrypt_me.txt"
-    p.write_text("This text should be encrypted.\nIt has multiple lines.", encoding='utf-8')
-    return p
+def test_encryptor_init_no_deps(mocker):
+    """Test Encryptor raises ConfigurationError if cryptography is missing."""
+    mocker.patch('safe_store.security.encryption.CRYPTOGRAPHY_AVAILABLE', False)
+    with pytest.raises(ConfigurationError, match="Encryption features require 'cryptography'"):
+        Encryptor("any_password")
 
+def test_encryptor_init_with_password(encryption_password):
+    """Test Encryptor initializes with a valid password."""
+    try:
+        encryptor = Encryptor(encryption_password)
+        assert encryptor.is_enabled
+    except Exception as e:
+        pytest.fail(f"Encryptor init failed with valid password: {e}")
 
-def test_init_with_encryption(encrypted_store: safe_store):
-    """Test that the store initializes correctly with a key."""
-    assert encrypted_store.encryptor.is_enabled
-    # Check log? (Already tested in Encryptor tests)
+def test_encryptor_init_no_password():
+    """Test Encryptor initializes correctly without a password."""
+    encryptor = Encryptor(None)
+    assert not encryptor.is_enabled
 
-def test_add_document_encrypts_chunks(encrypted_store: safe_store, sample_encrypt_text_file: Path, encryption_password: str):
+@pytest.mark.parametrize("invalid_password", ["", 123, None])
+def test_encryptor_init_invalid_password(invalid_password):
+    """Test Encryptor raises error on invalid password types."""
+    # Encryptor handles None specifically, so test others here
+    if invalid_password is None:
+         encryptor = Encryptor(None)
+         assert not encryptor.is_enabled
+    else:
+        with pytest.raises((ValueError, TypeError)): # Catch relevant init errors
+            Encryptor(invalid_password)
+
+def test_encryptor_encrypt_decrypt(encryption_password):
+    """Test basic encrypt/decrypt round trip."""
+    encryptor = Encryptor(encryption_password)
+    original_text = "Secret message here! £$%^&*()"
+    encrypted = encryptor.encrypt(original_text)
+    assert isinstance(encrypted, bytes)
+    assert encrypted != original_text.encode('utf-8')
+
+    decrypted = encryptor.decrypt(encrypted)
+    assert decrypted == original_text
+
+def test_encryptor_decrypt_wrong_key(encryption_password):
+    """Test decryption fails with the wrong key."""
+    encryptor1 = Encryptor(encryption_password)
+    encryptor2 = Encryptor("a-different-password")
+    original_text = "Top secret data"
+
+    encrypted = encryptor1.encrypt(original_text)
+
+    with pytest.raises(EncryptionError, match="Invalid token"):
+        encryptor2.decrypt(encrypted)
+
+def test_encryptor_decrypt_tampered(encryption_password):
+    """Test decryption fails if the token is tampered with."""
+    encryptor = Encryptor(encryption_password)
+    original_text = "Cannot touch this"
+    encrypted = encryptor.encrypt(original_text)
+
+    # Tamper with the encrypted data (e.g., flip a bit)
+    tampered_list = list(encrypted)
+    tampered_list[-1] = (tampered_list[-1] + 1) % 256
+    tampered_bytes = bytes(tampered_list)
+    assert tampered_bytes != encrypted # Ensure tampering occurred
+
+    with pytest.raises(EncryptionError, match="Invalid token"):
+        encryptor.decrypt(tampered_bytes)
+
+def test_encryptor_no_password_raises(encryption_password):
+    """Test that encrypt/decrypt raise error if encryptor was initialized without a password."""
+    encryptor_no_key = Encryptor(None)
+    encryptor_with_key = Encryptor(encryption_password)
+    data = "some data"
+    encrypted_data = encryptor_with_key.encrypt(data)
+
+    with pytest.raises(EncryptionError, match="Encryption is not enabled"):
+        encryptor_no_key.encrypt(data)
+
+    with pytest.raises(EncryptionError, match="Decryption is not enabled"):
+        encryptor_no_key.decrypt(encrypted_data)
+
+# --- SafeStore Integration Tests ---
+
+def test_init_with_encryption(tmp_path, encryption_password):
+    """Test SafeStore initialization with a valid encryption key."""
+    db_path = tmp_path / "init_enc_test.db"
+    try:
+        store = SafeStore(db_path, encryption_key=encryption_password)
+        assert store.encryptor is not None
+        assert store.encryptor.is_enabled
+        store.close()
+    except Exception as e:
+        pytest.fail(f"SafeStore init with encryption key failed: {e}")
+
+def test_init_without_encryption(tmp_path):
+    """Test SafeStore initialization without an encryption key."""
+    db_path = tmp_path / "init_no_enc_test.db"
+    try:
+        store = SafeStore(db_path, encryption_key=None)
+        assert store.encryptor is not None
+        assert not store.encryptor.is_enabled
+        store.close()
+    except Exception as e:
+        pytest.fail(f"SafeStore init without encryption key failed: {e}")
+
+def test_init_encryption_no_deps(tmp_path, encryption_password, mocker):
+    """Test SafeStore init fails if encryption requested but deps missing."""
+    mocker.patch('safe_store.security.encryption.CRYPTOGRAPHY_AVAILABLE', False)
+    db_path = tmp_path / "init_enc_fail_deps.db"
+    with pytest.raises(ConfigurationError, match="Encryption features require 'cryptography'"):
+        SafeStore(db_path, encryption_key=encryption_password)
+
+# --- Tests Adjusted for Chunk Overlap ---
+
+def test_add_document_encrypts_chunks(encrypted_store: SafeStore, sample_encrypt_text_file: Path, encryption_password: str):
     """Test that chunk text is encrypted when adding a document."""
     store = encrypted_store
-    original_content = sample_encrypt_text_file.read_text(encoding='utf-8')
-    chunk1_text = "This text should be encrypted." # Expected first chunk
-    chunk2_text = "It has multiple lines."       # Expected second chunk (approx)
+    # original_content = sample_encrypt_text_file.read_text(encoding='utf-8')
+    chunk1_text = "This text should be encrypted." # Expected first chunk (exactly 30 chars)
+    # Adjust the expectation for the second chunk based on overlap=5
+    # Chunking: "This text should be encrypted.\nIt has multiple lines."
+    # Chunk 1: "This text should be encrypted." (0-30)
+    # Chunk 2 starts at 30 - 5 = 25. End is len(text)=49.
+    # Chunk 2 text: text[25:49] -> "pted.\nIt has multiple lines."
+    chunk2_expected_text = "pted.\nIt has multiple lines."
 
     with store:
         store.add_document(sample_encrypt_text_file, chunk_size=30, chunk_overlap=5)
@@ -74,128 +185,120 @@ def test_add_document_encrypts_chunks(encrypted_store: safe_store, sample_encryp
     assert doc_id_res is not None
     doc_id = doc_id_res[0]
 
+    # Fetch chunk_text as bytes, and is_encrypted flag
+    conn.text_factory = bytes # Ensure TEXT columns are read as bytes if they contain BLOBs
     cursor.execute("SELECT chunk_text, is_encrypted FROM chunks WHERE doc_id = ? ORDER BY chunk_seq", (doc_id,))
     chunks_data = cursor.fetchall()
-    assert len(chunks_data) > 0
-    assert chunks_data[0][1] != chunk1_text.encode('utf-8') # Should not be plaintext bytes
-    assert chunks_data[0][1] != chunk1_text # Should not be plaintext string
-    assert chunks_data[0][1] is not None
-    assert chunks_data[0][0] is not None # Ensure chunk_text is not None
-    assert chunks_data[0][1] # is_encrypted flag should be True (1)
+    conn.close() # Close connection after fetching
+
+    assert len(chunks_data) >= 2 # Expect at least two chunks for this text/size
+    # Verify first chunk encryption
+    assert isinstance(chunks_data[0][0], bytes), "Chunk 0 text should be bytes"
+    assert chunks_data[0][1] == 1, "Chunk 0 is_encrypted flag should be 1"
 
     # --- Verify decryption works ---
-    # Use a separate Encryptor instance to mimic reading later
     verifier_encryptor = Encryptor(encryption_password)
     try:
-        decrypted_chunk1 = verifier_encryptor.decrypt(chunks_data[0][0]) # Assuming chunk_text is bytes token
-        assert decrypted_chunk1.startswith("This text should be encrypted")
+        decrypted_chunk1 = verifier_encryptor.decrypt(chunks_data[0][0])
+        assert decrypted_chunk1 == chunk1_text, f"Decrypted chunk 0 mismatch. Got: '{decrypted_chunk1}' Expected: '{chunk1_text}'"
     except Exception as e:
         pytest.fail(f"Decryption failed for chunk 0: {e}. Stored data: {chunks_data[0][0]!r}")
 
-    # Check second chunk if it exists
-    if len(chunks_data) > 1:
-        assert chunks_data[1][1] # is_encrypted flag
-        assert chunks_data[1][0] is not None
-        try:
-             decrypted_chunk2 = verifier_encryptor.decrypt(chunks_data[1][0])
-             assert decrypted_chunk2.startswith("It has multiple lines")
-        except Exception as e:
-             pytest.fail(f"Decryption failed for chunk 1: {e}. Stored data: {chunks_data[1][0]!r}")
+    # Check second chunk
+    assert isinstance(chunks_data[1][0], bytes), "Chunk 1 text should be bytes"
+    assert chunks_data[1][1] == 1, "Chunk 1 is_encrypted flag should be 1"
+    try:
+        decrypted_chunk2 = verifier_encryptor.decrypt(chunks_data[1][0])
+        # Modify assertion: Check if the expected overlapped content matches the actual decrypted content
+        assert decrypted_chunk2 == chunk2_expected_text, f"Decrypted chunk 1 mismatch. Got: '{decrypted_chunk2}' Expected: '{chunk2_expected_text}'"
+    except Exception as e:
+        # Keep the original assertion in the fail message for context if it fails
+        pytest.fail(f"Decryption failed for chunk 1 OR assertion failed. Decrypted='{decrypted_chunk2}', Expected='{chunk2_expected_text}'. Original Error: {e}. Stored data: {chunks_data[1][0]!r}")
 
-
-    conn.close()
-
-
-def test_query_decrypts_chunks(encrypted_store: safe_store, sample_encrypt_text_file: Path):
+def test_query_decrypts_chunks(encrypted_store: SafeStore, sample_encrypt_text_file: Path):
     """Test that query results contain decrypted chunk text."""
     store = encrypted_store
     query_text = "multiple lines"
-    expected_part_of_chunk = "It has multiple lines."
+    # Adjust expected result based on chunking (size=30, overlap=5)
+    # The chunk containing "multiple lines" is the second chunk.
+    expected_full_chunk_text = "pted.\nIt has multiple lines."
 
     with store:
         store.add_document(sample_encrypt_text_file, chunk_size=30, chunk_overlap=5)
         results = store.query(query_text, top_k=1)
 
-    assert len(results) == 1
+    assert len(results) == 1, "Query should return one result"
     result_chunk = results[0]
     assert "chunk_text" in result_chunk
-    assert result_chunk["chunk_text"] == expected_part_of_chunk
-    assert "[Encrypted" not in result_chunk["chunk_text"]
+    # Modify assertion: Check the full expected content of the chunk
+    assert result_chunk["chunk_text"] == expected_full_chunk_text, f"Query result chunk text mismatch. Got: '{result_chunk['chunk_text']}' Expected: '{expected_full_chunk_text}'"
 
+# --- Remaining Tests (Should Pass with previous fixes) ---
 
-def test_query_encrypted_data_without_key(encrypted_store: safe_store, sample_encrypt_text_file: Path, temp_db_path: Path):
-    """Test querying encrypted data with a new store instance *without* the key."""
-    store1 = encrypted_store
-    db_file = store1.db_path # Get the path used by the encrypted store
-    query_text = "multiple lines"
-
-    # Add encrypted data
-    with store1:
-        store1.add_document(sample_encrypt_text_file, chunk_size=30, chunk_overlap=5)
-
-    # Create new store instance for the SAME DB file, but without the key
-    store2 = safe_store(db_file, log_level=LogLevel.DEBUG, encryption_key=None)
-    assert not store2.encryptor.is_enabled
-
-    with store2:
-        results = store2.query(query_text, top_k=1)
-
-    assert len(results) == 1
-    result_chunk = results[0]
-    assert "chunk_text" in result_chunk
-    assert result_chunk["chunk_text"] == "[Encrypted - Key Unavailable]"
-
-
-def test_query_encrypted_data_with_wrong_key(encrypted_store: safe_store, sample_encrypt_text_file: Path, temp_db_path: Path):
-    """Test querying encrypted data with a new store instance with the WRONG key."""
+def test_query_no_key_placeholder(encrypted_store: SafeStore, sample_encrypt_text_file: Path):
+    """Test query returns placeholder if store lacks the key."""
     store1 = encrypted_store
     db_file = store1.db_path
-    query_text = "multiple lines"
 
     # Add encrypted data
     with store1:
         store1.add_document(sample_encrypt_text_file, chunk_size=30, chunk_overlap=5)
 
-    # Create new store instance for the SAME DB file, with the WRONG key
-    store2 = safe_store(db_file, log_level=LogLevel.DEBUG, encryption_key="wrong-password")
-    assert store2.encryptor.is_enabled
+    # New store without key
+    store2 = SafeStore(db_file, log_level=LogLevel.DEBUG, encryption_key=None)
 
     with store2:
-        results = store2.query(query_text, top_k=1)
+        results = store2.query("multiple lines", top_k=1)
+        assert len(results) == 1
+        assert results[0]['chunk_text'] == "[Encrypted - Key Unavailable]"
 
-    assert len(results) == 1
-    result_chunk = results[0]
-    assert "chunk_text" in result_chunk
-    assert result_chunk["chunk_text"] == "[Encrypted - Decryption Failed]"
+def test_query_wrong_key_placeholder(encrypted_store: SafeStore, sample_encrypt_text_file: Path):
+    """Test query returns placeholder if store has the wrong key."""
+    store1 = encrypted_store
+    db_file = store1.db_path
 
+    # Add encrypted data
+    with store1:
+        store1.add_document(sample_encrypt_text_file, chunk_size=30, chunk_overlap=5)
 
-def test_add_vectorization_decrypts_for_tfidf(encrypted_store: safe_store, sample_encrypt_text_file: Path):
-    """Test add_vectorization decrypts text before fitting TF-IDF."""
+    # New store with wrong key
+    store2 = SafeStore(db_file, log_level=LogLevel.DEBUG, encryption_key="this-is-definitely-wrong")
+
+    with store2:
+        results = store2.query("multiple lines", top_k=1)
+        assert len(results) == 1
+        assert results[0]['chunk_text'] == "[Encrypted - Decryption Failed]"
+
+def test_add_vectorization_decrypts_for_tfidf(encrypted_store: SafeStore, sample_encrypt_text_file: Path):
+    """Test add_vectorization can decrypt chunks to fit TF-IDF if key is present."""
     store = encrypted_store
-    tfidf_name = "tfidf:encrypted_fit"
+    tfidf_name = "tfidf:encrypted_fit_ok"
 
     with store:
         # Add encrypted document first
-        store.add_document(sample_encrypt_text_file, chunk_size=30, chunk_overlap=5)
+        store.add_document(sample_encrypt_text_file, chunk_size=30, chunk_overlap=5, vectorizer_name="st:all-MiniLM-L6-v2")
 
-        # Now add TF-IDF - this should decrypt the chunks for fitting
-        store.add_vectorization(tfidf_name)
+        # Now add TF-IDF - store should decrypt the chunks internally for fitting
+        try:
+            store.add_vectorization(tfidf_name)
+        except Exception as e:
+            pytest.fail(f"add_vectorization failed when it should have decrypted: {e}")
 
-        # Verify TF-IDF was fitted and vectors were added
+        # Verify TF-IDF method exists and is fitted
         methods = store.list_vectorization_methods()
-        tfidf_method = next((m for m in methods if m["method_name"] == tfidf_name), None)
+        tfidf_method = next((m for m in methods if m['method_name'] == tfidf_name), None)
         assert tfidf_method is not None
-        assert tfidf_method["params"]["fitted"] is True
-        assert tfidf_method["vector_dim"] > 0
+        assert tfidf_method.get('params', {}).get('fitted') is True
 
-        conn = store.conn
+        # Optional: Check if vectors were actually added
+        conn = sqlite3.connect(store.db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM vectors WHERE method_id = ?", (tfidf_method["method_id"],))
+        cursor.execute("SELECT COUNT(*) FROM vectors WHERE method_id = ?", (tfidf_method['method_id'],))
         vector_count = cursor.fetchone()[0]
-        assert vector_count > 0 # Should be equal to the number of chunks
+        conn.close()
+        assert vector_count > 0 # Should have added vectors for the chunks
 
-
-def test_add_vectorization_fails_without_key(encrypted_store: safe_store, sample_encrypt_text_file: Path):
+def test_add_vectorization_fails_without_key(encrypted_store: SafeStore, sample_encrypt_text_file: Path):
     """Test add_vectorization (TF-IDF fit) fails if data is encrypted and key is missing."""
     store1 = encrypted_store
     db_file = store1.db_path
@@ -206,14 +309,16 @@ def test_add_vectorization_fails_without_key(encrypted_store: safe_store, sample
         store1.add_document(sample_encrypt_text_file, chunk_size=30, chunk_overlap=5)
 
     # New store without key
-    store2 = safe_store(db_file, log_level=LogLevel.DEBUG, encryption_key=None)
+    store2 = SafeStore(db_file, log_level=LogLevel.DEBUG, encryption_key=None)
 
     with store2:
-        with pytest.raises(ConfigurationError, match="Cannot fit TF-IDF on encrypted chunks without the correct encryption key."):
-            store2.add_vectorization(tfidf_name)
+        # The error message comes from _add_vectorization_impl in store.py
+        # Use the corrected message based on previous fix
+        expected_error_msg = "Cannot fit TF-IDF on encrypted chunks without the correct encryption key."
+        with pytest.raises(ConfigurationError, match=expected_error_msg):
+              store2.add_vectorization(tfidf_name)
 
-
-def test_unencrypted_store_ignores_encrypted_chunks(unencrypted_store: safe_store, encrypted_store: safe_store, sample_encrypt_text_file: Path):
+def test_unencrypted_store_ignores_encrypted_chunks(unencrypted_store: SafeStore, encrypted_store: SafeStore, sample_encrypt_text_file: Path):
     """ Test interaction: Add encrypted data, then try to read/query with unencrypted store"""
     # Setup: Add encrypted data using encrypted_store
     with encrypted_store:
@@ -221,7 +326,7 @@ def test_unencrypted_store_ignores_encrypted_chunks(unencrypted_store: safe_stor
     db_path = encrypted_store.db_path # Get the path
 
     # Test: Open SAME DB with unencrypted store
-    store_no_key = safe_store(db_path, log_level=LogLevel.DEBUG, encryption_key=None)
+    store_no_key = SafeStore(db_path, log_level=LogLevel.DEBUG, encryption_key=None)
     with store_no_key:
         # Querying should return placeholders
         results = store_no_key.query("multiple lines", top_k=1)
@@ -230,8 +335,7 @@ def test_unencrypted_store_ignores_encrypted_chunks(unencrypted_store: safe_stor
 
         # Adding a NEW vectorization method that requires reading text should fail
         tfidf_name = "tfidf:fail_on_encrypted"
-        with pytest.raises(ConfigurationError, match="Cannot fit TF-IDF on encrypted chunks without the correct encryption key."):
-             store_no_key.add_vectorization(tfidf_name)
-
-    store_no_key.close()
-
+        # Use the corrected message based on previous fix
+        expected_error_msg = "Cannot fit TF-IDF on encrypted chunks without the correct encryption key."
+        with pytest.raises(ConfigurationError, match=expected_error_msg):
+               store_no_key.add_vectorization(tfidf_name)

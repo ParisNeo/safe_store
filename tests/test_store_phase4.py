@@ -7,7 +7,7 @@ import re
 
 # Import exceptions and modules
 from safe_store import store as safe_store_store_module
-from safe_store import safe_store, LogLevel
+from safe_store import SafeStore, LogLevel
 from safe_store.core import db
 from safe_store.core.exceptions import ConcurrencyError, FileHandlingError, ConfigurationError, SafeStoreError
 
@@ -51,7 +51,7 @@ def assert_log_call_containing(mock_logger, expected_substring):
 def test_store_close_and_context_manager(mock_manager_colors, mock_store_colors, mock_db_colors, temp_db_path):
     """Test explicit close() and context manager usage."""
     # mock_db_colors is now available
-    store = safe_store(temp_db_path, log_level=LogLevel.DEBUG)
+    store = SafeStore(temp_db_path, log_level=LogLevel.DEBUG)
     assert store.conn is not None
     assert not store._is_closed
     # Check initial connection log
@@ -80,7 +80,7 @@ def test_store_close_and_context_manager(mock_manager_colors, mock_store_colors,
     mock_store_colors.reset_mock()
     mock_manager_colors.reset_mock()
     mock_db_colors.reset_mock() # Reset this mock too
-    with safe_store(temp_db_path, log_level=LogLevel.DEBUG) as store_ctx:
+    with SafeStore(temp_db_path, log_level=LogLevel.DEBUG) as store_ctx:
         assert store_ctx.conn is not None
         assert not store_ctx._is_closed
         # +++ FIX: Check the correct mock for the connection log +++
@@ -104,20 +104,20 @@ def test_store_close_and_context_manager(mock_manager_colors, mock_store_colors,
         print("Cache clear log not found after context exit, cache might have been empty.")
 
 
-def test_list_documents_empty(safe_store_instance: safe_store):
+def test_list_documents_empty(safe_store_instance: SafeStore):
     """Test listing documents from an empty store."""
     with safe_store_instance as store:
         docs = store.list_documents()
     assert docs == []
 
-def test_list_vectorization_methods_empty(safe_store_instance: safe_store):
+def test_list_vectorization_methods_empty(safe_store_instance: SafeStore):
     """Test listing methods from an empty store."""
     with safe_store_instance as store:
         methods = store.list_vectorization_methods()
     assert methods == []
 
 
-def test_list_documents_populated(populated_store: safe_store):
+def test_list_documents_populated(populated_store: SafeStore):
     """Test listing documents after adding some."""
     with populated_store as store:
         docs = store.list_documents()
@@ -131,7 +131,7 @@ def test_list_documents_populated(populated_store: safe_store):
     assert doc1_info["metadata"] is None
 
 
-def test_list_vectorization_methods_populated(populated_store: safe_store):
+def test_list_vectorization_methods_populated(populated_store: SafeStore):
     """Test listing methods after adding documents."""
     with populated_store as store:
         methods = store.list_vectorization_methods()
