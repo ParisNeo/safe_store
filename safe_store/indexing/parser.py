@@ -302,6 +302,132 @@ def parse_document(file_path: Union[str, Path]) -> str:
         '.docx': parse_docx,
         '.html': parse_html,
         '.htm': parse_html, # Treat .htm the same as .html
+
+        # --- General Text & Document Formats ---
+        '.md': parse_txt,        # Markdown
+        '.rst': parse_txt,       # reStructuredText
+        '.tex': parse_txt,       # LaTeX source
+        '.rtf': parse_txt,       # Rich Text Format (basic text extraction)
+        '.log': parse_txt,       # Log files
+        '.text': parse_txt,      # Generic text
+        '.me': parse_txt,        # Often README files
+        '.org': parse_txt,       # Emacs Org-mode
+
+        # --- Data Serialization Formats (parsed as raw text) ---
+        # If structured parsing is needed, dedicated parsers would be better.
+        # For now, we treat them as text sources.
+        '.json': parse_txt,      # JavaScript Object Notation
+        '.xml': parse_txt,       # Extensible Markup Language
+        '.csv': parse_txt,       # Comma-Separated Values
+        '.tsv': parse_txt,       # Tab-Separated Values
+        '.yaml': parse_txt,      # YAML Ain't Markup Language
+        '.yml': parse_txt,       # YAML Ain't Markup Language (alternative)
+        '.sql': parse_txt,       # SQL scripts
+        '.graphql': parse_txt,   # GraphQL query language
+        '.gql': parse_txt,       # GraphQL query language (alternative)
+
+        # --- Configuration Files ---
+        '.ini': parse_txt,       # INI configuration
+        '.cfg': parse_txt,       # Configuration file
+        '.conf': parse_txt,      # Configuration file
+        '.toml': parse_txt,      # Tom's Obvious, Minimal Language
+        '.env': parse_txt,       # Environment variables (e.g., .env files)
+        '.properties': parse_txt,# Java properties files
+        '. Htaccess': parse_txt, # Apache configuration (note: often no prefix dot in map)
+        '.dockerfile': parse_txt,# Docker configuration
+        'dockerfile': parse_txt, # Docker configuration (common naming)
+        '.gitattributes': parse_txt, # Git attributes
+        '.gitconfig': parse_txt,   # Git configuration
+        '.gitignore': parse_txt,   # Git ignore patterns
+
+        # --- Programming Language Source Code ---
+        # Scripting Languages
+        '.py': parse_txt,        # Python
+        '.pyw': parse_txt,       # Python (GUI, no console)
+        '.js': parse_txt,        # JavaScript
+        '.mjs': parse_txt,       # ECMAScript modules
+        '.cjs': parse_txt,       # CommonJS modules
+        '.ts': parse_txt,        # TypeScript
+        '.tsx': parse_txt,       # TypeScript with JSX (React)
+        '.rb': parse_txt,        # Ruby
+        '.pl': parse_txt,        # Perl
+        '.pm': parse_txt,        # Perl Module
+        '.php': parse_txt,       # PHP
+        '.phtml': parse_txt,     # PHP templating
+        '.sh': parse_txt,        # Shell script (Bourne, Bash, etc.)
+        '.bash': parse_txt,      # Bash script
+        '.zsh': parse_txt,       # Zsh script
+        '.fish': parse_txt,      # Fish shell script
+        '.ps1': parse_txt,       # PowerShell
+        '.psm1': parse_txt,      # PowerShell Module
+        '.psd1': parse_txt,      # PowerShell Data File
+        '.lua': parse_txt,       # Lua
+        '.r': parse_txt,         # R language
+        '.tcl': parse_txt,       # TCL
+        '.dart': parse_txt,      # Dart
+
+        # Compiled Languages (Source)
+        '.c': parse_txt,         # C
+        '.h': parse_txt,         # C/C++ Header
+        '.cpp': parse_txt,       # C++
+        '.cxx': parse_txt,       # C++ (alternative)
+        '.cc': parse_txt,        # C++ (alternative)
+        '.hpp': parse_txt,       # C++ Header
+        '.hxx': parse_txt,       # C++ Header (alternative)
+        '.cs': parse_txt,        # C#
+        '.java': parse_txt,      # Java
+        '.go': parse_txt,        # Go
+        '.rs': parse_txt,        # Rust
+        '.swift': parse_txt,     # Swift
+        '.kt': parse_txt,        # Kotlin
+        '.kts': parse_txt,       # Kotlin Script
+        '.scala': parse_txt,     # Scala
+        '.m': parse_txt,         # Objective-C or MATLAB (source is text)
+        '.mm': parse_txt,        # Objective-C++
+        '.f': parse_txt,         # Fortran
+        '.for': parse_txt,       # Fortran
+        '.f90': parse_txt,       # Fortran 90
+        '.f95': parse_txt,       # Fortran 95
+        '.pas': parse_txt,       # Pascal
+        '.d': parse_txt,         # D language
+        '.vb': parse_txt,        # Visual Basic .NET
+        '.vbs': parse_txt,       # VBScript
+
+        # Web Development & Templating (beyond just HTML)
+        '.css': parse_txt,       # Cascading Style Sheets
+        '.scss': parse_txt,      # Sass CSS preprocessor
+        '.sass': parse_txt,      # Sass CSS preprocessor (indented syntax)
+        '.less': parse_txt,      # Less CSS preprocessor
+        '.styl': parse_txt,      # Stylus CSS preprocessor
+        '.jsx': parse_txt,       # JavaScript XML (React)
+        '.vue': parse_txt,       # Vue.js single-file components
+        '.svelte': parse_txt,    # Svelte components
+        '.ejs': parse_txt,       # Embedded JavaScript templates
+        '.hbs': parse_txt,       # Handlebars templates
+        '.mustache': parse_txt,  # Mustache templates
+        '.jinja': parse_txt,     # Jinja templates (Python)
+        '.jinja2': parse_txt,    # Jinja2 templates
+        '.twig': parse_txt,      # Twig templates (PHP)
+        '.erb': parse_txt,       # Embedded Ruby (Rails templates)
+        '.jsp': parse_txt,       # JavaServer Pages
+        '.asp': parse_txt,       # Active Server Pages (classic)
+        '.aspx': parse_txt,      # ASP.NET Web Forms
+
+        # Other/Assembly/Specialized
+        '.asm': parse_txt,       # Assembly language
+        '.s': parse_txt,         # Assembly language (common on Unix)
+        '.bat': parse_txt,       # Batch file (Windows)
+        '.cmd': parse_txt,       # Command script (Windows NT)
+        '.vhd': parse_txt,       # VHDL (Hardware description language)
+        '.vhdl': parse_txt,      # VHDL
+        '.sv': parse_txt,        # SystemVerilog
+        '.bib': parse_txt,       # BibTeX bibliography file
+        '.srt': parse_txt,       # SubRip Subtitle file
+        '.sub': parse_txt,       # Subtitle file
+        '.vtt': parse_txt,       # WebVTT Subtitle file
+        '.po': parse_txt,        # Portable Object (localization)
+        '.pot': parse_txt,       # Portable Object Template (localization)
+        '.strings': parse_txt,   # iOS/macOS localization strings        
     }
 
     parser_func = parser_map.get(extension)
