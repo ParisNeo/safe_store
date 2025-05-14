@@ -1,0 +1,3 @@
+safe_store is a Python library for local vector storage.
+    It uses SQLite as its backend, making it lightweight and file-based.
+    Key features include concurrency control and support for multiple vectorizers.

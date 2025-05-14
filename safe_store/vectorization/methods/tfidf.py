@@ -6,6 +6,9 @@ from ..base import BaseVectorizer
 from ...core.exceptions import ConfigurationError, VectorizationError # Import custom exceptions
 from ascii_colors import ASCIIColors
 
+# each vectorizer must have a class name variable to be identified
+class_name="TfidfVectorizerWrapper"
+
 # Attempt import, handle gracefully
 try:
     from sklearn.feature_extraction.text import TfidfVectorizer
@@ -34,7 +37,7 @@ class TfidfVectorizerWrapper(BaseVectorizer):
         initial_params (Dict[str, Any]): Parameters used during initialization.
     """
 
-    def __init__(self, params: Optional[Dict[str, Any]] = None):
+    def __init__(self, model_identifier_string:Optional[str]="", params: Optional[Dict[str, Any]] = None):
         """
         Initializes the TfidfVectorizerWrapper.
 
@@ -49,6 +52,10 @@ class TfidfVectorizerWrapper(BaseVectorizer):
             ConfigurationError: If the 'scikit-learn' library is not installed.
             VectorizationError: If provided parameters are invalid for TfidfVectorizer.
         """
+        super().__init__(
+            vectorizer_name = "tfidf"
+        )
+
         if not _SKLEARN_AVAILABLE or TfidfVectorizer is None:
             msg = "TfidfVectorizerWrapper requires 'scikit-learn' library. Install with: pip install safe_store[tfidf]"
             ASCIIColors.error(msg)

@@ -1,9 +1,12 @@
 # safe_store/vectorization/methods/sentence_transformer.py
 import numpy as np
-from typing import List, Optional # Added Optional
+from typing import List, Optional, Dict, Any # Added Optional
 from ..base import BaseVectorizer
 from ...core.exceptions import ConfigurationError, VectorizationError # Import custom exceptions
 from ascii_colors import ASCIIColors
+
+# each vectorizer must have a class name variable to be identified
+class_name="STVectorizer"
 
 # Attempt import, handle gracefully
 try:
@@ -14,7 +17,7 @@ except ImportError:
     SentenceTransformer = None # Set to None if import fails
 
 
-class SentenceTransformerVectorizer(BaseVectorizer):
+class STVectorizer(BaseVectorizer):
     """
     Vectorizes text using models from the sentence-transformers library.
 
@@ -27,14 +30,14 @@ class SentenceTransformerVectorizer(BaseVectorizer):
 
     DEFAULT_MODEL: str = "all-MiniLM-L6-v2"
 
-    def __init__(self, model_name: Optional[str] = None):
+    def __init__(self, model_identifier_string: Optional[str] = None, params: Optional[Dict[str, Any]] = None):
         """
         Initializes the SentenceTransformerVectorizer.
 
         Loads the specified sentence-transformer model.
 
         Args:
-            model_name: The name of the model to load from the
+            model_identifier_string: The name of the model to load from the
                         sentence-transformers library (e.g., 'all-MiniLM-L6-v2').
                         Defaults to `SentenceTransformerVectorizer.DEFAULT_MODEL`.
 
@@ -42,12 +45,16 @@ class SentenceTransformerVectorizer(BaseVectorizer):
             ConfigurationError: If the 'sentence-transformers' library is not installed.
             VectorizationError: If the specified model cannot be loaded.
         """
+        super().__init__(
+            vectorizer_name = "sentence_transformer"
+        )
+
         if not _SENTENCE_TRANSFORMERS_AVAILABLE or SentenceTransformer is None:
             msg = "SentenceTransformerVectorizer requires 'sentence-transformers' library. Install with: pip install safe_store[sentence-transformers]"
             ASCIIColors.error(msg)
             raise ConfigurationError(msg)
 
-        self.model_name: str = model_name or self.DEFAULT_MODEL
+        self.model_name: str = model_identifier_string or self.DEFAULT_MODEL
         ASCIIColors.info(f"Loading Sentence Transformer model: {self.model_name}")
         try:
             # Instantiate the model

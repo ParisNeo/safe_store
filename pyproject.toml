@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 [project]
 name = "safe-store"
 # Bump version for this release
-version = "1.6.4"
+version = "1.7.0"
 description = "Simple, concurrent SQLite-based vector store optimized for local RAG pipelines, with optional encryption."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -16,7 +16,7 @@ authors = [
 ]
 keywords = ["vector", "database", "sqlite", "rag", "llm", "embedding", "semantic search", "local", "concurrent", "encryption"]
 classifiers = [
-    "Development Status :: 4 - Beta", # Or "5 - Production/Stable" if ready
+    "Development Status :: 5 - Production/Stable", # Or "5 - Production/Stable" if ready
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
@@ -35,6 +35,7 @@ classifiers = [
 ]
 # Core dependencies
 dependencies = [
+    "pipmaster>=0.7.2",
     "numpy>=1.21",
     "ascii_colors>=0.7.0", # For logging/console output
     "filelock>=3.9",       # For concurrency control

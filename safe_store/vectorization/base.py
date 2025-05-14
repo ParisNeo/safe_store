@@ -10,6 +10,9 @@ class BaseVectorizer(ABC):
     Defines the common interface for converting text into numerical vectors.
     """
 
+    def __init__(self, vectorizer_name:str="unknown"):
+        self.vectorizer_name = vectorizer_name
+
     @abstractmethod
     def vectorize(self, texts: List[str]) -> np.ndarray:
         """

@@ -9,8 +9,22 @@ DB_FILE = "basic_usage_store.db"
 DOC_DIR = Path("temp_docs_basic")
 USE_ST = True       # Set to False if sentence-transformers not installed
 USE_TFIDF = True    # Set to False if scikit-learn not installed
+USE_OLLAMA = True   # deactivate if you don't have an ollama server with emdebbing models
+USE_OPENAI = False   # deactivate of not using open ai or you don't have any key
+USE_COHERE = False   # deactivate of not using cohere ai or you don't have any key
 USE_PARSING = True  # Set to False if parsing libs not installed
 
+st_vectorizer_name = "st:all-MiniLM-L6-v2"
+tfidf_vectorizer_name="tfidf:my_tfidf"
+ollama_vectorizer_name = "ollama:bge-m3:latest"
+# option 1 : use your Envrionment vrairanble OPENAI_API_KEY
+openai_vectorizer_name = "openai:text-embedding-3-small"
+# option 2 : not advised as it will be saved to the sql database 
+# openai_vectorizer_name = "openai:text-embedding-3-small::sk-replacewithyourkey" # Warning!! Replace with your key
+# option 1 : use your Envrionment vrairanble COHERE_API_KEY
+cohere_vectorizer_name = "cohere:embed-english-v3.0"
+# option 2 : not advised as it will be saved to the sql database 
+# cohere_vectorizer_name = "cohere:embed-english-v3.0::replacewithyourkey" # Warning!! Replace with your key
 # --- Helper Functions ---
 def print_header(title):
     print("\n" + "="*10 + f" {title} " + "="*10)
@@ -98,7 +112,7 @@ if __name__ == "__main__":
                 try:
                     store.add_document(
                         doc1_path,
-                        vectorizer_name="st:all-MiniLM-L6-v2", # Default, but explicit here
+                        vectorizer_name=st_vectorizer_name, # Default, but explicit here
                         chunk_size=80,
                         chunk_overlap=15,
                         metadata={"source": "manual", "topic": "introduction"}
@@ -138,7 +152,7 @@ if __name__ == "__main__":
                 print_header("Adding TF-IDF Vectorization")
                 try:
                     store.add_vectorization(
-                        vectorizer_name="tfidf:my_tfidf",
+                        vectorizer_name=tfidf_vectorizer_name,
                         # Let safe_store handle fitting on all docs
                     )
                 except safe_store.ConfigurationError as e:
@@ -147,6 +161,47 @@ if __name__ == "__main__":
             else:
                 print_header("Skipping TF-IDF Vectorization")
 
+            # --- Add OLLAMA Vectorization to all docs ---
+            if USE_OLLAMA:
+                print_header("Adding Ollama Vectorization")
+                try:
+                    store.add_vectorization(
+                        vectorizer_name=ollama_vectorizer_name,
+                        # Let safe_store handle fitting on all docs
+                    )
+                except safe_store.ConfigurationError as e:
+                    print(f"  [SKIP] Could not add Ollama vectorization: {e}")
+                    USE_OLLAMA = False # Disable TFIDF if failed
+            else:
+                print_header("Skipping Ollama Vectorization")
+
+            # --- Add OpenAi Vectorization to all docs ---
+            if USE_OPENAI:
+                print_header("Adding OpenAi Vectorization")
+                try:
+                    store.add_vectorization(
+                        vectorizer_name=openai_vectorizer_name,
+                        # Let safe_store handle fitting on all docs
+                    )
+                except safe_store.ConfigurationError as e:
+                    print(f"  [SKIP] Could not add OpenAi vectorization: {e}")
+                    USE_OPENAI = False # Disable TFIDF if failed
+            else:
+                print_header("Skipping OpenAi Vectorization")
+
+            # --- Add Cohere Vectorization to all docs ---
+            if USE_COHERE:
+                print_header("Adding Cohere Vectorization")
+                try:
+                    store.add_vectorization(
+                        vectorizer_name=cohere_vectorizer_name,
+                        # Let safe_store handle fitting on all docs
+                    )
+                except safe_store.ConfigurationError as e:
+                    print(f"  [SKIP] Could not add Cohere vectorization: {e}")
+                    USE_COHERE = False # Disable TFIDF if failed
+            else:
+                print_header("Skipping Cohere Vectorization")
 
             # --- 4. Querying ---
             print_header("Querying")
@@ -154,7 +209,7 @@ if __name__ == "__main__":
 
             if USE_ST:
                 print("\nQuerying with Sentence Transformer...")
-                results_st = store.query(query_text, vectorizer_name="st:all-MiniLM-L6-v2", top_k=2)
+                results_st = store.query(query_text, vectorizer_name=st_vectorizer_name, top_k=2)
                 if results_st:
                     for i, res in enumerate(results_st):
                         print(f"  ST Result {i+1}: Score={res['similarity']:.4f}, Path='{Path(res['file_path']).name}', Text='{res['chunk_text'][:60]}...'")
@@ -166,7 +221,7 @@ if __name__ == "__main__":
 
             if USE_TFIDF:
                 print("\nQuerying with TF-IDF...")
-                results_tfidf = store.query(query_text, vectorizer_name="tfidf:my_tfidf", top_k=2)
+                results_tfidf = store.query(query_text, vectorizer_name=tfidf_vectorizer_name, top_k=2)
                 if results_tfidf:
                     for i, res in enumerate(results_tfidf):
                         print(f"  TFIDF Result {i+1}: Score={res['similarity']:.4f}, Path='{Path(res['file_path']).name}', Text='{res['chunk_text'][:60]}...'")
@@ -176,6 +231,42 @@ if __name__ == "__main__":
             else:
                 print("\nSkipping TF-IDF Query.")
 
+            if USE_OLLAMA:
+                print("\nQuerying with OLLAMA...")
+                results_tfidf = store.query(query_text, vectorizer_name=ollama_vectorizer_name, top_k=2)
+                if results_tfidf:
+                    for i, res in enumerate(results_tfidf):
+                        print(f"  TFIDF Result {i+1}: Score={res['similarity']:.4f}, Path='{Path(res['file_path']).name}', Text='{res['chunk_text'][:60]}...'")
+                        print(f"    Metadata: {res.get('metadata')}")
+                else:
+                    print("  No results found.")
+            else:
+                print("\nSkipping OLLAMA Query.")
+
+
+            if USE_OPENAI:
+                print("\nQuerying with OpenAi...")
+                results_tfidf = store.query(query_text, vectorizer_name=openai_vectorizer_name, top_k=2)
+                if results_tfidf:
+                    for i, res in enumerate(results_tfidf):
+                        print(f"  OPenAI Result {i+1}: Score={res['similarity']:.4f}, Path='{Path(res['file_path']).name}', Text='{res['chunk_text'][:60]}...'")
+                        print(f"    Metadata: {res.get('metadata')}")
+                else:
+                    print("  No results found.")
+            else:
+                print("\nSkipping OpenAI Query.")
+
+            if USE_COHERE:
+                print("\nQuerying with Cohere...")
+                results_tfidf = store.query(query_text, vectorizer_name=cohere_vectorizer_name, top_k=2)
+                if results_tfidf:
+                    for i, res in enumerate(results_tfidf):
+                        print(f"  Cohere Result {i+1}: Score={res['similarity']:.4f}, Path='{Path(res['file_path']).name}', Text='{res['chunk_text'][:60]}...'")
+                        print(f"    Metadata: {res.get('metadata')}")
+                else:
+                    print("  No results found.")
+            else:
+                print("\nSkipping Cohere Query.")
 
             # --- 5. File Updates & Re-indexing ---
             print_header("Updating and Re-indexing")

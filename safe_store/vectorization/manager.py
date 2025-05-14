@@ -1,14 +1,14 @@
 # safe_store/vectorization/manager.py
 import sqlite3
 import json
-from typing import Tuple, Optional, Dict, Any
+from typing import Tuple, Optional, Dict, Any, List
 import numpy as np
+import importlib
+import sys 
 
 from ..core import db
 from ..core.exceptions import ConfigurationError, VectorizationError, DatabaseError, SafeStoreError
 from .base import BaseVectorizer
-from .methods.sentence_transformer import SentenceTransformerVectorizer
-from .methods.tfidf import TfidfVectorizerWrapper
 from ascii_colors import ASCIIColors
 
 class VectorizationManager:
@@ -19,11 +19,17 @@ class VectorizationManager:
     their names (e.g., 'st:model-name', 'tfidf:method-name'). Interacts with the
     database to store and retrieve method details, including fitted state for
     methods like TF-IDF.
+    Dynamically loads vectorizer implementations from the 'methods' subdirectory.
     """
 
     def __init__(self):
         # Cache format: name -> (instance, method_id, params_from_db_at_load)
         self._cache: Dict[str, Tuple[BaseVectorizer, int, Optional[Dict[str, Any]]]] = {}
+
+    @staticmethod
+    def _to_pascal_case(text: str) -> str:
+        """Converts snake_case or kebab-case text to PascalCase."""
+        return text.replace('_', ' ').replace('-', ' ').title().replace(' ', '')
 
     def get_vectorizer(
         self,
@@ -42,19 +48,20 @@ class VectorizationManager:
 
         Args:
             name: The unique identifier for the vectorizer (e.g.,
-                  'st:all-MiniLM-L6-v2', 'tfidf:ngram1-max5k').
+                  'st:all-MiniLM-L6-v2', 'tfidf:ngram1-max5k', 'ollama:localhost:11434::llama2').
             conn: Active database connection.
             initial_params: Optional dictionary of parameters, primarily used
-                            for initializing TF-IDF with specific configurations
-                            if it's being created for the first time via this call.
+                            for initializing stateful vectorizers (like TF-IDF)
+                            with specific configurations if it's being created
+                            for the first time via this call.
 
         Returns:
             A tuple containing the (potentially cached) vectorizer instance
             and its method_id from the database.
 
         Raises:
-            ConfigurationError: If required dependencies are missing or the name
-                                format is unknown.
+            ConfigurationError: If required dependencies are missing, the name
+                                format is unknown, or module/class loading fails.
             VectorizationError: If initializing the vectorizer model fails.
             DatabaseError: If database interaction fails.
             SafeStoreError: For unexpected errors.
@@ -67,136 +74,147 @@ class VectorizationManager:
 
         ASCIIColors.info(f"Initializing vectorizer: {name}")
 
+        # --- 0. Parse Name ---
+        if ":" not in name:
+            raise ConfigurationError(
+                f"Invalid vectorizer name format: '{name}'. Must be 'type_key:identifier_string'."
+            )
+        parsed_method_type_key, model_identifier_string = name.split(":", 1)
+
         # --- 1. Check DB for Existing Method ---
         method_details = self._get_method_details_from_db(conn, name)
-        vectorizer: Optional[BaseVectorizer] = None
+        vectorizer_instance: Optional[BaseVectorizer] = None
         method_id: Optional[int] = None
         params_from_db: Optional[Dict[str, Any]] = None
-        method_type: Optional[str] = None
+        db_method_type: Optional[str] = None
 
         if method_details:
             method_id = method_details['method_id']
-            method_type = method_details['method_type']
-            dim = method_details['vector_dim'] # Dim/dtype primarily for info/verification
-            dtype_str = method_details['vector_dtype']
+            db_method_type = method_details['method_type']
             params_str = method_details['params']
+
+            if db_method_type != parsed_method_type_key:
+                ASCIIColors.warning(
+                    f"Method type key from name prefix ('{parsed_method_type_key}') "
+                    f"differs from DB method_type ('{db_method_type}') for '{name}'. "
+                    f"Using '{parsed_method_type_key}' for loading vectorizer module."
+                )
+
             if params_str:
                 try:
                     params_from_db = json.loads(params_str)
                 except json.JSONDecodeError:
                     ASCIIColors.warning(f"Could not decode params JSON for existing method '{name}' (ID: {method_id}). Proceeding without loaded params.")
-            ASCIIColors.debug(f"Found existing method '{name}' (ID: {method_id}) in DB. Type: {method_type}, Dim: {dim}, Dtype: {dtype_str}")
+            ASCIIColors.debug(f"Found existing method '{name}' (ID: {method_id}) in DB. Type from DB: {db_method_type}, Parsed type key: {parsed_method_type_key}")
         else:
-             ASCIIColors.debug(f"No existing method found in DB for '{name}'. Will create.")
-
+             ASCIIColors.debug(f"No existing method found in DB for '{name}'. Will create with type key '{parsed_method_type_key}'.")
 
         # --- 2. Instantiate Vectorizer ---
         try:
-            # Determine type from name prefix if not loaded from DB
-            if method_type is None:
-                 if name.startswith("st:"):
-                     method_type = "sentence_transformer"
-                 elif name.startswith("tfidf:"):
-                     method_type = "tfidf"
-                 else:
-                     raise ConfigurationError(f"Unknown vectorizer name format: {name}. Must start with 'st:' or 'tfidf:'.")
+            module_name = f"safe_store.vectorization.methods.{parsed_method_type_key}"
 
-            # Instantiate based on type
-            if method_type == "sentence_transformer":
-                model_name_part = name.split(":", 1)[1] if ":" in name else SentenceTransformerVectorizer.DEFAULT_MODEL
-                # ST initialization doesn't use params_from_db or initial_params
-                vectorizer = SentenceTransformerVectorizer(model_name=model_name_part)
+            try:
+                module = importlib.import_module(module_name)
+                
+                VectorizerClass = getattr(module, module.class_name)
+            except ImportError as e:
+                if e.name == module_name or (hasattr(e, 'path') and e.path is not None and parsed_method_type_key in e.path): # type: ignore
+                    raise ConfigurationError(f"No vectorizer module found for type '{parsed_method_type_key}' (expected at {module_name}.py). Error: {e}") from e
+                else: # ImportError from within the vectorizer's module
+                    raise # Let outer ImportError handler below catch this
+            except AttributeError:
+                raise ConfigurationError(f"Vectorizer class '{module.class_name}' not found in module '{module_name}'. Ensure the class exists and follows the naming convention '{self._to_pascal_case(parsed_method_type_key)}Vectorizer'.")
 
-            elif method_type == "tfidf":
-                # Use initial_params if creating new, else use loaded params_from_db
-                init_or_load_params = initial_params if params_from_db is None else params_from_db.get("sklearn_params", {})
-                vectorizer = TfidfVectorizerWrapper(params=init_or_load_params)
-                # Attempt to load fitted state ONLY if params were loaded from DB
-                if params_from_db and params_from_db.get("fitted"):
-                    vectorizer.load_fitted_state(params_from_db)
+            if not issubclass(VectorizerClass, BaseVectorizer):
+                raise ConfigurationError(f"Class '{module.class_name}' from '{module_name}' does not inherit from BaseVectorizer.")
 
-            else:
-                 # This case should be caught earlier by name format check
-                 raise ConfigurationError(f"Unsupported vectorizer type '{method_type}' derived from name '{name}'.")
+            vectorizer_instance = VectorizerClass(model_identifier_string=model_identifier_string)
+
+            if params_from_db: # Existing method in DB
+                if hasattr(vectorizer_instance, "configure_from_db_params"):
+                    vectorizer_instance.configure_from_db_params(params_from_db)
+                
+                if isinstance(params_from_db, dict) and params_from_db.get("fitted") and hasattr(vectorizer_instance, "load_fitted_state"):
+                    vectorizer_instance.load_fitted_state(params_from_db)
+            
+            elif initial_params: # New vectorizer instance, with initial_params
+                if hasattr(vectorizer_instance, "configure_from_initial_params"):
+                    vectorizer_instance.configure_from_initial_params(initial_params)
+                else:
+                    ASCIIColors.warning(f"Vectorizer '{name}' of type '{parsed_method_type_key}' received initial_params but does not implement 'configure_from_initial_params'. Params ignored.")
+            # If new and no initial_params, the vectorizer's __init__ handles its default setup.
 
         except ImportError as e:
-            # Raised by vectorizer __init__ if dependency missing
             dep_map = {
-                "sentence_transformer": "safe_store[sentence-transformers]",
-                "tfidf": "safe_store[tfidf]"
+                "st": "safe_store[sentence-transformers]",
+                "tfidf": "safe_store[tfidf]",
+                "ollama": "safe_store[ollama]", # Example
+                "openai": "safe_store[openai]", # Example
             }
-            install_cmd = dep_map.get(method_type, f"the required library for '{method_type}'")
-            msg = f"Missing dependency for {method_type} vectorizer '{name}'. Please install '{install_cmd}'. Error: {e}"
+            install_cmd = dep_map.get(parsed_method_type_key, f"the required library for '{parsed_method_type_key}' (check vectorizer documentation)")
+            msg = f"Missing dependency for '{parsed_method_type_key}' vectorizer '{name}'. Please install with: pip install \"{install_cmd}\". Original error: {e}"
             ASCIIColors.error(msg)
             raise ConfigurationError(msg) from e
+        except ConfigurationError: # Re-raise explicitly
+            raise
         except Exception as e:
-            # Catch other initialization errors (e.g., model loading failed)
-            msg = f"Failed to initialize {method_type} vectorizer '{name}': {e}"
+            msg = f"Failed to initialize '{parsed_method_type_key}' vectorizer '{name}': {e}"
             ASCIIColors.error(msg, exc_info=True)
-            raise VectorizationError(msg) from e # Use specific error
+            raise VectorizationError(msg) from e
 
-        if not vectorizer:
-            # Should not be reachable if instantiation logic is correct
-            raise SafeStoreError(f"Vectorizer instance could not be created for '{name}'.")
-
+        if not vectorizer_instance:
+            raise SafeStoreError(f"Vectorizer instance could not be created for '{name}'. This is an unexpected internal state.")
 
         # --- 3. Add/Get Method Record in DB ---
-        # Transaction should be handled by the caller (e.g., safe_store._add_document_impl)
         if method_id is None:
-            # Registering a new method
-            current_params: Dict[str, Any] = {}
+            current_params_to_store: Optional[Dict[str, Any]] = None
+            if hasattr(vectorizer_instance, "get_params_to_store"):
+                 current_params_to_store = vectorizer_instance.get_params_to_store()
+
             dim_to_store: int
-            if isinstance(vectorizer, TfidfVectorizerWrapper):
-                # TF-IDF might not be fitted yet, dim might be None. Store initial state.
-                current_params = vectorizer.get_params_to_store() # Includes fitted=False initially
-                dim_to_store = vectorizer.dim if vectorizer.dim is not None else 0 # Use 0 if dim unknown
+            if vectorizer_instance.dim is None:
+                ASCIIColors.debug(f"Vectorizer '{name}' has no dimension (dim is None) after initialization/configuration. Storing 0 for dim.")
+                dim_to_store = 0
             else:
-                # For ST, dim is known, params are minimal/none
-                current_params = {} # Or potentially {'model_name': vectorizer.model_name}? Keep simple for now.
-                dim_to_store = vectorizer.dim
+                dim_to_store = vectorizer_instance.dim
 
             try:
                  method_id = db.add_or_get_vectorization_method(
                      conn=conn,
                      name=name,
-                     type=method_type,
+                     type=parsed_method_type_key,
                      dim=dim_to_store,
-                     dtype=np.dtype(vectorizer.dtype).name,
-                     params=json.dumps(current_params) if current_params else None
+                     dtype=np.dtype(vectorizer_instance.dtype).name,
+                     params=json.dumps(current_params_to_store) if current_params_to_store else None
                  )
-                 ASCIIColors.debug(f"Vectorizer '{name}' registered in DB with method_id {method_id}.")
+                 ASCIIColors.debug(f"Vectorizer '{name}' (type '{parsed_method_type_key}') registered/retrieved in DB with method_id {method_id}.")
             except DatabaseError as e:
-                 # Handle potential race condition if another process added it between check and insert
                  if "UNIQUE constraint failed" in str(e):
-                      ASCIIColors.warning(f"Race condition detected? Method '{name}' registered by another process. Fetching existing ID.")
-                      conn.rollback() # Rollback the failed insert attempt
-                      method_details = self._get_method_details_from_db(conn, name)
-                      if method_details:
-                           method_id = method_details['method_id']
-                           # Update params_from_db as it might have changed
-                           params_str = method_details['params']
-                           if params_str:
-                                try: params_from_db = json.loads(params_str)
+                      ASCIIColors.warning(f"Race condition? Method '{name}' registered by another process. Fetching existing ID.")
+                      conn.rollback()
+                      method_details_rc = self._get_method_details_from_db(conn, name)
+                      if method_details_rc:
+                           method_id = method_details_rc['method_id']
+                           rc_params_str = method_details_rc['params']
+                           if rc_params_str:
+                                try: params_from_db = json.loads(rc_params_str)
                                 except json.JSONDecodeError: pass
                       else:
-                           # Should not happen if UNIQUE constraint failed
-                           msg = f"UNIQUE constraint failed for '{name}', but cannot fetch existing ID afterwards."
+                           msg = f"UNIQUE constraint failed for '{name}', but cannot fetch existing ID afterwards. Critical error."
                            ASCIIColors.critical(msg)
                            raise DatabaseError(msg) from e
                  else:
-                      raise # Re-raise other DatabaseErrors
+                      raise
         else:
-             # Method already existed in DB
              ASCIIColors.debug(f"Using existing method_id {method_id} for '{name}'.")
 
-
         # --- 4. Cache Result ---
-        if method_id is None: # Defensive check
+        if method_id is None:
              raise SafeStoreError(f"Failed to obtain a valid method_id for '{name}'.")
 
-        self._cache[name] = (vectorizer, method_id, params_from_db)
+        self._cache[name] = (vectorizer_instance, method_id, params_from_db)
         ASCIIColors.debug(f"Vectorizer '{name}' ready and cached (method_id {method_id}).")
-        return vectorizer, method_id
+        return vectorizer_instance, method_id
 
     def _get_method_details_from_db(self, conn: sqlite3.Connection, name: str) -> Optional[Dict[str, Any]]:
         """Fetches method details from the DB by name. Internal use."""
@@ -215,13 +233,13 @@ class VectorizationManager:
                     'method_type': result[1],
                     'vector_dim': result[2],
                     'vector_dtype': result[3],
-                    'params': result[4] # Keep as string, caller decides decoding
+                    'params': result[4]
                 }
             return None
         except sqlite3.Error as e:
             msg = f"Database error fetching vectorization method details for '{name}': {e}"
             ASCIIColors.error(msg, exc_info=True)
-            raise DatabaseError(msg) from e # Re-raise as DatabaseError
+            raise DatabaseError(msg) from e
 
     def update_method_params(
         self,
@@ -248,7 +266,6 @@ class VectorizationManager:
             SafeStoreError: For unexpected errors.
         """
         sql_parts = ["UPDATE vectorization_methods SET params = ?"]
-        # Use list for params, convert dict to JSON string
         params_list: List[Any] = [json.dumps(new_params)]
         if new_dim is not None:
             sql_parts.append(", vector_dim = ?")
@@ -262,24 +279,26 @@ class VectorizationManager:
         cursor = conn.cursor()
         try:
             cursor.execute(sql, tuple(params_list))
-            # No commit here, assume caller handles transaction
             ASCIIColors.debug(f"Prepared update for params (and dim if provided) for method_id {method_id}.")
             self.remove_from_cache_by_id(method_id, log_reason="param update")
 
         except sqlite3.Error as e:
             msg = f"Database error updating vectorization method params for ID {method_id}: {e}"
             ASCIIColors.error(msg, exc_info=True)
-            # Rollback handled by caller
             raise DatabaseError(msg) from e
         except Exception as e:
-            msg = f"Database error updating vectorization method params for ID {method_id}: {e}"
-            ASCIIColors.error(msg, exc_info=True)
-            raise SafeStoreError(msg) from e
+            if not isinstance(e, DatabaseError):
+                msg = f"Unexpected error updating vectorization method params for ID {method_id}: {e}"
+                ASCIIColors.error(msg, exc_info=True)
+                raise SafeStoreError(msg) from e
+            else: # Should already be caught by sqlite3.Error or be a DatabaseError
+                raise
+
 
     def remove_from_cache_by_id(self, method_id: int, log_reason: str = "removal") -> None:
         """Removes cache entries associated with a given method ID."""
-        # Use list() to avoid modifying dict during iteration if multiple names point to same ID (shouldn't happen)
-        cached_names_to_remove = [name for name, (_, mid, _) in self._cache.items() if mid == method_id]
+        # Use list() to avoid modifying dict during iteration
+        cached_names_to_remove = [name for name, (_, mid, _) in list(self._cache.items()) if mid == method_id]
         for name in cached_names_to_remove:
             if name in self._cache:
                 del self._cache[name]
@@ -288,6 +307,6 @@ class VectorizationManager:
     def clear_cache(self) -> None:
         """Clears the entire internal vectorizer cache."""
         count = len(self._cache)
-        self._cache = {}
+        self._cache.clear()
         if count > 0:
              ASCIIColors.debug(f"Cleared vectorizer manager cache ({count} items).")
