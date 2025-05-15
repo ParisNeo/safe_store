@@ -37,11 +37,23 @@ class ConcurrencyError(SafeStoreError):
     """Errors related to file locking or concurrent access issues (e.g., timeouts)."""
     pass
 
-class ConcurrencyError(SafeStoreError):
-    """Errors related to file locking or concurrent access issues (e.g., timeouts)."""
-    pass
-
 class EncryptionError(SafeStoreError):
    """Errors related to data encryption or decryption."""
    pass
 
+# --- New Graph-related Exceptions ---
+class GraphError(SafeStoreError):
+    """Base class for graph-specific errors."""
+    pass
+
+class GraphDBError(DatabaseError, GraphError): # Inherits from DatabaseError and GraphError
+    """Errors related to graph database operations."""
+    pass
+
+class GraphProcessingError(GraphError):
+    """Errors occurring during the processing of text to extract graph elements."""
+    pass
+
+class LLMCallbackError(GraphProcessingError):
+    """Errors related to the LLM processing callback function."""
+    pass
