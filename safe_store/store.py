@@ -213,7 +213,8 @@ class SafeStore:
         """Generates a SHA256 hash for the file content."""
         try:
             hasher = self._file_hasher()
-            while chunk := text.encode("utf8"): hasher.update(chunk)
+            chunk = text.encode("utf8")
+            hasher.update(chunk)
             return hasher.hexdigest()
         except FileNotFoundError as e:
             msg = f"File not found when trying to hash: {file_path}"
@@ -576,7 +577,7 @@ class SafeStore:
     def _add_text_impl(
         self,
         unique_id: str,
-        text_content: str,
+        text_content: str, # Renamed from 'text' to distinguish from chunk text variable
         vectorizer_name: Optional[str],
         chunk_size: int,
         chunk_overlap: int,
@@ -594,6 +595,7 @@ class SafeStore:
 
         try:
             current_hash = self._get_text_hash(text_content)
+            ASCIIColors.info("Hash validated")
         except SafeStoreError as e: # Raised by _get_text_hash for its internal errors
             ASCIIColors.error(f"Failed to compute hash for text ID '{unique_id}': {e}", exc_info=True)
             raise # Re-raise to be caught by the main try-except in add_text
