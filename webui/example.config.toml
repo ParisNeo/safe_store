@@ -1,0 +1,26 @@
+# Default config.toml
+
+[lollms]
+binding_name = "ollama" # Examples: "ollama", "lollms", "openai"
+host_address = "http://localhost:11434" # e.g., "http://localhost:9600" for lollms, null for openai
+model_name = "mistral:latest" # e.g., "mistral:latest", "gpt-4", specific model path for lollms
+# service_key = "sk-your_openai_key_here" # Only if needed, e.g. for OpenAI if not using env var
+
+[safestore]
+db_file = "webui_store.db"
+doc_dir = "webui_safestore_docs" # Directory where SafeStore processes files from
+default_vectorizer = "st:all-MiniLM-L6-v2"
+chunk_size = 250
+chunk_overlap = 40
+
+[graphstore]
+# Prompt templates can be very long, consider if they should be in config or loaded from separate files
+# For now, let's assume GraphStore uses its internal defaults if these are not specified or are empty.
+# graph_extraction_prompt_template_file = "prompts/graph_extraction.txt" 
+# query_parsing_prompt_template_file = "prompts/query_parsing.txt"
+
+[webui]
+host = "0.0.0.0"
+port = 8000
+temp_upload_dir = "temp_uploaded_files_webui"
+log_level = "INFO" # DEBUG, INFO, WARNING, ERROR, CRITICAL

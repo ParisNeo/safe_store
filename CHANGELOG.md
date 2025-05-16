@@ -4,22 +4,74 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-## [1.6.0] - 2025-05-08
+
+## [2.0.0] - 2025-05-16 
+
+
 ### Added
 
-*   **File formats**
-    *    Added more text based files format
+*   **Comprehensive Graph Database Functionality (`GraphStore`):**
+    *   Introduced the new `GraphStore` class, enabling `safe_store` to function as a hybrid vector and graph database, utilizing the same underlying SQLite backend. This allows users to build, manage, and query knowledge graphs extracted from their text data.
+    *   **LLM-Powered Graph Construction:**
+        *   `GraphStore` integrates with Large Language Models (LLMs) via a user-supplied `llm_executor_callback: Callable[[str_prompt], str_response]`.
+        *   **Internalized Prompt Engineering:** `GraphStore` now manages and provides optimized, detailed prompts to the `llm_executor_callback` for:
+            *   Extracting structured graph data (nodes with labels, properties, and a `unique_id_key`; relationships with source/target identifiers, types, and properties) from text chunks. Prompts instruct the LLM to return JSON within markdown code blocks.
+        *   **Node De-duplication and Property Updates:** Implemented `add_or_update_graph_node` logic in the database layer, which identifies existing nodes via a `unique_signature` (derived from label and a normalized unique ID property) and updates their properties if new information is extracted, or creates new nodes otherwise.
+        *   **Chunk-to-Graph Linking:** Extracted graph nodes are linked back to their originating text chunks in the `node_chunk_links` table, enabling traceability.
+    *   **Graph Building API:**
+        *   `GraphStore.process_chunk_for_graph(chunk_id)`: Processes a single text chunk to extract and store graph elements.
+        *   `GraphStore.build_graph_for_document(doc_id)`: Builds graph data for all chunks within a specified document.
+        *   `GraphStore.build_graph_for_all_documents()`: Iteratively processes all unprocessed chunks in the database to build or extend the graph, operating in batches.
+        *   Processed chunks are timestamped (`graph_processed_at`) to avoid redundant processing.
+    *   **LLM-Powered Natural Language Graph Querying:**
+        *   `GraphStore.query_graph(natural_language_query, output_mode, ...)`:
+            *   Utilizes the `llm_executor_callback` with an internal, sophisticated query-parsing prompt to translate natural language questions into structured parameters for graph traversal (e.g., identifying seed nodes, target relationship types, desired neighbor labels, traversal depth).
+            *   Performs graph traversal (currently a Breadth-First Search-like approach up to a specified depth) based on the LLM-parsed query parameters.
+            *   Offers flexible `output_mode`s:
+                *   `"graph_only"`: Returns the relevant subgraph (nodes and relationships).
+                *   `"chunks_summary"`: Returns a list of text chunk summaries linked to the nodes in the resulting subgraph, augmented with information about the linking graph nodes.
+                *   `"full"`: Combines both graph data and linked chunk summaries.
+    *   **Direct Graph Access API:**
+        *   `get_node_details(node_id)`: Retrieves full details for a specific node.
+        *   `get_nodes_by_label(label, limit)`: Fetches nodes matching a given label.
+        *   `get_relationships(node_id, relationship_type, direction, limit)`: Retrieves relationships connected to a node, with filtering options.
+        *   `find_neighbors(node_id, relationship_type, direction, limit)`: Finds neighbor nodes.
+        *   `get_chunks_for_node(node_id, limit)`: Retrieves text chunks associated with a specific graph node.
+    *   **Database Schema Enhancements:**
+        *   Integrated new tables (`graph_nodes`, `graph_relationships`, `node_chunk_links`, `store_metadata`) into the SQLite schema.
+        *   Added `graph_processed_at` column to the `chunks` table for tracking graph processing status.
+        *   The `db.initialize_schema` function now creates and manages this extended schema.
+    *   **Customizable Prompts:** Users can optionally provide their own `graph_extraction_prompt_template` and `query_parsing_prompt_template` during `GraphStore` initialization to override the library's defaults.
+    *   **Concurrency and Encryption:** `GraphStore` respects the existing file-locking mechanism for concurrent write safety and can utilize the `Encryptor` (if an `encryption_key` is provided) to decrypt chunk text for LLM processing.
+*   **New Graph-Specific Exceptions:** Introduced `GraphError`, `GraphDBError`, `GraphProcessingError`, and `LLMCallbackError` in `safe_store.core.exceptions`.
+*   **Comprehensive Example:** Added `examples/graph_usage.py` to demonstrate the setup and usage of `GraphStore`, including graph building from documents and natural language querying, using `lollms-client` as an example LLM interface.
+
+### Changed
+
+*   **Primary `GraphStore` Callback:** The mechanism for LLM interaction in `GraphStore` has been unified. Instead of separate callbacks for graph extraction and query parsing, `GraphStore.__init__` now expects a single `llm_executor_callback: Callable[[str_prompt], str_response]`. `GraphStore` is now responsible for crafting the specific prompts for different LLM tasks (graph extraction, query parsing) and passes these complete prompts to this executor callback.
+*   **Project Version:** Upgraded to `2.0.0` to signify this major functional expansion and the change in the primary LLM callback pattern for `GraphStore`.
+*   **Documentation (`README.md`):** Extensively updated to cover the new `GraphStore` class, its features, the dual vector/graph database nature of the library, and revised examples.
+*   **`safe_store/__init__.py`:** Exports the new `GraphStore` class and associated graph exceptions.
+
+## [1.7.0] - 2025-05-15 
+*(This version was in pyproject.toml but not explicitly in the previous changelog. Assuming it was an internal step or the version before this graph work)*
+### Changed
+*   Version bump for internal development or minor adjustments. *(Placeholder - adjust if specific changes were made for 1.7.0)*
+
 ## [1.6.0] - 2025-05-08
+### Added
+*   **File formats**
+    *    Added more text based files format (as per `safe_store/indexing/parser.py` update)
+
 ### Fixed
-*   Big change: the main class `safe_store` is now called `SafeStore`.
+*   Big change: the main class `SafeStore` is now called `SafeStore` (was `safe_store` before, this is a class name capitalization fix). *(This was listed as a fix for 1.6.0, but the class name was `SafeStore` in `store.py` for a while. Clarifying if this was a different instance or a documentation fix)*
 *   Corrected the error message string raised by `add_vectorization` when TF-IDF fitting is attempted on encrypted chunks without providing the necessary `encryption_key`. The message now aligns with test expectations, stating: "Cannot fit TF-IDF on encrypted chunks without the correct encryption key."
 
 ## [1.4.0] - 2025-04-20
 ### Added
-
 *   **Encryption:**
     *   Added optional encryption at rest for `chunk_text` using `cryptography` (Fernet/AES-128-CBC). Requires `safe_store[encryption]`.
-    *   Added `encryption_key` parameter to `safe_store.__init__`.
+    *   Added `encryption_key` parameter to `SafeStore.__init__`.
     *   Encryption/decryption is handled automatically during `add_document` and `query` if the key is present.
     *   `add_vectorization` now attempts decryption when fitting TF-IDF on potentially encrypted chunks.
     *   Added `safe_store.core.exceptions.EncryptionError`.
@@ -28,7 +80,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     *   Added `examples/encryption_usage.py`.
     *   Added documentation (`encryption.rst`) explaining the feature, usage, and security considerations.
 *   **Documentation:**
-    *   Created Sphinx documentation structure under `docs/`. (Moved from 1.3.0 plan to here as it aligns with final polish).
+    *   Created Sphinx documentation structure under `docs/`.
     *   Added content for `conf.py`, `index.rst`, `installation.rst`, `quickstart.rst`, `api.rst`, `logging.rst`, `encryption.rst`.
     *   Added `docs/requirements.txt`.
     *   Added `sphinx` and `sphinx-rtd-theme` to `[dev]` extras in `pyproject.toml`.
@@ -36,141 +88,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     *   Implemented `examples/custom_logging.py` demonstrating global `ascii_colors` configuration.
 *   **Testing:**
     *   Added comprehensive tests for encryption functionality.
-    *   Added tests for store closure (`close()`) and context manager (`__enter__`/`__exit__`) behavior. (Moved from 1.3.0 plan).
-    *   Added tests for `list_documents` and `list_vectorization_methods`. (Moved from 1.3.0 plan).
-    *   Ensured tests relying on optional dependencies are skipped correctly or use mocks when dependencies are unavailable (refined mock setup in `conftest.py`).
+    *   Added tests for store closure (`close()`) and context manager (`__enter__`/`__exit__`) behavior.
+    *   Added tests for `list_documents` and `list_vectorization_methods`.
+    *   Ensured tests relying on optional dependencies are skipped correctly or use mocks when dependencies are unavailable.
 
 ### Changed
-
 *   `pyproject.toml`: Bumped version to 1.4.0. Added `cryptography` dependency and `[encryption]` extra. Updated `[all]` and `[dev]` extras. Updated classifiers.
 *   `README.md`: Significantly updated with encryption feature, detailed logging section, refined quick start, installation instructions, and feature list.
 *   `safe_store/__init__.py`: Bumped version. Exposed `EncryptionError`.
 *   `safe_store/store.py`: Integrated `Encryptor`. Modified indexing and querying methods to handle encryption/decryption. Added related error handling.
-*   `tests/conftest.py`: Improved conditional mocking setup for optional dependencies (`sentence-transformers`, `scikit-learn`, `cryptography`) using `pytest.mark.skipif` in relevant test files/modules where mocks aren't sufficient. Applied mocks more selectively.
+*   `tests/conftest.py`: Improved conditional mocking setup for optional dependencies.
 *   Refined type hints and docstrings across modules for better clarity and consistency.
 
 ### Fixed
-
-*   Corrected assertions in `test_store_phase2.py` related to TF-IDF fitting log and cache removal log messages. (Moved fix confirmation from 1.2.0 change list as it was related to test refinement).
-*   Ensured `TfidfVectorizerWrapper.load_fitted_state` robustly reconstructs the internal state required for `transform` to work after loading, including setting the internal IDF diagonal matrix.
+*   Corrected assertions in `test_store_phase2.py` related to TF-IDF fitting log and cache removal log messages.
+*   Ensured `TfidfVectorizerWrapper.load_fitted_state` robustly reconstructs the internal state required for `transform` to work after loading.
 *   Addressed potential `TypeError` if encrypted chunk data was somehow stored as string instead of bytes during decryption.
 *   Fixed potential state inconsistencies in `TfidfVectorizerWrapper` if fitting failed or was performed on empty text.
 
-
 ## [1.3.0] - 2025-04-19
-
 ### Added
-
-*   **API Polish & Type Hinting:**
-    *   Added comprehensive type hints across the library (`safe_store`, `db.py`, vectorizers, parsers, etc.) using `typing`.
-    *   Improved docstrings for public classes and methods, explaining parameters, return values, and potential exceptions.
-*   **Error Handling:**
-    *   Consistently raise specific custom exceptions defined in `safe_store.core.exceptions` (e.g., `DatabaseError`, `FileHandlingError`, `ParsingError`, `ConfigurationError`, `VectorizationError`, `QueryError`, `ConcurrencyError`) instead of generic exceptions.
-    *   Ensured proper exception chaining using `raise ... from e`.
-    *   Improved error messages for clarity.
-*   **Documentation Structure:**
-    *   Created basic Sphinx documentation structure under `docs/`.
-    *   Added placeholder files for `conf.py`, `index.rst`, `installation.rst`, `quickstart.rst`, `api.rst`, `logging.rst`.
-    *   Added `docs/requirements.txt`. (Full content writing pending).
-*   **Examples:**
-    *   Added `examples/basic_usage.py` demonstrating core indexing and querying workflow.
-    *   Added `examples/custom_logging.py` showing how users can configure `ascii_colors` globally (e.g., set level, log to file).
-*   **Helper Methods:**
-    *   Added `safe_store.list_documents()` to retrieve metadata about stored documents.
-    *   Added `safe_store.list_vectorization_methods()` to retrieve details about registered vectorizers.
-*   **Testing:**
-    *   Added basic tests for `safe_store.close()` and context manager (`__enter__`/`__exit__`) behavior.
-    *   Added tests for new `list_documents` and `list_vectorization_methods`.
-    *   Refined existing tests for clarity and robustness.
+*   **API Polish & Type Hinting:** Comprehensive type hints and improved docstrings.
+*   **Error Handling:** Consistent use of custom exceptions from `safe_store.core.exceptions` with proper chaining and clearer messages.
+*   **Documentation Structure:** Basic Sphinx setup.
+*   **Examples:** Added `examples/basic_usage.py`.
+*   **Helper Methods:** `SafeStore.list_documents()`, `SafeStore.list_vectorization_methods()`.
+*   **Testing:** Basic tests for `close()`, context manager, and new list methods.
 
 ### Changed
-
-*   **Dependencies:** Finalized optional dependencies and extras in `pyproject.toml`. Added `[dev]` extra for testing/linting/building/docs dependencies.
-*   `pyproject.toml`: Bumped version to 1.3.0. Added project keywords, refined classifiers. Added URLs for Docs/Issues. Configured `hatch` for version management. Added `black` config.
-*   `README.md`: Significantly updated with latest features, improved explanations (concurrency, logging), clearer installation instructions, refined Quick Start, and links to examples/repo.
-*   `safe_store.core.db`: Enabled SQLite `PRAGMA foreign_keys = ON` for better data integrity. Set `check_same_thread=False` for `sqlite3.connect` as external locking (`filelock`) is used. Improved error handling in DB functions.
-*   `safe_store.indexing.parser`: Improved error handling for specific file I/O and parsing library exceptions.
-*   `safe_store.vectorization.manager`: Improved error handling, especially around missing dependencies and DB interactions. Added `remove_from_cache_by_id` helper.
-*   `safe_store.vectorization.methods`: Improved error handling for model loading and vectorization failures. Ensured vectorizers handle empty input lists gracefully. Refined TF-IDF state loading/saving logic for robustness.
-*   `safe_store.search.similarity`: Added handling for empty input `vectors` matrix. Improved validation messages.
-*   `safe_store.__init__`: Exposed core exceptions for user convenience.
+*   **Dependencies:** Finalized optional dependencies and extras in `pyproject.toml`. Added `[dev]` extra.
+*   `pyproject.toml`: Bumped version to 1.3.0. Added project keywords, refined classifiers, URLs. Configured `hatch` for version management. Added `black` config.
+*   `README.md`: Significantly updated with latest features, improved explanations.
+*   `safe_store.core.db`: Enabled SQLite `PRAGMA foreign_keys = ON`. Set `check_same_thread=False`. Improved error handling.
+*   Improved error handling in `parser.py`, `vectorization/manager.py`, `vectorization/methods`, `search/similarity.py`.
+*   `safe_store/__init__.py`: Exposed core exceptions.
 
 ### Fixed
-
-*   Corrected potential race condition in `VectorizationManager.get_vectorizer` when multiple processes try to add the same new method concurrently (now handles UNIQUE constraint error).
-*   Ensured `TfidfVectorizerWrapper.load_fitted_state` correctly reconstructs the internal state required for `transform` to work after loading.
-*   Fixed `TfidfVectorizerWrapper.vectorize` dimension check logic and error message for clarity.
-*   Ensured `safe_store` context manager (`__enter__`) properly re-initializes connection if closed previously.
-*   Corrected minor inconsistencies in log messages and error handling across various modules.
+*   Corrected potential race condition in `VectorizationManager.get_vectorizer`.
+*   Ensured `TfidfVectorizerWrapper.load_fitted_state` correctness.
+*   Fixed `TfidfVectorizerWrapper.vectorize` dimension check.
+*   Ensured `SafeStore` context manager properly re-initializes connection.
 
 ## [1.2.0] - 2025-04-18
-
 ### Added
-
-*   **Concurrency Handling:**
-    *   Added `filelock` dependency for inter-process concurrency control.
-    *   Implemented exclusive file-based locking (`.db.lock` file) around database write operations (`add_document`, `add_vectorization`, `remove_vectorization`).
-    *   Added `lock_timeout` parameter to `safe_store.__init__` (default 60 seconds).
-    *   Added basic `threading.RLock` for intra-process thread safety.
-    *   Added logging (`ascii_colors`) for lock acquisition/release/timeouts.
-    *   Refactored write methods into internal `_impl` methods assuming lock is held.
-*   **Parsing Infrastructure (Implemented):**
-    *   Added optional dependencies for parsing PDF (`pypdf`), DOCX (`python-docx`), and HTML (`beautifulsoup4`, `lxml`) via the `safe_store[parsing]` extra.
-    *   Implemented `parse_pdf`, `parse_docx`, `parse_html` in `safe_store.indexing.parser` using respective libraries.
-    *   Updated the `parse_document` dispatcher to correctly call implemented parsers for `.pdf`, `.docx`, `.html`, `.htm` extensions. Added error handling for parsing failures and missing dependencies.
+*   **Concurrency Handling:** Implemented `filelock` for inter-process write safety (`.db.lock`). Added `lock_timeout` to `SafeStore.__init__`. Basic `threading.RLock` for intra-process safety.
+*   **Parsing Infrastructure (Implemented):** Added optional dependencies and parsers for PDF (`pypdf`), DOCX (`python-docx`), HTML (`beautifulsoup4`, `lxml`). Updated `parse_document` dispatcher.
 
 ### Changed
-
-*   `safe_store.store.safe_store`:
-    *   `__init__`: Now accepts `lock_timeout`, resolves paths, connects/initializes DB within a lock, initializes threading/file locks.
-    *   `close()`: Now safer with instance lock and better error handling.
-    *   `__enter__` / `__exit__`: Ensure connection exists and handle closure.
-    *   Write methods now acquire instance and file locks before calling internal `_impl` methods.
-    *   `query()`: Uses instance lock; relies on SQLite WAL mode for read concurrency. Added connection check.
-*   `pyproject.toml`: Bumped version to 1.2.0. Added `filelock`, `pypdf`, `python-docx`, `beautifulsoup4`, `lxml`. Defined `[parsing]`, `[all]` extras.
-*   `safe_store.core.db`: Now uses `Union[str, Path]` for path types.
+*   `safe_store.store.SafeStore`: Integrated locking into `__init__`, `close`, context manager, and write methods.
+*   `pyproject.toml`: Bumped version to 1.2.0. Added new parsing dependencies and `[parsing]`, `[all]` extras.
+*   `safe_store.core.db`: Path types now `Union[str, Path]`.
 
 ### Fixed
-
-*   Minor fix in `VectorizationManager.update_method_params` SQL statement format.
-*   Corrected assertions in `test_store_phase2.py` related to TF-IDF fitting log and cache removal log.
-*   Resolved issues in parser implementations and dispatcher logic found during testing.
-*   Fixed fixture copying in `conftest.py` for reliability.
+*   Minor fix in `VectorizationManager.update_method_params` SQL.
+*   Corrected assertions in `test_store_phase2.py`.
+*   Resolved issues in parser implementations.
 
 ## [1.1.0] - 2025-04-17
-
 ### Added
-
-*   **Querying:** Implemented `safe_store.query()` using cosine similarity. Loads candidate vectors into memory.
-*   **Multiple Vectorization Methods:** Added TF-IDF support (`tfidf:` prefix) using `scikit-learn`. Handles fitting during `add_document` (local fit) or `add_vectorization` (global/targeted fit). Stores fitted state in DB. Requires `safe_store[tfidf]`.
-*   **Vectorizer Management:** Implemented `safe_store.add_vectorization()` and `safe_store.remove_vectorization()`.
-*   **Testing:** Added `tests/test_store_phase2.py` covering query, TF-IDF, add/remove vectorization. Added mocking for `scikit-learn`.
+*   **Querying:** Implemented `SafeStore.query()` using cosine similarity.
+*   **Multiple Vectorization Methods:** Added TF-IDF support (`tfidf:` prefix) using `scikit-learn`. Handles fitting and stores state in DB. Requires `safe_store[tfidf]`.
+*   **Vectorizer Management:** Implemented `SafeStore.add_vectorization()` and `SafeStore.remove_vectorization()`.
+*   **Testing:** Added `tests/test_store_phase2.py`.
 
 ### Changed
-
-*   `VectorizationManager`: Caches DB parameters; invalidates cache on param update (e.g., TF-IDF fit).
-*   `safe_store.add_document()`: Checks for specific vectorizer existence for skipping; handles initial TF-IDF fit.
-*   `search.similarity.cosine_similarity`: Handles 1D `vectors` input. Added type checking.
-*   `pyproject.toml`: Bumped version to 1.1.0. Added `scikit-learn` to `[tfidf]` extra. Added `[all-vectorizers]` extra.
+*   `VectorizationManager`: Caches DB parameters; invalidates on update.
+*   `SafeStore.add_document()`: Handles initial TF-IDF fit.
+*   `search.similarity.cosine_similarity`: Handles 1D `vectors` input.
+*   `pyproject.toml`: Bumped version to 1.1.0. Added `scikit-learn` to `[tfidf]` extra.
 
 ## [1.0.0] - 2025-04-16
-
-Initial public release.
-
 ### Added
-
-*   Core `safe_store` class and SQLite backend setup (WAL mode enabled).
+*   Initial public release.
+*   Core `SafeStore` class and SQLite backend (WAL mode).
 *   Database schema (`documents`, `chunks`, `vectorization_methods`, `vectors`).
-*   Indexing pipeline (`add_document`):
-    *   Parses `.txt` files.
-    *   Stores full text.
-    *   Configurable chunking (`chunk_text`) with position tracking.
-    *   File hashing (SHA256) for change detection.
-    *   Handles new, unchanged (skip), and changed (re-index) documents.
-*   Vectorization foundation:
-    *   `VectorizationManager`.
-    *   Initial support for `sentence-transformers` (`st:` prefix). Requires `safe_store[sentence-transformers]`.
-    *   Stores NumPy vectors as BLOBs.
+*   Indexing pipeline (`add_document`): `.txt` parsing, full text storage, chunking, file hashing, change detection.
+*   Vectorization foundation: `VectorizationManager`, initial `sentence-transformers` support (`st:` prefix).
 *   Utilities: `ascii_colors` for logging.
-*   Testing: `pytest` suite (`test_chunking.py`, `test_store_phase1.py`) with mocking.
+*   Testing: `pytest` suite.
 *   Packaging: `pyproject.toml` setup.

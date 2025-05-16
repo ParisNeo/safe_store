@@ -1,0 +1,92 @@
+# webui/config_manager.py
+import toml
+from pathlib import Path
+from typing import Dict, Any
+from ascii_colors import ASCIIColors, LogLevel
+
+CONFIG_FILE_PATH = Path("config.toml") # In the same directory as main.py or project root
+
+DEFAULT_CONFIG = {
+    "lollms": {
+        "binding_name": "ollama",
+        "host_address": "http://localhost:11434",
+        "model_name": "mistral:latest",
+        "service_key": None, # Explicitly None if not set
+    },
+    "safestore": {
+        "db_file": "webui_store.db",
+        "doc_dir": "webui_safestore_docs",
+        "default_vectorizer": "st:all-MiniLM-L6-v2",
+        "chunk_size": 250,
+        "chunk_overlap": 40,
+    },
+    "graphstore": {
+        # "graph_extraction_prompt_template_file": None, # Example for file-based prompts
+        # "query_parsing_prompt_template_file": None,
+    },
+    "webui": {
+        "host": "0.0.0.0",
+        "port": 8000,
+        "temp_upload_dir": "temp_uploaded_files_webui",
+        "log_level": "INFO",
+    }
+}
+
+config_data: Dict[str, Any] = {}
+
+def load_config() -> Dict[str, Any]:
+    global config_data
+    if CONFIG_FILE_PATH.exists():
+        ASCIIColors.info(f"Loading configuration from: {CONFIG_FILE_PATH.resolve()}")
+        try:
+            config_data = toml.load(CONFIG_FILE_PATH)
+            # Ensure all sections and keys from default_config exist, fill if not
+            for section, defaults in DEFAULT_CONFIG.items():
+                if section not in config_data:
+                    config_data[section] = defaults
+                else:
+                    for key, default_value in defaults.items():
+                        config_data[section].setdefault(key, default_value)
+            # Special handling for None values if toml library omits them
+            if config_data.get("lollms") and "service_key" not in config_data["lollms"]:
+                config_data["lollms"]["service_key"] = None
+
+        except toml.TomlDecodeError as e:
+            ASCIIColors.error(f"Error decoding {CONFIG_FILE_PATH}: {e}. Using default configuration.")
+            config_data = DEFAULT_CONFIG.copy() # Use a copy
+        except Exception as e:
+            ASCIIColors.error(f"Unexpected error loading {CONFIG_FILE_PATH}: {e}. Using default configuration.")
+            config_data = DEFAULT_CONFIG.copy()
+    else:
+        ASCIIColors.warning(f"{CONFIG_FILE_PATH} not found. Creating default configuration file.")
+        config_data = DEFAULT_CONFIG.copy()
+        save_config(config_data) # Save the default config
+    return config_data
+
+def save_config(data_to_save: Dict[str, Any]):
+    try:
+        with open(CONFIG_FILE_PATH, "w", encoding="utf-8") as f:
+            toml.dump(data_to_save, f)
+        ASCIIColors.info(f"Configuration saved to: {CONFIG_FILE_PATH.resolve()}")
+    except Exception as e:
+        ASCIIColors.error(f"Error saving configuration to {CONFIG_FILE_PATH}: {e}")
+
+def get_config() -> Dict[str, Any]:
+    global config_data
+    if not config_data: # Ensure it's loaded if accessed directly
+        load_config()
+    return config_data
+
+def get_log_level_from_str(level_str: str) -> LogLevel:
+    level_map = {
+        "DEBUG": LogLevel.DEBUG,
+        "INFO": LogLevel.INFO,
+        "WARNING": LogLevel.WARNING,
+        "ERROR": LogLevel.ERROR,
+        "CRITICAL": LogLevel.CRITICAL,
+        "SUCCESS": LogLevel.INFO, # If you use SUCCESS level
+    }
+    return level_map.get(level_str.upper(), LogLevel.INFO)
+
+# Load config when module is imported
+load_config()
