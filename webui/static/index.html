@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SafeStore Graph Explorer</title>
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome CSS -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Vis.js Network CSS (if you use a theme or need specific styling beyond default) -->
+    <link href="https://visjs.github.io/vis-network/standalone/umd/vis-network.min.css" rel="stylesheet" type="text/css" />
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static_assets/style.css">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa; /* Light gray background */
+            color: #333;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+        .navbar {
+            background-color: #343a40 !important; /* Dark navbar */
+        }
+        .navbar-brand, .nav-link {
+            color: #f8f9fa !important;
+        }
+        .nav-link:hover {
+            color: #adb5bd !important;
+        }
+        .main-content {
+            flex-grow: 1;
+            display: flex;
+            overflow: hidden; /* Prevent scrollbars on main content if graph fits */
+        }
+        #graph-container {
+            flex-grow: 1;
+            height: calc(100vh - 56px - 2rem); /* Full height minus navbar and some padding */
+            border: 1px solid #dee2e6;
+            background-color: #ffffff; /* White background for graph */
+            border-radius: 0.25rem;
+            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+        }
+        .sidebar {
+            width: 300px; /* Fixed width for sidebar */
+            padding: 1rem;
+            background-color: #e9ecef; /* Lighter gray for sidebar */
+            border-left: 1px solid #dee2e6;
+            overflow-y: auto;
+            height: calc(100vh - 56px - 2rem);
+        }
+        .status-bar {
+            padding: 0.5rem 1rem;
+            background-color: #343a40;
+            color: #f8f9fa;
+            font-size: 0.9em;
+        }
+        .upload-section {
+            background-color: #ffffff;
+            padding: 1.5rem;
+            border-radius: 0.25rem;
+            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+            margin-bottom: 1rem;
+        }
+        .card-header {
+            background-color: #007bff; /* Primary color for card headers */
+            color: white;
+        }
+        #node-info-panel h5, #edge-info-panel h5 {
+            color: #007bff;
+        }
+        pre {
+            background-color: #282c34; /* Dark background for code/JSON */
+            color: #abb2bf;
+            padding: 1em;
+            border-radius: 0.25rem;
+            overflow-x: auto;
+            font-size: 0.85em;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Navigation Bar -->
+    <nav class="navbar navbar-expand-lg navbar-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">
+                <i class="fas fa-project-diagram"></i> SafeStore Graph Explorer
+            </a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <!-- <li class="nav-item">
+                        <a class="nav-link active" aria-current="page" href="#">Home</a>
+                    </li> -->
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Content Area -->
+    <div class="container-fluid mt-3 main-content">
+        <!-- Sidebar for Controls and Info -->
+        <div class="sidebar me-3">
+            <h4><i class="fas fa-cogs"></i> Controls & Info</h4>
+            <hr>
+            <!-- File Upload Section -->
+            <div class="upload-section">
+                <h5><i class="fas fa-file-upload"></i> Upload Document</h5>
+                <form id="upload-form" class="mt-2">
+                    <div class="mb-3">
+                        <input class="form-control" type="file" id="file-input" name="file" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100">
+                        <i class="fas fa-cloud-upload-alt"></i> Upload & Process
+                    </button>
+                </form>
+                <div id="upload-status" class="mt-2" style="font-size: 0.9em;"></div>
+            </div>
+            <hr>
+            <!-- Node/Edge Info Panel -->
+            <div id="selection-info">
+                <h5><i class="fas fa-info-circle"></i> Selection Details</h5>
+                <div id="node-info-panel" class="mt-2" style="display: none;">
+                    <h6>Node Info: <span id="node-id-display"></span></h6>
+                    <p><strong>Label:</strong> <span id="node-label-display"></span></p>
+                    <strong>Properties:</strong>
+                    <pre id="node-properties-display"></pre>
+                </div>
+                <div id="edge-info-panel" class="mt-2" style="display: none;">
+                    <h6>Edge Info: <span id="edge-id-display"></span></h6>
+                    <p><strong>Type:</strong> <span id="edge-type-display"></span></p>
+                    <p><strong>From:</strong> Node <span id="edge-from-display"></span></p>
+                    <p><strong>To:</strong> Node <span id="edge-to-display"></span></p>
+                    <strong>Properties:</strong>
+                    <pre id="edge-properties-display"></pre>
+                </div>
+                <p id="no-selection" class="text-muted">Click on a node or edge to see details.</p>
+            </div>
+        </div>
+
+        <!-- Graph Visualization Area -->
+        <div id="graph-container">
+            <!-- Vis.js Network will render here -->
+        </div>
+    </div>
+
+    <!-- Status Bar (Optional Footer) -->
+    <!-- <div class="status-bar fixed-bottom">
+        Status: Ready
+    </div> -->
+
+    <!-- Bootstrap JS Bundle (Popper.js included) -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Vis.js Network JS -->
+    <script type="text/javascript" src="https://visjs.github.io/vis-network/standalone/umd/vis-network.min.js"></script>
+    <!-- Custom JavaScript -->
+    <script src="/static_assets/script.js"></script>
+</body>
+</html>

@@ -638,3 +638,57 @@ class GraphStore:
                 ASCIIColors.debug(f"GraphStore: Write lock released for update_node_properties: node_id {node_id}")
             except Timeout as e_lock: msg = f"GraphStore: Timeout acquiring write lock for update_node_properties: node_id {node_id}"; ASCIIColors.error(msg); raise ConcurrencyError(msg) from e_lock
             return False 
+        
+        
+    def get_all_nodes_for_visualization(self, limit: int = 500) -> List[Dict[str, Any]]:
+        """Fetches all nodes with minimal data for visualization."""
+        with self._instance_lock:
+            self._ensure_connection(); assert self.conn is not None
+            cursor = self.conn.cursor()
+            nodes: List[Dict[str, Any]] = []
+            try:
+                # Fetching id, label, and some key property for display if possible
+                # For Vis.js, nodes need an 'id' and 'label' (for display text)
+                cursor.execute(
+                    "SELECT node_id, node_label, node_properties FROM graph_nodes LIMIT ?", (limit,)
+                )
+                for row in cursor.fetchall():
+                    props = json.loads(row[2]) if row[2] else {}
+                    # Try to get a 'name' or 'title' property for the display label, fallback to node_label
+                    display_label = props.get('name', props.get('title', row[1])) 
+                    nodes.append({
+                        "id": row[0], # Vis.js expects 'id'
+                        "label": f"{display_label} ({row[1]})", # Display label for Vis.js
+                        "title": json.dumps(props, indent=2), # Tooltip for Vis.js
+                        "group": row[1], # Group by original label for Vis.js styling
+                        "properties": props, # Full properties for potential client-side use
+                        "original_label": row[1] # Store original label separately
+                    })
+                return nodes
+            except Exception as e:
+                ASCIIColors.error(f"Error fetching all nodes for visualization: {e}"); raise GraphDBError("Failed to fetch all nodes") from e
+
+    def get_all_relationships_for_visualization(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        """Fetches all relationships with minimal data for visualization."""
+        with self._instance_lock:
+            self._ensure_connection(); assert self.conn is not None
+            cursor = self.conn.cursor()
+            relationships: List[Dict[str, Any]] = []
+            try:
+                # For Vis.js, edges need 'from', 'to', and optionally 'label'
+                cursor.execute(
+                    "SELECT relationship_id, source_node_id, target_node_id, relationship_type, relationship_properties FROM graph_relationships LIMIT ?", (limit,)
+                )
+                for row in cursor.fetchall():
+                    props = json.loads(row[4]) if row[4] else {}
+                    relationships.append({
+                        "id": row[0], # Vis.js can use edge id
+                        "from": row[1], # Vis.js expects 'from'
+                        "to": row[2],   # Vis.js expects 'to'
+                        "label": row[3], # Vis.js can display this on the edge
+                        "title": json.dumps(props, indent=2), # Tooltip for Vis.js
+                        "properties": props # Full properties
+                    })
+                return relationships
+            except Exception as e:
+                ASCIIColors.error(f"Error fetching all relationships for visualization: {e}"); raise GraphDBError("Failed to fetch all relationships") from e

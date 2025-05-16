@@ -89,6 +89,8 @@ dev = [
     "wheel",
     "twine", # For checking/uploading packages
 ]
+[project.scripts]
+safestore-webui = "safe_store.webui.main:launch_webui"
 
 [project.urls]
 Homepage = "https://github.com/ParisNeo/safe_store"

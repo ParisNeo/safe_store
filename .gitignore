@@ -173,3 +173,12 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 config.toml
+
+.vscode
+config.toml
+temp_uploaded_files_webui
+webui_safestore_docs
+temp_docs_basic
+temp_docs_graph_example
+
+*.db
