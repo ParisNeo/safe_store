@@ -1,26 +1,22 @@
 # migrate_v1_to_v2_argparse.py
 import sqlite3
 from pathlib import Path
-from typing import Union, Optional, Any # Added for connect_db
-import argparse # New import
-from ascii_colors import ASCIIColors # Assuming this is in your environment
+from typing import Union, Optional, Any
+import argparse
+from ascii_colors import ASCIIColors
 
-# --- Copied from your db.py for standalone script execution ---
+# --- DatabaseError and connect_db remain the same ---
 class DatabaseError(Exception):
     pass
 
 def connect_db(db_path: Union[str, Path]) -> sqlite3.Connection:
-    """
-    Establishes a connection to the SQLite database.
-    (Identical to your provided connect_db)
-    """
     db_path_obj = Path(db_path).resolve()
     try:
         db_path_obj.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(
             str(db_path_obj),
             detect_types=sqlite3.PARSE_DECLTYPES,
-            check_same_thread=False # Important for potential multi-threaded access
+            check_same_thread=False
         )
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA foreign_keys = ON;")
@@ -31,8 +27,8 @@ def connect_db(db_path: Union[str, Path]) -> sqlite3.Connection:
         ASCIIColors.error(msg, exc_info=True)
         raise DatabaseError(msg) from e
 
+# --- set_store_metadata and get_store_metadata remain the same ---
 def set_store_metadata(conn: sqlite3.Connection, key: str, value: str) -> None:
-    """Sets a key-value pair in the store_metadata table."""
     sql = "INSERT OR REPLACE INTO store_metadata (key, value) VALUES (?, ?)"
     cursor = conn.cursor()
     try:
@@ -44,12 +40,11 @@ def set_store_metadata(conn: sqlite3.Connection, key: str, value: str) -> None:
         raise DatabaseError(msg) from e
 
 def get_store_metadata(conn: sqlite3.Connection, key: str) -> Optional[str]:
-    """Gets a value from the store_metadata table by key."""
     cursor = conn.cursor()
     try:
         cursor.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='store_metadata';")
         if not cursor.fetchone():
-            return None 
+            return None
 
         sql = "SELECT value FROM store_metadata WHERE key = ?"
         cursor.execute(sql, (key,))
@@ -59,6 +54,10 @@ def get_store_metadata(conn: sqlite3.Connection, key: str) -> Optional[str]:
         ASCIIColors.warning(f"Could not get store metadata for key '{key}' (may not exist yet): {e}")
         return None
 
+def table_exists(cursor: sqlite3.Cursor, table_name: str) -> bool:
+    """Checks if a table exists in the database."""
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?;", (table_name,))
+    return cursor.fetchone() is not None
 
 def migrate_v1_to_v2(db_path: Path, auto_yes: bool = False):
     """
@@ -70,61 +69,71 @@ def migrate_v1_to_v2(db_path: Path, auto_yes: bool = False):
         auto_yes: If True, skips interactive prompts.
     """
     ASCIIColors.info(f"Attempting migration for database: {db_path}")
-    
+
     if not db_path.exists():
         ASCIIColors.error(f"Database file {db_path} does not exist. Cannot migrate.")
         ASCIIColors.info("If this is a new setup, the main application will initialize it to v2.0.")
-        return False # Indicate failure
+        return False
 
     if not auto_yes:
         ASCIIColors.warning("IMPORTANT: Please backup your database file before proceeding!")
         try:
-            # Check if running in a non-interactive environment
-            if not Path("/dev/tty").is_char_device(): # Crude check for tty
+            if not Path("/dev/tty").is_char_device():
                  ASCIIColors.info("Non-interactive environment detected, proceeding without prompt.")
-            elif input("Press Enter to continue or Ctrl+C to abort..."): # Anything entered aborts
+            elif input("Press Enter to continue or Ctrl+C to abort..."):
                 ASCIIColors.info("Migration aborted by user input.")
                 return False
-        except (EOFError, KeyboardInterrupt): # Handle cases where input() is not available or Ctrl+C
+        except (EOFError, KeyboardInterrupt):
             ASCIIColors.info("Migration aborted.")
             return False
-        except Exception: # Catch other potential issues with input() in some environments
+        except Exception:
             ASCIIColors.info("Could not get interactive input, proceeding with caution. Use --yes to bypass.")
-
 
     conn = None
     try:
         conn = connect_db(db_path)
         cursor = conn.cursor()
 
+        # --- Pre-migration V1 Schema Check ---
+        ASCIIColors.info("Performing pre-migration schema check...")
+        required_v1_tables = ["documents", "vectorization_methods", "chunks", "vectors"]
+        missing_v1_tables = []
+        for table_name in required_v1_tables:
+            if not table_exists(cursor, table_name):
+                missing_v1_tables.append(table_name)
+
+        if missing_v1_tables:
+            ASCIIColors.error(f"The database at '{db_path}' is missing essential v1.0 tables: {', '.join(missing_v1_tables)}.")
+            ASCIIColors.error("This script expects a database with a valid v1.0 schema.")
+            ASCIIColors.info("If this is an empty database, your application should initialize it directly to v2.0.")
+            return False
+        ASCIIColors.green("Basic v1.0 schema tables found.")
+
+
+        # --- Version Check (after confirming basic tables exist) ---
         current_version = get_store_metadata(conn, 'schema_version')
         if current_version == '2.0':
             ASCIIColors.success(f"Database '{db_path}' is already at schema version 2.0. No migration needed.")
-            return True # Indicate success (no action needed)
+            return True
         elif current_version:
             ASCIIColors.warning(f"Database '{db_path}' has an existing schema version: '{current_version}'.")
-            ASCIIColors.warning("This script is designed for v1.0 (no version) to v2.0 migration.")
+            ASCIIColors.warning("This script is designed for v1.0 (no version marker) to v2.0 migration.")
             if not auto_yes:
                 if input(f"Continue migration from '{current_version}' to '2.0'? (yes/NO): ").lower() != 'yes':
                     ASCIIColors.info("Migration aborted by user.")
                     return False
             else:
                 ASCIIColors.info(f"Auto-proceeding with migration from '{current_version}' to '2.0'.")
+        else:
+             ASCIIColors.info("No schema_version metadata found. Assuming v1.0 database.")
 
 
-        ASCIIColors.info("Proceeding with v1.0 to v2.0 migration...")
+        ASCIIColors.info("Proceeding with v1.0 to v2.0 migration tasks...")
 
-        # --- Begin Transaction ---
-        # Explicitly begin transaction for DDL (though some might auto-commit)
-        # For SQLite, it's generally better to execute DDL outside explicit transactions if possible,
-        # or commit after each significant DDL if needed. Here, we group them.
-        # However, ALTER TABLE ADD COLUMN is transactional.
-        # For simplicity, we'll use one commit/rollback block.
-
-        cursor.execute("PRAGMA foreign_keys=OFF;") # Disable FKs during schema changes
+        cursor.execute("PRAGMA foreign_keys=OFF;")
 
         # 1. Add 'graph_processed_at' column and index to 'chunks' table
-        ASCIIColors.info("Updating 'chunks' table...")
+        ASCIIColors.info("Updating 'chunks' table (guaranteed to exist by pre-check)...")
         cursor.execute("PRAGMA table_info(chunks);")
         columns_in_chunks = [info[1] for info in cursor.fetchall()]
         if 'graph_processed_at' not in columns_in_chunks:
@@ -134,14 +143,14 @@ def migrate_v1_to_v2(db_path: Path, auto_yes: bool = False):
         ASCIIColors.green("'chunks' table updated and indexed.")
 
         # 2. Create 'store_metadata' table
-        ASCIIColors.info("Creating 'store_metadata' table...")
+        ASCIIColors.info("Ensuring 'store_metadata' table exists...")
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS store_metadata (key TEXT PRIMARY KEY, value TEXT);
         """)
         ASCIIColors.green("'store_metadata' table ensured.")
 
         # 3. Create 'graph_nodes' table and indexes
-        ASCIIColors.info("Creating 'graph_nodes' table and indexes...")
+        ASCIIColors.info("Ensuring 'graph_nodes' table and indexes...")
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS graph_nodes (
             node_id INTEGER PRIMARY KEY AUTOINCREMENT, node_label TEXT NOT NULL,
@@ -152,7 +161,7 @@ def migrate_v1_to_v2(db_path: Path, auto_yes: bool = False):
         ASCIIColors.green("'graph_nodes' table and indexes ensured.")
 
         # 4. Create 'graph_relationships' table and indexes
-        ASCIIColors.info("Creating 'graph_relationships' table and indexes...")
+        ASCIIColors.info("Ensuring 'graph_relationships' table and indexes...")
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS graph_relationships (
             relationship_id INTEGER PRIMARY KEY AUTOINCREMENT, source_node_id INTEGER NOT NULL,
@@ -167,7 +176,7 @@ def migrate_v1_to_v2(db_path: Path, auto_yes: bool = False):
         ASCIIColors.green("'graph_relationships' table and indexes ensured.")
 
         # 5. Create 'node_chunk_links' table and indexes
-        ASCIIColors.info("Creating 'node_chunk_links' table and indexes...")
+        ASCIIColors.info("Ensuring 'node_chunk_links' table and indexes...")
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS node_chunk_links (
             node_id INTEGER NOT NULL, chunk_id INTEGER NOT NULL,
@@ -181,39 +190,38 @@ def migrate_v1_to_v2(db_path: Path, auto_yes: bool = False):
 
         # 6. Update schema version in store_metadata
         ASCIIColors.info("Updating schema version to 2.0 in 'store_metadata'.")
-        # Use direct execute here as set_store_metadata might be part of the transaction
         cursor.execute("INSERT OR REPLACE INTO store_metadata (key, value) VALUES (?, ?)", ('schema_version', '2.0'))
 
-        cursor.execute("PRAGMA foreign_keys=ON;") # Re-enable FKs
+        cursor.execute("PRAGMA foreign_keys=ON;")
 
         conn.commit()
         ASCIIColors.success(f"Database migration to v2.0 completed successfully for: {db_path}")
-        return True # Indicate success
+        return True
 
     except sqlite3.Error as e:
         ASCIIColors.error(f"SQLite error during migration: {e}")
         if conn:
             ASCIIColors.warning("Rolling back changes due to error.")
             conn.rollback()
-        return False # Indicate failure
+        return False
     except DatabaseError as e:
         ASCIIColors.error(f"Database operation error during migration: {e}")
         if conn:
             ASCIIColors.warning("Rolling back changes due to error.")
             conn.rollback()
-        return False # Indicate failure
+        return False
     except Exception as e:
         ASCIIColors.error(f"An unexpected error occurred during migration: {e}", exc_info=True)
         if conn:
             ASCIIColors.warning("Rolling back changes due to error.")
             conn.rollback()
-        return False # Indicate failure
+        return False
     finally:
         if conn:
             conn.close()
             ASCIIColors.debug("Database connection closed.")
 
-
+# --- main() function with argparse remains the same ---
 def main():
     parser = argparse.ArgumentParser(
         description="Migrate SafeStore SQLite database from v1.0 schema to v2.0 schema.",
@@ -239,12 +247,6 @@ Ensure you have a backup of your database before running this script.
         action="store_true",
         help="Automatically answer 'yes' to confirmation prompts (use with caution)."
     )
-    # You could add a --force flag here if needed, but it's generally risky for migrations
-    # parser.add_argument(
-    #     "--force",
-    #     action="store_true",
-    #     help="Force migration even if schema version is unexpected (EXTREMELY DANGEROUS)."
-    # )
 
     args = parser.parse_args()
 
@@ -252,7 +254,7 @@ Ensure you have a backup of your database before running this script.
         ASCIIColors.highlight("Migration process finished.")
     else:
         ASCIIColors.critical("Migration process failed or was aborted. Please check the logs.")
-        exit(1) # Exit with error code if migration failed
+        exit(1)
 
 if __name__ == "__main__":
     main()
