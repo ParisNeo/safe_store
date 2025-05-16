@@ -209,6 +209,25 @@ class SafeStore:
             ASCIIColors.warning(msg)
             raise FileHandlingError(msg) from e
 
+    def _get_text_hash(self, text: Path) -> str:
+        """Generates a SHA256 hash for the file content."""
+        try:
+            hasher = self._file_hasher()
+            while chunk := text.encode("utf8"): hasher.update(chunk)
+            return hasher.hexdigest()
+        except FileNotFoundError as e:
+            msg = f"File not found when trying to hash: {file_path}"
+            ASCIIColors.error(msg)
+            raise FileHandlingError(msg) from e
+        except OSError as e:
+            msg = f"OS error reading file for hashing {file_path}: {e}"
+            ASCIIColors.error(msg)
+            raise FileHandlingError(msg) from e
+        except Exception as e:
+            msg = f"Unexpected error generating hash for {file_path}: {e}"
+            ASCIIColors.warning(msg)
+            raise FileHandlingError(msg) from e
+
     def _ensure_connection(self) -> None:
         """Checks if the connection is active, raises ConnectionError if not."""
         if self._is_closed or self.conn is None:
@@ -533,14 +552,11 @@ class SafeStore:
         with self._instance_lock:
             ASCIIColors.debug(f"Attempting to acquire write lock for add_text: {unique_id}")
             try:
-                with self._file_lock: # Reusing _file_lock as a general write lock
-                    ASCIIColors.info(f"Write lock acquired for add_text: {unique_id}")
-                    self._ensure_connection()
-                    self._add_text_impl(
-                        unique_id, text, vectorizer_name, chunk_size, chunk_overlap,
-                        metadata, force_reindex, vectorizer_params
-                    )
-                ASCIIColors.debug(f"Write lock released for add_text: {unique_id}")
+                self._ensure_connection()
+                self._add_text_impl(
+                    unique_id, text, vectorizer_name, chunk_size, chunk_overlap,
+                    metadata, force_reindex, vectorizer_params
+                )
             except Timeout as e:
                 msg = f"Timeout ({self.lock_timeout}s) acquiring write lock for add_text: {unique_id}"
                 ASCIIColors.error(msg)
@@ -560,7 +576,7 @@ class SafeStore:
     def _add_text_impl(
         self,
         unique_id: str,
-        text_content: str, # Renamed from 'text' to distinguish from chunk text variable
+        text_content: str,
         vectorizer_name: Optional[str],
         chunk_size: int,
         chunk_overlap: int,
