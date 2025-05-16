@@ -481,6 +481,295 @@ class SafeStore:
             ASCIIColors.debug("Transaction rolled back due to unexpected error.")
             raise SafeStoreError(msg) from e
 
+
+    def add_text(
+        self,
+        unique_id:str,
+        text: str,
+        vectorizer_name: Optional[str] = None,
+        chunk_size: int = 1000,
+        chunk_overlap: int = 150,
+        metadata: Optional[Dict[str, Any]] = None,
+        force_reindex: bool = False,
+        vectorizer_params: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """
+        Adds or updates a text content in the SafeStore using a unique ID.
+
+        Handles chunking, optional encryption, vectorization, and storage.
+        Detects text changes via hash and re-indexes automatically. Skips if
+        unchanged and vectors exist. Acquires an exclusive write lock.
+
+        Args:
+            unique_id: A unique identifier for the text content. This will be stored
+                       where file_path is stored for documents.
+            text: The text content to add.
+            vectorizer_name: Vectorizer to use (e.g., 'st:model', 'tfidf:name'). Defaults to `DEFAULT_VECTORIZER`.
+            chunk_size: Target chunk size in characters.
+            chunk_overlap: Overlap between chunks. Must be less than `chunk_size`.
+            metadata: Optional JSON-serializable metadata dictionary.
+            force_reindex: If True, re-process even if hash matches.
+            vectorizer_params: Optional parameters for vectorizer initialization (e.g., TF-IDF).
+
+        Raises:
+            ValueError: If chunk parameters are invalid or unique_id/text is empty/None.
+            FileHandlingError: For file-like operation errors (less direct, but possible from underlying components).
+            ParsingError: If any component unexpectedly requires parsing (less direct now that text is pre-parsed).
+            ConfigurationError: For missing dependencies or unsupported types.
+            VectorizationError: If vector generation fails.
+            DatabaseError: For database interaction errors.
+            ConcurrencyError: If write lock times out.
+            ConnectionError: If database connection is closed.
+            SafeStoreError: For other unexpected errors (e.g., text hashing failure).
+            EncryptionError: If encryption operations fail.
+        """
+        if not unique_id:
+            raise ValueError("unique_id cannot be empty.")
+        if text is None: # Check for None; empty string might be permissible.
+            raise ValueError("text content cannot be None.")
+        if chunk_overlap >= chunk_size:
+             raise ValueError("chunk_overlap must be smaller than chunk_size")
+
+        with self._instance_lock:
+            ASCIIColors.debug(f"Attempting to acquire write lock for add_text: {unique_id}")
+            try:
+                with self._file_lock: # Reusing _file_lock as a general write lock
+                    ASCIIColors.info(f"Write lock acquired for add_text: {unique_id}")
+                    self._ensure_connection()
+                    self._add_text_impl(
+                        unique_id, text, vectorizer_name, chunk_size, chunk_overlap,
+                        metadata, force_reindex, vectorizer_params
+                    )
+                ASCIIColors.debug(f"Write lock released for add_text: {unique_id}")
+            except Timeout as e:
+                msg = f"Timeout ({self.lock_timeout}s) acquiring write lock for add_text: {unique_id}"
+                ASCIIColors.error(msg)
+                raise ConcurrencyError(msg) from e
+            except (DatabaseError, FileHandlingError, ParsingError, ConfigurationError,
+                    VectorizationError, EncryptionError, QueryError,
+                    ValueError, ConnectionError, SafeStoreError) as e:
+                # Kept FileHandlingError & ParsingError for consistency with error hierarchy,
+                # though their direct causes from file I/O or parsing are removed for add_text.
+                ASCIIColors.error(f"Error during add_text for ID '{unique_id}': {e.__class__.__name__}: {e}", exc_info=False)
+                raise
+            except Exception as e:
+                msg = f"Unexpected error during add_text (lock scope) for ID '{unique_id}': {e}"
+                ASCIIColors.error(msg, exc_info=True)
+                raise SafeStoreError(msg) from e
+
+    def _add_text_impl(
+        self,
+        unique_id: str,
+        text_content: str, # Renamed from 'text' to distinguish from chunk text variable
+        vectorizer_name: Optional[str],
+        chunk_size: int,
+        chunk_overlap: int,
+        metadata: Optional[Dict[str, Any]],
+        force_reindex: bool,
+        vectorizer_params: Optional[Dict[str, Any]]
+    ) -> None:
+        """Internal implementation of add_text logic."""
+        assert self.conn is not None
+        _vectorizer_name = vectorizer_name or self.DEFAULT_VECTORIZER
+        # `unique_id` serves as the replacement for `abs_file_path`
+
+        ASCIIColors.info(f"Starting indexing process for text ID: {unique_id}")
+        ASCIIColors.debug(f"Params: vectorizer='{_vectorizer_name}', chunk_size={chunk_size}, overlap={chunk_overlap}, force={force_reindex}, encryption={'enabled' if self.encryptor.is_enabled else 'disabled'}")
+
+        try:
+            current_hash = self._get_text_hash(text_content)
+        except SafeStoreError as e: # Raised by _get_text_hash for its internal errors
+            ASCIIColors.error(f"Failed to compute hash for text ID '{unique_id}': {e}", exc_info=True)
+            raise # Re-raise to be caught by the main try-except in add_text
+
+        existing_doc_id: Optional[int] = None
+        existing_hash: Optional[str] = None
+        needs_content_processing_chunking = True # Renamed from needs_parsing_chunking
+        needs_vectorization = True
+
+        try:
+            cursor = self.conn.cursor()
+            # Use unique_id in the 'file_path' column for queries
+            cursor.execute("SELECT doc_id, file_hash FROM documents WHERE file_path = ?", (unique_id,))
+            result = cursor.fetchone()
+            if result:
+                existing_doc_id, existing_hash = result
+                ASCIIColors.debug(f"Text ID '{unique_id}' found in DB (doc_id={existing_doc_id}). Hash: {existing_hash}/{current_hash}")
+
+                if force_reindex:
+                    ASCIIColors.warning(f"Force re-indexing requested for text ID '{unique_id}'.")
+                    cursor.execute("BEGIN")
+                    cursor.execute("DELETE FROM chunks WHERE doc_id = ?", (existing_doc_id,))
+                    self.conn.commit() # Commit this delete operation
+                    ASCIIColors.debug(f"Deleted old chunks/vectors for forced re-index of doc_id={existing_doc_id}.")
+                elif existing_hash == current_hash:
+                    ASCIIColors.info(f"Text ID '{unique_id}' is unchanged.")
+                    needs_content_processing_chunking = False
+                    try: _, method_id = self.vectorizer_manager.get_vectorizer(_vectorizer_name, self.conn, vectorizer_params)
+                    except (ConfigurationError, VectorizationError, DatabaseError) as e: raise SafeStoreError(f"Failed to get vectorizer info for existence check: {e}") from e
+                    cursor.execute("SELECT 1 FROM vectors v JOIN chunks c ON v.chunk_id = c.chunk_id WHERE c.doc_id = ? AND v.method_id = ? LIMIT 1", (existing_doc_id, method_id))
+                    if cursor.fetchone() is not None:
+                        ASCIIColors.success(f"Vectorization '{_vectorizer_name}' already exists for unchanged text ID '{unique_id}'. Skipping.")
+                        needs_vectorization = False
+                    else:
+                         ASCIIColors.info(f"Text ID '{unique_id}' exists and is unchanged, but needs vectorization '{_vectorizer_name}'.")
+                else: # Hash mismatch
+                    ASCIIColors.warning(f"Text ID '{unique_id}' has changed (hash mismatch). Re-indexing...")
+                    cursor.execute("BEGIN")
+                    cursor.execute("DELETE FROM chunks WHERE doc_id = ?", (existing_doc_id,))
+                    self.conn.commit() # Commit this delete operation
+                    ASCIIColors.debug(f"Deleted old chunks/vectors for changed doc_id={existing_doc_id}.")
+            else: # New unique_id
+                 ASCIIColors.info(f"Text ID '{unique_id}' is new.")
+
+        except (sqlite3.Error, DatabaseError) as e:
+            msg = f"Database error checking/updating document state for text ID '{unique_id}': {e}"
+            ASCIIColors.error(msg, exc_info=True)
+            if self.conn: self.conn.rollback() # Rollback if transaction was started and failed
+            raise DatabaseError(msg) from e
+        except SafeStoreError as e: raise e # Propagate SafeStoreError (e.g., from get_vectorizer)
+        except Exception as e: # Catch any other unexpected errors during this stage
+             msg = f"Unexpected error preparing indexing for text ID '{unique_id}': {e}"
+             ASCIIColors.error(msg, exc_info=True)
+             # Consider rollback if a transaction might have been started by DB implicitly
+             # if self.conn and self.conn.in_transaction: self.conn.rollback()
+             raise SafeStoreError(msg) from e
+
+        if not needs_content_processing_chunking and not needs_vectorization:
+            return
+
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("BEGIN") # Start main transaction for additions/updates
+            doc_id: Optional[int] = existing_doc_id
+            full_text: str # Will be assigned from text_content
+            chunks_data: List[Tuple[str, int, int]] = []
+            chunk_ids: List[int] = []
+            chunk_texts_for_vectorization: List[str] = []
+
+            if needs_content_processing_chunking:
+                ASCIIColors.debug(f"Processing provided text for ID: {unique_id}")
+                full_text = text_content # Text is provided directly
+                # No parsing step like parser.parse_document(file_path)
+                ASCIIColors.debug(f"Using text for ID '{unique_id}'. Length: {len(full_text)} chars.")
+                metadata_str = json.dumps(metadata) if metadata else None
+
+                if doc_id is None: # New text ID
+                    # Store unique_id in the file_path column
+                    doc_id = db.add_document_record(self.conn, unique_id, full_text, current_hash, metadata_str)
+                else: # Existing text ID, content changed or forced reindex
+                    cursor.execute("UPDATE documents SET file_hash = ?, full_text = ?, metadata = ? WHERE doc_id = ?", (current_hash, full_text, metadata_str, doc_id))
+
+                try:
+                    chunks_data = chunking.chunk_text(full_text, chunk_size, chunk_overlap)
+                except ValueError as e: # Raised by chunk_text for invalid params
+                    raise e
+
+                if not chunks_data:
+                    ASCIIColors.warning(f"No chunks generated for text ID '{unique_id}'. Document record saved, but skipping vectorization.")
+                    self.conn.commit() # Commit document record changes
+                    return
+
+                ASCIIColors.info(f"Generated {len(chunks_data)} chunks for text ID '{unique_id}'. Storing chunks...")
+                should_encrypt = self.encryptor.is_enabled
+                logged_encryption_status = False
+
+                for i, (text_chunk_content, start, end) in enumerate(chunks_data): # Renamed 'text' to 'text_chunk_content'
+                    text_to_store: Union[str, bytes] = text_chunk_content
+                    is_encrypted_flag = False
+                    encrypted_metadata = None # This was None in original too
+                    if should_encrypt:
+                        try:
+                            encrypted_token = self.encryptor.encrypt(text_chunk_content)
+                            text_to_store = encrypted_token
+                            is_encrypted_flag = True
+                            if not logged_encryption_status: ASCIIColors.debug("Encrypting chunk text."); logged_encryption_status = True
+                        except EncryptionError as e: raise e
+
+                    chunk_id = db.add_chunk_record(self.conn, doc_id, text_to_store, start, end, i, is_encrypted=is_encrypted_flag, encryption_metadata=encrypted_metadata)
+                    chunk_ids.append(chunk_id)
+                    chunk_texts_for_vectorization.append(text_chunk_content) # Original text for vectorization
+            else: # Content unchanged, but needs new vectorization
+                if doc_id is None:
+                    raise SafeStoreError(f"Inconsistent state: doc_id is None but content processing/chunking was skipped for text ID '{unique_id}'")
+                ASCIIColors.debug(f"Retrieving existing chunks for doc_id={doc_id} (text ID: '{unique_id}') to add new vectors...")
+                cursor.execute("SELECT c.chunk_id, c.chunk_text, c.is_encrypted FROM chunks c WHERE c.doc_id = ? ORDER BY c.chunk_seq", (doc_id,))
+                results = cursor.fetchall()
+
+                if not results:
+                      ASCIIColors.warning(f"Text ID {doc_id} ('{unique_id}') exists but has no stored chunks. Cannot add vectorization '{_vectorizer_name}'.")
+                      needs_vectorization = False # Cannot proceed if no chunks
+                else:
+                    ASCIIColors.debug(f"Processing {len(results)} existing chunks for vectorization (decrypting if needed)...")
+                    logged_decryption_status = False
+                    for chunk_id_db, text_data_db, is_encrypted_flag_db in results:
+                        chunk_ids.append(chunk_id_db)
+                        text_for_vec: str
+                        if is_encrypted_flag_db:
+                            if self.encryptor.is_enabled:
+                                try:
+                                    if not isinstance(text_data_db, bytes): raise TypeError(f"Chunk {chunk_id_db} (text ID '{unique_id}') marked encrypted but data is not bytes.")
+                                    text_for_vec = self.encryptor.decrypt(text_data_db)
+                                    if not logged_decryption_status: ASCIIColors.debug("Decrypting existing chunk text for vectorization."); logged_decryption_status = True
+                                except (EncryptionError, TypeError) as e: raise e
+                            else: raise ConfigurationError(f"Cannot get text for vectorization: Chunk {chunk_id_db} (text ID '{unique_id}') is encrypted, but no encryption key provided.")
+                        else: # Not encrypted
+                             if not isinstance(text_data_db, str):
+                                  ASCIIColors.warning(f"Chunk {chunk_id_db} (text ID '{unique_id}') not marked encrypted, but data is not string. Attempting decode.")
+                                  try: text_for_vec = text_data_db.decode('utf-8') if isinstance(text_data_db, bytes) else str(text_data_db)
+                                  except Exception: text_for_vec = str(text_data_db) # Best effort
+                             else: text_for_vec = text_data_db
+                        chunk_texts_for_vectorization.append(text_for_vec)
+                    ASCIIColors.debug(f"Retrieved {len(chunk_ids)} existing chunk IDs and obtained text for vectorization for text ID '{unique_id}'.")
+
+            if needs_vectorization:
+                if not chunk_ids or not chunk_texts_for_vectorization:
+                     ASCIIColors.warning(f"No valid chunk text available to vectorize for text ID '{unique_id}'. Skipping vectorization.")
+                     self.conn.commit() # Commit any document/chunk records made so far
+                     return
+
+                try: vectorizer, method_id = self.vectorizer_manager.get_vectorizer(_vectorizer_name, self.conn, vectorizer_params)
+                except (ConfigurationError, VectorizationError, DatabaseError) as e: raise e
+
+                if isinstance(vectorizer, TfidfVectorizerWrapper) and not vectorizer._fitted:
+                     ASCIIColors.warning(f"TF-IDF vectorizer '{_vectorizer_name}' is not fitted. Fitting ONLY on chunks from text ID '{unique_id}'.")
+                     try:
+                         vectorizer.fit(chunk_texts_for_vectorization)
+                         new_params = vectorizer.get_params_to_store()
+                         self.vectorizer_manager.update_method_params(self.conn, method_id, new_params, vectorizer.dim)
+                         ASCIIColors.debug(f"TF-IDF '{_vectorizer_name}' fitted on text ID '{unique_id}' chunks and params updated in DB.")
+                     except (VectorizationError, DatabaseError) as e: raise e
+                     except Exception as e: raise VectorizationError(f"Failed to fit TF-IDF model '{_vectorizer_name}' on text ID '{unique_id}': {e}") from e
+
+                ASCIIColors.info(f"Vectorizing {len(chunk_texts_for_vectorization)} chunks using '{_vectorizer_name}' (method_id={method_id}) for text ID '{unique_id}'...")
+                try: vectors = vectorizer.vectorize(chunk_texts_for_vectorization)
+                except VectorizationError as e: raise e
+                except Exception as e: raise VectorizationError(f"Unexpected error during vectorization with '{_vectorizer_name}' for text ID '{unique_id}': {e}") from e
+
+                if vectors.shape[0] != len(chunk_ids):
+                    raise VectorizationError(f"Mismatch between chunks ({len(chunk_ids)}) and vectors ({vectors.shape[0]}) for text ID '{unique_id}'!")
+
+                ASCIIColors.debug(f"Adding {len(vectors)} vector records to DB (method_id={method_id}) for text ID '{unique_id}'...")
+                for chunk_id_vec, vector_data in zip(chunk_ids, vectors):
+                    vector_contiguous = np.ascontiguousarray(vector_data, dtype=vectorizer.dtype)
+                    db.add_vector_record(self.conn, chunk_id_vec, method_id, vector_contiguous)
+
+            self.conn.commit() # Commit the main transaction
+            ASCIIColors.success(f"Successfully processed text ID '{unique_id}' with vectorizer '{_vectorizer_name}'.")
+
+        except (sqlite3.Error, DatabaseError, FileHandlingError, ParsingError, ConfigurationError, VectorizationError, EncryptionError, ValueError, SafeStoreError) as e:
+            ASCIIColors.error(f"Error during indexing transaction for text ID '{unique_id}': {e.__class__.__name__}: {e}", exc_info=False)
+            if self.conn: self.conn.rollback()
+            ASCIIColors.debug(f"Transaction for text ID '{unique_id}' rolled back due to error.")
+            raise
+        except Exception as e:
+            msg = f"Unexpected error during indexing transaction for text ID '{unique_id}': {e}"
+            ASCIIColors.error(msg, exc_info=True)
+            if self.conn: self.conn.rollback()
+            ASCIIColors.debug(f"Transaction for text ID '{unique_id}' rolled back due to unexpected error.")
+            raise SafeStoreError(msg) from e
+
+    
     def add_vectorization(
         self,
         vectorizer_name: str,
