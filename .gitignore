@@ -182,3 +182,6 @@ temp_docs_basic
 temp_docs_graph_example
 
 *.db
+*.db-shm
+*.db-wal
+*.lock

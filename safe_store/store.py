@@ -1,10 +1,12 @@
-# safe_store/store.py
 import sqlite3
 import json
 from pathlib import Path
 import hashlib
 import threading
-from typing import Optional, List, Dict, Any, Tuple, Union, Literal
+from typing import Optional, List, Dict, Any, Tuple, Union, Literal, ContextManager
+import tempfile
+import os
+from contextlib import contextmanager
 
 from filelock import FileLock, Timeout
 import numpy as np
@@ -29,8 +31,9 @@ from .vectorization.methods.tfidf import TfidfVectorizerWrapper
 from ascii_colors import ASCIIColors, LogLevel
 
 
-# Default lock timeout in seconds
 DEFAULT_LOCK_TIMEOUT: int = 60
+TEMP_FILE_DB_INDICATOR = ":tempfile:"
+IN_MEMORY_DB_INDICATOR = ":memory:"
 
 class SafeStore:
     """
@@ -41,11 +44,16 @@ class SafeStore:
     semantic similarity, deleting documents, and handling concurrent access
     safely using file locks. Includes optional encryption for chunk text.
 
+    Can operate with a persistent file database, an in-memory database,
+    or a temporary file database that is cleaned up on close.
+
     Designed for simplicity and efficiency in RAG pipelines.
 
     Attributes:
-        db_path (str): The resolved absolute path to the SQLite database file.
-        lock_path (str): The path to the file lock used for concurrency control.
+        db_path (str): The path to the SQLite database file. This can be a file path,
+                       ":memory:", or the path to a temporary file managed by SafeStore.
+        lock_path (Optional[str]): The path to the file lock used for concurrency control.
+                                   None if using an in-memory database.
         lock_timeout (int): The maximum time in seconds to wait for the lock.
         vectorizer_manager (VectorizationManager): Manages vectorizer instances.
         conn (Optional[sqlite3.Connection]): The active SQLite database connection.
@@ -55,7 +63,7 @@ class SafeStore:
 
     def __init__(
         self,
-        db_path: Union[str, Path] = "safe_store.db",
+        db_path: Optional[Union[str, Path]] = "safe_store.db",
         log_level: LogLevel = LogLevel.INFO,
         lock_timeout: int = DEFAULT_LOCK_TIMEOUT,
         encryption_key: Optional[str] = None
@@ -67,13 +75,20 @@ class SafeStore:
         schema, sets up logging, and prepares concurrency controls.
 
         Args:
-            db_path: Path to the SQLite database file. Defaults to "safe_store.db"
-                     in the current working directory.
+            db_path: Path to the SQLite database file.
+                     - If a file path (e.g., "my_store.db"), a persistent database is used.
+                     - If `None` or `":memory:"` (case-insensitive), an in-memory SQLite
+                       database is used (data lost when SafeStore is closed/destroyed).
+                       No inter-process file lock is used for in-memory databases.
+                     - If `":tempfile:"` (case-insensitive), a temporary database file is
+                       created by SafeStore, used, and automatically deleted when `close()`
+                       is called or the SafeStore instance is used as a context manager.
+                     Defaults to "safe_store.db" in the current working directory.
             log_level: Minimum log level for console output via `ascii_colors`.
                        Defaults to `LogLevel.INFO`.
             lock_timeout: Timeout in seconds for acquiring the inter-process
-                          write lock. Defaults to 60 seconds. Set to 0 or
-                          negative for non-blocking.
+                          write lock (if applicable for file-based DBs). Defaults to 60 seconds.
+                          Set to 0 or negative for non-blocking.
             encryption_key: Optional password used to derive an encryption key
                             for encrypting chunk text at rest using AES-128-CBC.
                             If provided, `cryptography` must be installed.
@@ -82,19 +97,66 @@ class SafeStore:
 
         Raises:
             DatabaseError: If the database connection or schema initialization fails.
-            ConcurrencyError: If acquiring the initial lock for setup times out.
+            ConcurrencyError: If acquiring the initial lock for setup times out (for file-based DBs).
             ConfigurationError: If `encryption_key` is provided but `cryptography`
-                                is not installed.
+                                is not installed, or for other config issues like temporary file creation.
             ValueError: If `encryption_key` is provided but is empty.
+            FileHandlingError: If parent directories for a persistent DB cannot be created.
         """
-        self.db_path: str = str(Path(db_path).resolve())
         self.lock_timeout: int = lock_timeout
-        _db_file_path = Path(self.db_path)
-        self.lock_path: str = str(_db_file_path.parent / f"{_db_file_path.name}.lock")
+        self._is_in_memory: bool = False
+        self._is_temp_file_db: bool = False
+        self._temp_db_actual_path: Optional[str] = None
+        self._file_lock: Optional[FileLock] = None
+
+        actual_db_path_str: str
+        lock_path_str: Optional[str] = None
+
+        db_path_input_str = str(db_path).lower() if db_path is not None else IN_MEMORY_DB_INDICATOR
 
         ASCIIColors.set_log_level(log_level)
-        ASCIIColors.info(f"Initializing SafeStore with database: {self.db_path}")
-        ASCIIColors.debug(f"Using lock file: {self.lock_path} with timeout: {self.lock_timeout}s")
+
+        if db_path_input_str == IN_MEMORY_DB_INDICATOR:
+            actual_db_path_str = IN_MEMORY_DB_INDICATOR
+            self._is_in_memory = True
+            ASCIIColors.info("Initializing SafeStore with an in-memory SQLite database.")
+        elif db_path_input_str == TEMP_FILE_DB_INDICATOR:
+            try:
+                with tempfile.NamedTemporaryFile(suffix=".db", prefix="safestore_temp_", delete=False) as tmp_f:
+                    self._temp_db_actual_path = tmp_f.name
+                actual_db_path_str = self._temp_db_actual_path
+                self._is_temp_file_db = True
+                ASCIIColors.info(f"Initializing SafeStore with a temporary database file: {actual_db_path_str}")
+                _db_file_path_obj = Path(actual_db_path_str)
+                lock_path_str = str(_db_file_path_obj.parent / f"{_db_file_path_obj.name}.lock")
+                self._file_lock = FileLock(lock_path_str, timeout=self.lock_timeout)
+            except Exception as e:
+                msg = f"Failed to create temporary database file: {e}"
+                ASCIIColors.critical(msg)
+                if self._temp_db_actual_path and Path(self._temp_db_actual_path).exists():
+                    try: Path(self._temp_db_actual_path).unlink()
+                    except OSError: pass
+                raise ConfigurationError(msg) from e
+        else:
+            actual_db_path_str = str(Path(db_path).resolve()) # type: ignore
+            ASCIIColors.info(f"Initializing SafeStore with persistent database: {actual_db_path_str}")
+            _db_file_path_obj = Path(actual_db_path_str)
+            try:
+                _db_file_path_obj.parent.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                msg = f"Failed to create parent directory for database '{actual_db_path_str}': {e}"
+                ASCIIColors.critical(msg)
+                raise FileHandlingError(msg) from e
+            lock_path_str = str(_db_file_path_obj.parent / f"{_db_file_path_obj.name}.lock")
+            self._file_lock = FileLock(lock_path_str, timeout=self.lock_timeout)
+
+        self.db_path: str = actual_db_path_str
+        self.lock_path: Optional[str] = lock_path_str
+
+        if self.lock_path:
+            ASCIIColors.debug(f"Using lock file: {self.lock_path} with timeout: {self.lock_timeout}s")
+        elif self._is_in_memory:
+            ASCIIColors.debug("Using in-memory database. Inter-process file lock is disabled.")
 
         self.conn: Optional[sqlite3.Connection] = None
         self._is_closed: bool = True
@@ -108,40 +170,63 @@ class SafeStore:
                  ASCIIColors.info("Encryption enabled for chunk text.")
         except (ConfigurationError, ValueError) as e:
              ASCIIColors.critical(f"Encryptor initialization failed: {e}")
+             self._manual_cleanup_temp_files_on_error()
              raise e
 
         self._instance_lock = threading.RLock()
-        self._file_lock = FileLock(self.lock_path, timeout=self.lock_timeout)
 
         try:
             self._connect_and_initialize()
-        except (DatabaseError, Timeout, ConcurrencyError) as e:
-            ASCIIColors.critical(f"SafeStore initialization failed: {e}")
+        except (DatabaseError, Timeout, ConcurrencyError, SafeStoreError) as e:
+            ASCIIColors.critical(f"SafeStore initialization failed during DB connect/init: {e}")
+            self._manual_cleanup_temp_files_on_error()
             raise
+
+    def _manual_cleanup_temp_files_on_error(self):
+        """Helper to clean up temp files if __init__ fails after their creation."""
+        if self._is_temp_file_db and self._temp_db_actual_path:
+            path_to_del = self._temp_db_actual_path
+            lock_path_to_del = self.lock_path
+            self._temp_db_actual_path = None
+            self._is_temp_file_db = False
+
+            ASCIIColors.debug(f"Attempting cleanup of temporary files due to init failure: DB='{path_to_del}', Lock='{lock_path_to_del}'")
+            try: Path(path_to_del).unlink(missing_ok=True)
+            except OSError as e_db: ASCIIColors.warning(f"Error deleting temp DB file '{path_to_del}' during cleanup: {e_db}")
+            if lock_path_to_del:
+                try: Path(lock_path_to_del).unlink(missing_ok=True)
+                except OSError as e_lock: ASCIIColors.warning(f"Error deleting temp lock file '{lock_path_to_del}' during cleanup: {e_lock}")
+
+    @contextmanager
+    def _optional_file_lock_context(self, description: Optional[str] = None) -> ContextManager[None]:
+        """Acquires the file lock if configured, otherwise yields immediately. For inter-process safety."""
+        if self._file_lock:
+            op_desc = f" for {description}" if description else ""
+            try:
+                with self._file_lock:
+                    ASCIIColors.info(f"File lock acquired{op_desc}.")
+                    yield
+                ASCIIColors.debug(f"File lock released{op_desc}.")
+            except Timeout as e:
+                raise ConcurrencyError(f"Timeout acquiring file lock{op_desc} (path: {self.lock_path})") from e
+        else:
+            if description:
+                 ASCIIColors.debug(f"Skipping inter-process file lock (in-memory DB or lock disabled) for {description}.")
+            yield
 
     def _connect_and_initialize(self) -> None:
         """Establishes the database connection and initializes the schema."""
-        init_lock = FileLock(self.lock_path, timeout=self.lock_timeout)
         try:
-            with init_lock:
-                ASCIIColors.debug("Acquired init lock for connection/schema setup.")
+            with self._optional_file_lock_context("DB connection/schema setup"):
                 if self.conn is None or self._is_closed:
                      self.conn = db.connect_db(self.db_path)
                      db.initialize_schema(self.conn)
                      self._is_closed = False
+                     ASCIIColors.debug(f"Database connection established and schema initialized for: {self.db_path}")
                 else:
                      ASCIIColors.debug("Connection already established.")
-            ASCIIColors.debug("Released init lock.")
-        except Timeout as e:
-            msg = f"Timeout acquiring initial lock for DB connection/setup at {self.lock_path}"
-            ASCIIColors.error(msg)
-            if self.conn:
-                 try: self.conn.close()
-                 except Exception: pass
-                 finally: self.conn = None; self._is_closed = True
-            raise ConcurrencyError(msg) from e
-        except DatabaseError as e:
-            ASCIIColors.error(f"Database error during initial setup: {e}")
+        except (DatabaseError, Timeout, ConcurrencyError) as e:
+            ASCIIColors.error(f"Error during initial DB connection/setup: {e}")
             if self.conn:
                  try: self.conn.close()
                  except Exception: pass
@@ -157,37 +242,65 @@ class SafeStore:
             raise SafeStoreError(msg) from e
 
     def close(self) -> None:
-        """Closes the database connection and clears the vectorizer cache."""
+        """Closes the database connection, clears vectorizer cache, and cleans up temporary files if any."""
         with self._instance_lock:
-            if self._is_closed:
-                 ASCIIColors.debug("Connection already closed.")
+            if self._is_closed and not (self._is_temp_file_db and self._temp_db_actual_path):
+                 ASCIIColors.debug("SafeStore instance already closed and no temp files to clean.")
                  return
+
             if self.conn:
-                ASCIIColors.debug("Closing database connection.")
+                ASCIIColors.debug(f"Closing database connection to: {self.db_path}")
                 try: self.conn.close()
                 except Exception as e: ASCIIColors.warning(f"Error closing DB connection: {e}")
-                finally: self.conn = None; self._is_closed = True
+                finally: self.conn = None
+
+            self._is_closed = True
 
             if hasattr(self, 'vectorizer_manager'):
                 self.vectorizer_manager.clear_cache()
-            ASCIIColors.info("SafeStore connection closed.")
+            ASCIIColors.info("SafeStore resources (connection, cache) released.")
+
+            if self._is_temp_file_db and self._temp_db_actual_path:
+                actual_path_to_delete = self._temp_db_actual_path
+                lock_path_to_delete = self.lock_path
+                self._temp_db_actual_path = None
+                self._is_temp_file_db = False
+
+                ASCIIColors.info(f"Cleaning up temporary database file: {actual_path_to_delete}")
+                try:
+                    Path(actual_path_to_delete).unlink(missing_ok=True)
+                    ASCIIColors.debug(f"Temporary database file {actual_path_to_delete} deleted or was missing.")
+                except OSError as e:
+                    ASCIIColors.warning(f"Error deleting temporary database file {actual_path_to_delete}: {e}")
+
+                if lock_path_to_delete:
+                    ASCIIColors.debug(f"Cleaning up temporary lock file: {lock_path_to_delete}")
+                    try:
+                        Path(lock_path_to_delete).unlink(missing_ok=True)
+                        ASCIIColors.debug(f"Temporary lock file {lock_path_to_delete} deleted or was missing.")
+                    except OSError as e:
+                        ASCIIColors.warning(f"Error deleting temporary lock file {lock_path_to_delete}: {e}")
 
     def __enter__(self):
         """Enter the runtime context related to this object."""
         with self._instance_lock:
             if self._is_closed or self.conn is None:
                 ASCIIColors.debug("Re-establishing connection on context manager entry.")
-                try: self._connect_and_initialize()
+                try:
+                    self._connect_and_initialize()
                 except (DatabaseError, ConcurrencyError, SafeStoreError) as e:
                     ASCIIColors.error(f"Failed to re-establish connection in __enter__: {e}")
+                    self._manual_cleanup_temp_files_on_error()
                     raise
             return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Exit the runtime context related to this object."""
         self.close()
-        if exc_type: ASCIIColors.error(f"SafeStore context closed with error: {exc_val}", exc_info=(exc_type, exc_val, exc_tb))
-        else: ASCIIColors.debug("SafeStore context closed cleanly.")
+        if exc_type:
+            ASCIIColors.error(f"SafeStore context closed with error: {exc_val}", exc_info=(exc_type, exc_val, exc_tb))
+        else:
+            ASCIIColors.debug("SafeStore context closed cleanly.")
 
     def _get_file_hash(self, file_path: Path) -> str:
         """Generates a SHA256 hash for the file content."""
@@ -209,32 +322,69 @@ class SafeStore:
             ASCIIColors.warning(msg)
             raise FileHandlingError(msg) from e
 
-    def _get_text_hash(self, text: Path) -> str:
-        """Generates a SHA256 hash for the file content."""
+    def _get_text_hash(self, text: str) -> str:
+        """Generates a SHA256 hash for the given text."""
         try:
             hasher = self._file_hasher()
-            chunk = text.encode("utf8")
-            hasher.update(chunk)
+            encoded_text = text.encode("utf-8")
+            hasher.update(encoded_text)
             return hasher.hexdigest()
-        except FileNotFoundError as e:
-            msg = f"File not found when trying to hash: {file_path}"
-            ASCIIColors.error(msg)
-            raise FileHandlingError(msg) from e
-        except OSError as e:
-            msg = f"OS error reading file for hashing {file_path}: {e}"
-            ASCIIColors.error(msg)
-            raise FileHandlingError(msg) from e
         except Exception as e:
-            msg = f"Unexpected error generating hash for {file_path}: {e}"
+            msg = f"Unexpected error generating hash for text: {e}"
             ASCIIColors.warning(msg)
-            raise FileHandlingError(msg) from e
+            raise SafeStoreError(msg) from e
 
     def _ensure_connection(self) -> None:
         """Checks if the connection is active, raises ConnectionError if not."""
         if self._is_closed or self.conn is None:
+            if self._is_in_memory and self.db_path == IN_MEMORY_DB_INDICATOR:
+                 ASCIIColors.warning("In-memory database connection was closed. Reinitializing for this operation.")
+                 try:
+                     self._connect_and_initialize()
+                     if self._is_closed or self.conn is None:
+                         raise ConnectionError("Failed to re-initialize in-memory database connection.")
+                     return
+                 except Exception as e:
+                     raise ConnectionError(f"Failed to re-initialize in-memory database connection: {e}") from e
             raise ConnectionError("Database connection is closed or not available.")
 
-    # === Write methods requiring locking ===
+    def preload_vectorizer(self,
+                           vectorizer_name:Optional[str]=None,
+                           vectorizer_params: Optional[Dict[str, Any]] = None) -> None:
+        """Preloads a vectorizer for future use, potentially registering it in the DB.
+
+        This method ensures that the specified vectorizer is loaded into the
+        VectorizationManager's cache. If the vectorizer method is not yet
+        registered in the database, this method will also handle its registration,
+        which is a write operation and thus protected by a file lock (if applicable).
+
+        Args:
+            vectorizer_name: Name of the vectorizer (e.g., 'st:model-name', 'tfidf:custom-name').
+                             Defaults to `self.DEFAULT_VECTORIZER`.
+            vectorizer_params: Optional parameters for vectorizer initialization,
+                               particularly relevant for TF-IDF or custom vectorizers.
+
+        Raises:
+            ConfigurationError: If there are issues with vectorizer configuration.
+            VectorizationError: If the vectorizer instantiation fails.
+            DatabaseError: For errors during database interaction.
+            ConcurrencyError: If acquiring the file lock times out (for file-based DBs).
+            ConnectionError: If the database connection is closed or not available.
+            SafeStoreError: For other unexpected errors during the preloading process.
+        """
+        _vectorizer_name_to_load = vectorizer_name or self.DEFAULT_VECTORIZER
+        ASCIIColors.info(f"Attempting to preload vectorizer: '{_vectorizer_name_to_load}'")
+        with self._instance_lock:
+            with self._optional_file_lock_context(f"preloading vectorizer '{_vectorizer_name_to_load}'"):
+                self._ensure_connection()
+                assert self.conn is not None
+                _ = self.vectorizer_manager.get_vectorizer(
+                    _vectorizer_name_to_load,
+                    self.conn,
+                    vectorizer_params
+                )
+                ASCIIColors.success(f"Vectorizer '{_vectorizer_name_to_load}' preloaded successfully and is cached.")
+
 
     def add_document(
         self,
@@ -251,16 +401,16 @@ class SafeStore:
 
         Handles parsing, chunking, optional encryption, vectorization, and storage.
         Detects file changes via hash and re-indexes automatically. Skips if
-        unchanged and vectors exist. Acquires an exclusive write lock.
+        unchanged and vectors exist. Acquires an exclusive write lock (if applicable).
 
         Args:
             file_path: Path to the document file.
-            vectorizer_name: Vectorizer to use (e.g., 'st:model', 'tfidf:name'). Defaults to `DEFAULT_VECTORIZER`.
+            vectorizer_name: Vectorizer to use. Defaults to `DEFAULT_VECTORIZER`.
             chunk_size: Target chunk size in characters.
             chunk_overlap: Overlap between chunks. Must be less than `chunk_size`.
             metadata: Optional JSON-serializable metadata dictionary.
             force_reindex: If True, re-process even if hash matches.
-            vectorizer_params: Optional parameters for vectorizer initialization (e.g., TF-IDF).
+            vectorizer_params: Optional parameters for vectorizer initialization.
 
         Raises:
             ValueError: If chunk parameters are invalid.
@@ -269,7 +419,7 @@ class SafeStore:
             ConfigurationError: For missing dependencies or unsupported types.
             VectorizationError: If vector generation fails.
             DatabaseError: For database interaction errors.
-            ConcurrencyError: If write lock times out.
+            ConcurrencyError: If write lock times out (for file-based DBs).
             ConnectionError: If database connection is closed.
             SafeStoreError: For other unexpected errors.
             EncryptionError: If encryption operations fail.
@@ -279,29 +429,12 @@ class SafeStore:
              raise ValueError("chunk_overlap must be smaller than chunk_size")
 
         with self._instance_lock:
-            ASCIIColors.debug(f"Attempting to acquire write lock for add_document: {_file_path.name}")
-            try:
-                with self._file_lock:
-                    ASCIIColors.info(f"Write lock acquired for add_document: {_file_path.name}")
-                    self._ensure_connection()
-                    self._add_document_impl(
-                        _file_path, vectorizer_name, chunk_size, chunk_overlap,
-                        metadata, force_reindex, vectorizer_params
-                    )
-                ASCIIColors.debug(f"Write lock released for add_document: {_file_path.name}")
-            except Timeout as e:
-                msg = f"Timeout ({self.lock_timeout}s) acquiring write lock for add_document: {_file_path.name}"
-                ASCIIColors.error(msg)
-                raise ConcurrencyError(msg) from e
-            except (DatabaseError, FileHandlingError, ParsingError, ConfigurationError,
-                    VectorizationError, EncryptionError, QueryError,
-                    ValueError, ConnectionError, SafeStoreError) as e:
-                ASCIIColors.error(f"Error during add_document: {e.__class__.__name__}: {e}", exc_info=False)
-                raise
-            except Exception as e:
-                msg = f"Unexpected error during add_document (lock scope) for '{_file_path.name}': {e}"
-                ASCIIColors.error(msg, exc_info=True)
-                raise SafeStoreError(msg) from e
+            with self._optional_file_lock_context(f"add_document: {_file_path.name}"):
+                self._ensure_connection()
+                self._add_document_impl(
+                    _file_path, vectorizer_name, chunk_size, chunk_overlap,
+                    metadata, force_reindex, vectorizer_params
+                )
 
     def _add_document_impl(
         self,
@@ -421,8 +554,8 @@ class SafeStore:
                             if not logged_encryption_status: ASCIIColors.debug("Encrypting chunk text."); logged_encryption_status = True
                         except EncryptionError as e: raise e
 
-                    chunk_id = db.add_chunk_record(self.conn, doc_id, text_to_store, start, end, i, is_encrypted=is_encrypted_flag, encryption_metadata=encrypted_metadata)
-                    chunk_ids.append(chunk_id)
+                    chunk_id_val = db.add_chunk_record(self.conn, doc_id, text_to_store, start, end, i, is_encrypted=is_encrypted_flag, encryption_metadata=encrypted_metadata)
+                    chunk_ids.append(chunk_id_val)
                     chunk_texts_for_vectorization.append(text)
             else:
                 if doc_id is None: raise SafeStoreError(f"Inconsistent state: doc_id is None but parsing/chunking was skipped for {file_path.name}")
@@ -518,66 +651,44 @@ class SafeStore:
 
         Handles chunking, optional encryption, vectorization, and storage.
         Detects text changes via hash and re-indexes automatically. Skips if
-        unchanged and vectors exist. Acquires an exclusive write lock.
+        unchanged and vectors exist. Acquires an exclusive write lock (if applicable).
 
         Args:
-            unique_id: A unique identifier for the text content. This will be stored
-                       where file_path is stored for documents.
+            unique_id: A unique identifier for the text content.
             text: The text content to add.
-            vectorizer_name: Vectorizer to use (e.g., 'st:model', 'tfidf:name'). Defaults to `DEFAULT_VECTORIZER`.
+            vectorizer_name: Vectorizer to use. Defaults to `DEFAULT_VECTORIZER`.
             chunk_size: Target chunk size in characters.
             chunk_overlap: Overlap between chunks. Must be less than `chunk_size`.
             metadata: Optional JSON-serializable metadata dictionary.
             force_reindex: If True, re-process even if hash matches.
-            vectorizer_params: Optional parameters for vectorizer initialization (e.g., TF-IDF).
+            vectorizer_params: Optional parameters for vectorizer initialization.
 
         Raises:
             ValueError: If chunk parameters are invalid or unique_id/text is empty/None.
-            FileHandlingError: For file-like operation errors (less direct, but possible from underlying components).
-            ParsingError: If any component unexpectedly requires parsing (less direct now that text is pre-parsed).
             ConfigurationError: For missing dependencies or unsupported types.
             VectorizationError: If vector generation fails.
             DatabaseError: For database interaction errors.
-            ConcurrencyError: If write lock times out.
+            ConcurrencyError: If write lock times out (for file-based DBs).
             ConnectionError: If database connection is closed.
-            SafeStoreError: For other unexpected errors (e.g., text hashing failure).
+            SafeStoreError: For other unexpected errors.
             EncryptionError: If encryption operations fail.
         """
-        if not unique_id:
-            raise ValueError("unique_id cannot be empty.")
-        if text is None: # Check for None; empty string might be permissible.
-            raise ValueError("text content cannot be None.")
-        if chunk_overlap >= chunk_size:
-             raise ValueError("chunk_overlap must be smaller than chunk_size")
+        if not unique_id: raise ValueError("unique_id cannot be empty.")
+        if text is None: raise ValueError("text content cannot be None.")
+        if chunk_overlap >= chunk_size: raise ValueError("chunk_overlap must be smaller than chunk_size")
 
         with self._instance_lock:
-            ASCIIColors.debug(f"Attempting to acquire write lock for add_text: {unique_id}")
-            try:
+            with self._optional_file_lock_context(f"add_text: {unique_id}"):
                 self._ensure_connection()
                 self._add_text_impl(
                     unique_id, text, vectorizer_name, chunk_size, chunk_overlap,
                     metadata, force_reindex, vectorizer_params
                 )
-            except Timeout as e:
-                msg = f"Timeout ({self.lock_timeout}s) acquiring write lock for add_text: {unique_id}"
-                ASCIIColors.error(msg)
-                raise ConcurrencyError(msg) from e
-            except (DatabaseError, FileHandlingError, ParsingError, ConfigurationError,
-                    VectorizationError, EncryptionError, QueryError,
-                    ValueError, ConnectionError, SafeStoreError) as e:
-                # Kept FileHandlingError & ParsingError for consistency with error hierarchy,
-                # though their direct causes from file I/O or parsing are removed for add_text.
-                ASCIIColors.error(f"Error during add_text for ID '{unique_id}': {e.__class__.__name__}: {e}", exc_info=False)
-                raise
-            except Exception as e:
-                msg = f"Unexpected error during add_text (lock scope) for ID '{unique_id}': {e}"
-                ASCIIColors.error(msg, exc_info=True)
-                raise SafeStoreError(msg) from e
 
     def _add_text_impl(
         self,
         unique_id: str,
-        text_content: str, # Renamed from 'text' to distinguish from chunk text variable
+        text_content: str,
         vectorizer_name: Optional[str],
         chunk_size: int,
         chunk_overlap: int,
@@ -588,25 +699,22 @@ class SafeStore:
         """Internal implementation of add_text logic."""
         assert self.conn is not None
         _vectorizer_name = vectorizer_name or self.DEFAULT_VECTORIZER
-        # `unique_id` serves as the replacement for `abs_file_path`
-
         ASCIIColors.info(f"Starting indexing process for text ID: {unique_id}")
         ASCIIColors.debug(f"Params: vectorizer='{_vectorizer_name}', chunk_size={chunk_size}, overlap={chunk_overlap}, force={force_reindex}, encryption={'enabled' if self.encryptor.is_enabled else 'disabled'}")
 
         try:
             current_hash = self._get_text_hash(text_content)
-        except SafeStoreError as e: # Raised by _get_text_hash for its internal errors
+        except SafeStoreError as e:
             ASCIIColors.error(f"Failed to compute hash for text ID '{unique_id}': {e}", exc_info=True)
-            raise # Re-raise to be caught by the main try-except in add_text
+            raise
 
         existing_doc_id: Optional[int] = None
         existing_hash: Optional[str] = None
-        needs_content_processing_chunking = True # Renamed from needs_parsing_chunking
+        needs_content_processing_chunking = True
         needs_vectorization = True
 
         try:
             cursor = self.conn.cursor()
-            # Use unique_id in the 'file_path' column for queries
             cursor.execute("SELECT doc_id, file_hash FROM documents WHERE file_path = ?", (unique_id,))
             result = cursor.fetchone()
             if result:
@@ -617,7 +725,7 @@ class SafeStore:
                     ASCIIColors.warning(f"Force re-indexing requested for text ID '{unique_id}'.")
                     cursor.execute("BEGIN")
                     cursor.execute("DELETE FROM chunks WHERE doc_id = ?", (existing_doc_id,))
-                    self.conn.commit() # Commit this delete operation
+                    self.conn.commit()
                     ASCIIColors.debug(f"Deleted old chunks/vectors for forced re-index of doc_id={existing_doc_id}.")
                 elif existing_hash == current_hash:
                     ASCIIColors.info(f"Text ID '{unique_id}' is unchanged.")
@@ -630,26 +738,24 @@ class SafeStore:
                         needs_vectorization = False
                     else:
                          ASCIIColors.info(f"Text ID '{unique_id}' exists and is unchanged, but needs vectorization '{_vectorizer_name}'.")
-                else: # Hash mismatch
+                else:
                     ASCIIColors.warning(f"Text ID '{unique_id}' has changed (hash mismatch). Re-indexing...")
                     cursor.execute("BEGIN")
                     cursor.execute("DELETE FROM chunks WHERE doc_id = ?", (existing_doc_id,))
-                    self.conn.commit() # Commit this delete operation
+                    self.conn.commit()
                     ASCIIColors.debug(f"Deleted old chunks/vectors for changed doc_id={existing_doc_id}.")
-            else: # New unique_id
+            else:
                  ASCIIColors.info(f"Text ID '{unique_id}' is new.")
 
         except (sqlite3.Error, DatabaseError) as e:
             msg = f"Database error checking/updating document state for text ID '{unique_id}': {e}"
             ASCIIColors.error(msg, exc_info=True)
-            if self.conn: self.conn.rollback() # Rollback if transaction was started and failed
+            if self.conn: self.conn.rollback()
             raise DatabaseError(msg) from e
-        except SafeStoreError as e: raise e # Propagate SafeStoreError (e.g., from get_vectorizer)
-        except Exception as e: # Catch any other unexpected errors during this stage
+        except SafeStoreError as e: raise e
+        except Exception as e:
              msg = f"Unexpected error preparing indexing for text ID '{unique_id}': {e}"
              ASCIIColors.error(msg, exc_info=True)
-             # Consider rollback if a transaction might have been started by DB implicitly
-             # if self.conn and self.conn.in_transaction: self.conn.rollback()
              raise SafeStoreError(msg) from e
 
         if not needs_content_processing_chunking and not needs_vectorization:
@@ -657,44 +763,42 @@ class SafeStore:
 
         cursor = self.conn.cursor()
         try:
-            cursor.execute("BEGIN") # Start main transaction for additions/updates
+            cursor.execute("BEGIN")
             doc_id: Optional[int] = existing_doc_id
-            full_text: str # Will be assigned from text_content
+            full_text: str
             chunks_data: List[Tuple[str, int, int]] = []
             chunk_ids: List[int] = []
             chunk_texts_for_vectorization: List[str] = []
 
             if needs_content_processing_chunking:
                 ASCIIColors.debug(f"Processing provided text for ID: {unique_id}")
-                full_text = text_content # Text is provided directly
-                # No parsing step like parser.parse_document(file_path)
+                full_text = text_content
                 ASCIIColors.debug(f"Using text for ID '{unique_id}'. Length: {len(full_text)} chars.")
                 metadata_str = json.dumps(metadata) if metadata else None
 
-                if doc_id is None: # New text ID
-                    # Store unique_id in the file_path column
+                if doc_id is None:
                     doc_id = db.add_document_record(self.conn, unique_id, full_text, current_hash, metadata_str)
-                else: # Existing text ID, content changed or forced reindex
+                else:
                     cursor.execute("UPDATE documents SET file_hash = ?, full_text = ?, metadata = ? WHERE doc_id = ?", (current_hash, full_text, metadata_str, doc_id))
 
                 try:
                     chunks_data = chunking.chunk_text(full_text, chunk_size, chunk_overlap)
-                except ValueError as e: # Raised by chunk_text for invalid params
+                except ValueError as e:
                     raise e
 
                 if not chunks_data:
                     ASCIIColors.warning(f"No chunks generated for text ID '{unique_id}'. Document record saved, but skipping vectorization.")
-                    self.conn.commit() # Commit document record changes
+                    self.conn.commit()
                     return
 
                 ASCIIColors.info(f"Generated {len(chunks_data)} chunks for text ID '{unique_id}'. Storing chunks...")
                 should_encrypt = self.encryptor.is_enabled
                 logged_encryption_status = False
 
-                for i, (text_chunk_content, start, end) in enumerate(chunks_data): # Renamed 'text' to 'text_chunk_content'
+                for i, (text_chunk_content, start, end) in enumerate(chunks_data):
                     text_to_store: Union[str, bytes] = text_chunk_content
                     is_encrypted_flag = False
-                    encrypted_metadata = None # This was None in original too
+                    encrypted_metadata = None
                     if should_encrypt:
                         try:
                             encrypted_token = self.encryptor.encrypt(text_chunk_content)
@@ -703,10 +807,10 @@ class SafeStore:
                             if not logged_encryption_status: ASCIIColors.debug("Encrypting chunk text."); logged_encryption_status = True
                         except EncryptionError as e: raise e
 
-                    chunk_id = db.add_chunk_record(self.conn, doc_id, text_to_store, start, end, i, is_encrypted=is_encrypted_flag, encryption_metadata=encrypted_metadata)
-                    chunk_ids.append(chunk_id)
-                    chunk_texts_for_vectorization.append(text_chunk_content) # Original text for vectorization
-            else: # Content unchanged, but needs new vectorization
+                    chunk_id_val = db.add_chunk_record(self.conn, doc_id, text_to_store, start, end, i, is_encrypted=is_encrypted_flag, encryption_metadata=encrypted_metadata)
+                    chunk_ids.append(chunk_id_val)
+                    chunk_texts_for_vectorization.append(text_chunk_content)
+            else:
                 if doc_id is None:
                     raise SafeStoreError(f"Inconsistent state: doc_id is None but content processing/chunking was skipped for text ID '{unique_id}'")
                 ASCIIColors.debug(f"Retrieving existing chunks for doc_id={doc_id} (text ID: '{unique_id}') to add new vectors...")
@@ -715,7 +819,7 @@ class SafeStore:
 
                 if not results:
                       ASCIIColors.warning(f"Text ID {doc_id} ('{unique_id}') exists but has no stored chunks. Cannot add vectorization '{_vectorizer_name}'.")
-                      needs_vectorization = False # Cannot proceed if no chunks
+                      needs_vectorization = False
                 else:
                     ASCIIColors.debug(f"Processing {len(results)} existing chunks for vectorization (decrypting if needed)...")
                     logged_decryption_status = False
@@ -730,11 +834,11 @@ class SafeStore:
                                     if not logged_decryption_status: ASCIIColors.debug("Decrypting existing chunk text for vectorization."); logged_decryption_status = True
                                 except (EncryptionError, TypeError) as e: raise e
                             else: raise ConfigurationError(f"Cannot get text for vectorization: Chunk {chunk_id_db} (text ID '{unique_id}') is encrypted, but no encryption key provided.")
-                        else: # Not encrypted
+                        else:
                              if not isinstance(text_data_db, str):
                                   ASCIIColors.warning(f"Chunk {chunk_id_db} (text ID '{unique_id}') not marked encrypted, but data is not string. Attempting decode.")
                                   try: text_for_vec = text_data_db.decode('utf-8') if isinstance(text_data_db, bytes) else str(text_data_db)
-                                  except Exception: text_for_vec = str(text_data_db) # Best effort
+                                  except Exception: text_for_vec = str(text_data_db)
                              else: text_for_vec = text_data_db
                         chunk_texts_for_vectorization.append(text_for_vec)
                     ASCIIColors.debug(f"Retrieved {len(chunk_ids)} existing chunk IDs and obtained text for vectorization for text ID '{unique_id}'.")
@@ -742,7 +846,7 @@ class SafeStore:
             if needs_vectorization:
                 if not chunk_ids or not chunk_texts_for_vectorization:
                      ASCIIColors.warning(f"No valid chunk text available to vectorize for text ID '{unique_id}'. Skipping vectorization.")
-                     self.conn.commit() # Commit any document/chunk records made so far
+                     self.conn.commit()
                      return
 
                 try: vectorizer, method_id = self.vectorizer_manager.get_vectorizer(_vectorizer_name, self.conn, vectorizer_params)
@@ -771,7 +875,7 @@ class SafeStore:
                     vector_contiguous = np.ascontiguousarray(vector_data, dtype=vectorizer.dtype)
                     db.add_vector_record(self.conn, chunk_id_vec, method_id, vector_contiguous)
 
-            self.conn.commit() # Commit the main transaction
+            self.conn.commit()
             ASCIIColors.success(f"Successfully processed text ID '{unique_id}' with vectorizer '{_vectorizer_name}'.")
 
         except (sqlite3.Error, DatabaseError, FileHandlingError, ParsingError, ConfigurationError, VectorizationError, EncryptionError, ValueError, SafeStoreError) as e:
@@ -786,7 +890,7 @@ class SafeStore:
             ASCIIColors.debug(f"Transaction for text ID '{unique_id}' rolled back due to unexpected error.")
             raise SafeStoreError(msg) from e
 
-    
+
     def add_vectorization(
         self,
         vectorizer_name: str,
@@ -797,13 +901,13 @@ class SafeStore:
         """
         Adds vector embeddings using a specified method to existing documents.
 
-        Fits TF-IDF if needed (potentially decrypting text). Processes in batches.
-        Acquires an exclusive write lock.
+        Fits TF-IDF if needed. Processes in batches. Acquires an exclusive
+        write lock (if applicable).
 
         Args:
-            vectorizer_name: Vectorizer to add (e.g., 'st:new-model', 'tfidf:variant').
+            vectorizer_name: Vectorizer to add.
             target_doc_path: If specified, only adds vectors for this document. Otherwise all.
-            vectorizer_params: Optional parameters for vectorizer init (mainly TF-IDF).
+            vectorizer_params: Optional parameters for vectorizer init.
             batch_size: Number of chunks to process per batch.
 
         Raises:
@@ -811,30 +915,15 @@ class SafeStore:
             ConfigurationError: For missing vectorizer dependencies or issues.
             VectorizationError: If vector generation or fitting fails.
             DatabaseError: For database interaction errors.
-            ConcurrencyError: If write lock times out.
+            ConcurrencyError: If write lock times out (for file-based DBs).
             ConnectionError: If database connection is closed.
             SafeStoreError: For other unexpected errors.
             EncryptionError: If required decryption fails.
         """
         with self._instance_lock:
-            ASCIIColors.debug(f"Attempting to acquire write lock for add_vectorization: {vectorizer_name}")
-            try:
-                with self._file_lock:
-                    ASCIIColors.info(f"Write lock acquired for add_vectorization: {vectorizer_name}")
-                    self._ensure_connection()
-                    self._add_vectorization_impl(vectorizer_name, target_doc_path, vectorizer_params, batch_size)
-                ASCIIColors.debug(f"Write lock released for add_vectorization: {vectorizer_name}")
-            except Timeout as e:
-                msg = f"Timeout ({self.lock_timeout}s) acquiring write lock for add_vectorization: {vectorizer_name}"
-                ASCIIColors.error(msg)
-                raise ConcurrencyError(msg) from e
-            except (DatabaseError, FileHandlingError, ConfigurationError, VectorizationError, EncryptionError, QueryError, ValueError, ConnectionError, SafeStoreError) as e:
-                ASCIIColors.error(f"Error during add_vectorization: {e.__class__.__name__}: {e}", exc_info=False)
-                raise
-            except Exception as e:
-                msg = f"Unexpected error during add_vectorization (lock scope) for '{vectorizer_name}': {e}"
-                ASCIIColors.error(msg, exc_info=True)
-                raise SafeStoreError(msg) from e
+            with self._optional_file_lock_context(f"add_vectorization: {vectorizer_name}"):
+                self._ensure_connection()
+                self._add_vectorization_impl(vectorizer_name, target_doc_path, vectorizer_params, batch_size)
 
     def _add_vectorization_impl(
         self,
@@ -978,36 +1067,21 @@ class SafeStore:
         """
         Removes a vectorization method and its associated vectors.
 
-        Acquires an exclusive write lock.
+        Acquires an exclusive write lock (if applicable).
 
         Args:
             vectorizer_name: The name of the vectorization method to remove.
 
         Raises:
             DatabaseError: For database interaction errors.
-            ConcurrencyError: If write lock times out.
+            ConcurrencyError: If write lock times out (for file-based DBs).
             ConnectionError: If database connection is closed.
             SafeStoreError: For other unexpected errors.
         """
         with self._instance_lock:
-            ASCIIColors.debug(f"Attempting to acquire write lock for remove_vectorization: {vectorizer_name}")
-            try:
-                with self._file_lock:
-                    ASCIIColors.info(f"Write lock acquired for remove_vectorization: {vectorizer_name}")
-                    self._ensure_connection()
-                    self._remove_vectorization_impl(vectorizer_name)
-                ASCIIColors.debug(f"Write lock released for remove_vectorization: {vectorizer_name}")
-            except Timeout as e:
-                msg = f"Timeout ({self.lock_timeout}s) acquiring write lock for remove_vectorization: {vectorizer_name}"
-                ASCIIColors.error(msg)
-                raise ConcurrencyError(msg) from e
-            except (DatabaseError, ConnectionError, SafeStoreError) as e:
-                ASCIIColors.error(f"Error during remove_vectorization: {e.__class__.__name__}: {e}", exc_info=False)
-                raise
-            except Exception as e:
-                msg = f"Unexpected error during remove_vectorization (lock scope) for '{vectorizer_name}': {e}"
-                ASCIIColors.error(msg, exc_info=True)
-                raise SafeStoreError(msg) from e
+            with self._optional_file_lock_context(f"remove_vectorization: {vectorizer_name}"):
+                self._ensure_connection()
+                self._remove_vectorization_impl(vectorizer_name)
 
     def _remove_vectorization_impl(self, vectorizer_name: str) -> None:
         """Internal implementation of remove_vectorization."""
@@ -1039,38 +1113,23 @@ class SafeStore:
 
     def delete_document_by_id(self, doc_id: int) -> None:
         """
-        Deletes a document and all its associated chunks and vectors by its ID.
+        Deletes a document and all its associated data by its ID.
 
-        Uses `ON DELETE CASCADE` defined in the schema. Acquires an exclusive write lock.
+        Acquires an exclusive write lock (if applicable).
 
         Args:
             doc_id: The integer ID of the document to delete.
 
         Raises:
             DatabaseError: For database interaction errors.
-            ConcurrencyError: If write lock times out.
+            ConcurrencyError: If write lock times out (for file-based DBs).
             ConnectionError: If database connection is closed.
             SafeStoreError: For other unexpected errors.
         """
         with self._instance_lock:
-            ASCIIColors.debug(f"Attempting to acquire write lock for delete_document_by_id: {doc_id}")
-            try:
-                with self._file_lock:
-                    ASCIIColors.info(f"Write lock acquired for delete_document_by_id: {doc_id}")
-                    self._ensure_connection()
-                    self._delete_document_by_id_impl(doc_id)
-                ASCIIColors.debug(f"Write lock released for delete_document_by_id: {doc_id}")
-            except Timeout as e:
-                msg = f"Timeout ({self.lock_timeout}s) acquiring write lock for delete_document_by_id: {doc_id}"
-                ASCIIColors.error(msg)
-                raise ConcurrencyError(msg) from e
-            except (DatabaseError, ConnectionError, SafeStoreError) as e:
-                ASCIIColors.error(f"Error during delete_document_by_id: {e.__class__.__name__}: {e}", exc_info=False)
-                raise
-            except Exception as e:
-                msg = f"Unexpected error during delete_document_by_id (lock scope) for ID {doc_id}: {e}"
-                ASCIIColors.error(msg, exc_info=True)
-                raise SafeStoreError(msg) from e
+            with self._optional_file_lock_context(f"delete_document_by_id: {doc_id}"):
+                self._ensure_connection()
+                self._delete_document_by_id_impl(doc_id)
 
     def _delete_document_by_id_impl(self, doc_id: int) -> None:
         """Internal implementation of deleting a document by ID."""
@@ -1100,106 +1159,78 @@ class SafeStore:
 
     def delete_document_by_path(self, file_path: Union[str, Path]) -> None:
         """
-        Deletes a document and all its associated data by its file path.
+        Deletes a document and all its associated data by its file path or unique_id.
 
-        Finds the document ID based on the path, then deletes it.
-        Acquires an exclusive write lock.
+        Acquires an exclusive write lock (if applicable).
 
         Args:
-            file_path: The file path of the document to delete.
+            file_path: The file path or unique_id (for text entries) of the document to delete.
 
         Raises:
             DatabaseError: For database interaction errors.
-            ConcurrencyError: If write lock times out.
+            ConcurrencyError: If write lock times out (for file-based DBs).
             ConnectionError: If database connection is closed.
             SafeStoreError: For other unexpected errors.
         """
-        _file_path = Path(file_path)
+        _path_or_id = str(file_path) # Keeps it simple for logging/usage
         with self._instance_lock:
-            ASCIIColors.debug(f"Attempting to acquire write lock for delete_document_by_path: {_file_path.name}")
-            try:
-                with self._file_lock:
-                    ASCIIColors.info(f"Write lock acquired for delete_document_by_path: {_file_path.name}")
-                    self._ensure_connection()
-                    self._delete_document_by_path_impl(_file_path)
-                ASCIIColors.debug(f"Write lock released for delete_document_by_path: {_file_path.name}")
-            except Timeout as e:
-                msg = f"Timeout ({self.lock_timeout}s) acquiring write lock for delete_document_by_path: {_file_path.name}"
-                ASCIIColors.error(msg)
-                raise ConcurrencyError(msg) from e
-            except (DatabaseError, ConnectionError, SafeStoreError, FileHandlingError) as e: # Added FileHandlingError
-                ASCIIColors.error(f"Error during delete_document_by_path: {e.__class__.__name__}: {e}", exc_info=False)
-                raise
-            except Exception as e:
-                msg = f"Unexpected error during delete_document_by_path (lock scope) for path '{_file_path.name}': {e}"
-                ASCIIColors.error(msg, exc_info=True)
-                raise SafeStoreError(msg) from e
+            with self._optional_file_lock_context(f"delete_document_by_path/id: {_path_or_id}"):
+                self._ensure_connection()
+                self._delete_document_by_path_impl(_path_or_id)
 
-    def _delete_document_by_path_impl(self, file_path: Path) -> None:
-        """Internal implementation of deleting a document by path."""
+    def _delete_document_by_path_impl(self, path_or_id: str) -> None:
+        """Internal implementation of deleting a document by path or unique_id."""
         assert self.conn is not None
-        abs_file_path = str(file_path.resolve())
-        ASCIIColors.warning(f"Attempting to delete document by path: {abs_file_path}")
+        ASCIIColors.warning(f"Attempting to delete document by path/id: {path_or_id}")
         cursor = self.conn.cursor()
         try:
-            cursor.execute("SELECT doc_id FROM documents WHERE file_path = ?", (abs_file_path,))
+            cursor.execute("SELECT doc_id FROM documents WHERE file_path = ?", (path_or_id,))
             result = cursor.fetchone()
             if result:
                 doc_id = result[0]
-                ASCIIColors.debug(f"Found document ID {doc_id} for path '{abs_file_path}'. Proceeding with deletion.")
-                # Reuse the by-ID implementation within the same transaction/lock context
+                ASCIIColors.debug(f"Found document ID {doc_id} for path/id '{path_or_id}'. Proceeding with deletion.")
                 self._delete_document_by_id_impl(doc_id)
             else:
-                ASCIIColors.warning(f"Document with path '{abs_file_path}' not found. Nothing deleted.")
-                # Raise FileHandlingError if not found? Or just log? Let's just log warning for now.
-                # raise FileHandlingError(f"Document with path '{abs_file_path}' not found.")
-
+                ASCIIColors.warning(f"Document with path/id '{path_or_id}' not found. Nothing deleted.")
         except sqlite3.Error as e:
-            msg = f"Database error finding/deleting document by path '{abs_file_path}': {e}"
+            msg = f"Database error finding/deleting document by path/id '{path_or_id}': {e}"
             ASCIIColors.error(msg, exc_info=True)
-            # Rollback might be handled by _delete_document_by_id_impl if called, otherwise handle here
             if self.conn: self.conn.rollback()
             raise DatabaseError(msg) from e
         except Exception as e:
-            msg = f"Unexpected error finding/deleting document by path '{abs_file_path}': {e}"
+            msg = f"Unexpected error finding/deleting document by path/id '{path_or_id}': {e}"
             ASCIIColors.error(msg, exc_info=True)
             if self.conn: self.conn.rollback()
             raise SafeStoreError(msg) from e
 
 
-    # === Read methods ===
-
     def query(
         self,
         query_text: str,
         vectorizer_name: Optional[str] = None,
-        top_k: int = 5
+        top_k: int = 5,
+        min_similarity_percent: float = 0.0
     ) -> List[Dict[str, Any]]:
         """
         Queries the store for chunks semantically similar to the query text.
 
-        Uses the specified vectorizer and cosine similarity. This is primarily a
-        read operation and uses an instance-level lock for thread safety.
+        Uses the specified vectorizer and cosine similarity. Filters results
+        to include only those meeting the `min_similarity_percent`. This is
+        primarily a read operation and uses an instance-level lock for thread safety.
 
         Args:
             query_text: The text to search for.
             vectorizer_name: The vectorization method name. Defaults to `DEFAULT_VECTORIZER`.
-            top_k: Maximum number of results to return.
+            top_k: Maximum number of results to return (after filtering). If 0, all results passing threshold are returned.
+            min_similarity_percent: The minimum similarity percentage (0-100) a chunk
+                                    must have to be included in the results.
+                                    Defaults to 0.0, meaning no minimum threshold.
 
         Returns:
-            A list of dictionaries, each representing a relevant chunk:
-            - 'chunk_id': (int) ID of the chunk.
-            - 'chunk_text': (str) Text content (decrypted if applicable).
-            - 'similarity': (float) Cosine similarity score (-1.0 to 1.0).
-            - 'similarity_percent': (float) Similarity score scaled to 0-100.
-            - 'doc_id': (int) ID of the source document.
-            - 'file_path': (str) Path to the source document file.
-            - 'start_pos': (int) Start character offset in the original document.
-            - 'end_pos': (int) End character offset in the original document.
-            - 'chunk_seq': (int) Sequence number of the chunk within the document.
-            - 'metadata': (dict | None) Metadata associated with the document.
+            A list of dictionaries, each representing a relevant chunk.
 
         Raises:
+            ValueError: If `min_similarity_percent` is outside the 0-100 range.
             ConfigurationError: If vectorizer dependencies are missing.
             VectorizationError: If query vectorization fails.
             DatabaseError: If fetching data fails.
@@ -1208,45 +1239,52 @@ class SafeStore:
             SafeStoreError: For other unexpected errors.
             EncryptionError: If result decryption fails.
         """
+        if not (0.0 <= min_similarity_percent <= 100.0):
+            raise ValueError("min_similarity_percent must be between 0.0 and 100.0, inclusive.")
+
         with self._instance_lock:
             self._ensure_connection()
-            try: return self._query_impl(query_text, vectorizer_name, top_k)
+            try:
+                return self._query_impl(query_text, vectorizer_name, top_k, min_similarity_percent)
             except (DatabaseError, ConfigurationError, VectorizationError, QueryError, EncryptionError, ValueError, ConnectionError, SafeStoreError) as e:
-                ASCIIColors.error(f"Error during query: {e.__class__.__name__}: {e}", exc_info=False); raise
+                ASCIIColors.error(f"Error during query: {e.__class__.__name__}: {e}", exc_info=False)
+                raise
             except Exception as e:
-                msg = f"Unexpected error during query for '{query_text[:50]}...': {e}"; ASCIIColors.error(msg, exc_info=True); raise SafeStoreError(msg) from e
+                msg = f"Unexpected error during query for '{query_text[:50]}...': {e}"
+                ASCIIColors.error(msg, exc_info=True)
+                raise SafeStoreError(msg) from e
 
     def _query_impl(
         self,
         query_text: str,
         vectorizer_name: Optional[str],
-        top_k: int
+        top_k: int,
+        min_similarity_percent: float
     ) -> List[Dict[str, Any]]:
         """Internal implementation of query logic."""
         assert self.conn is not None
         _vectorizer_name = vectorizer_name or self.DEFAULT_VECTORIZER
-        ASCIIColors.info(f"Received query. Searching with '{_vectorizer_name}', top_k={top_k}.")
+        ASCIIColors.info(f"Received query. Searching with '{_vectorizer_name}', top_k={top_k}, min_similarity_percent={min_similarity_percent}%.")
         cursor = self.conn.cursor()
         try:
-            try: vectorizer, method_id = self.vectorizer_manager.get_vectorizer(_vectorizer_name, self.conn, None)
-            except (ConfigurationError, VectorizationError, DatabaseError) as e: raise e
+            vectorizer, method_id = self.vectorizer_manager.get_vectorizer(_vectorizer_name, self.conn, None)
             ASCIIColors.debug(f"Using vectorizer '{_vectorizer_name}' (method_id={method_id})")
             ASCIIColors.debug("Vectorizing query text...")
-            try:
-                 query_vector_list = vectorizer.vectorize([query_text])
-                 if not isinstance(query_vector_list, np.ndarray) or query_vector_list.ndim != 2 or query_vector_list.shape[0] != 1: raise VectorizationError("Vectorizer did not return a single 2D vector for the query.")
-                 query_vector = np.ascontiguousarray(query_vector_list[0], dtype=vectorizer.dtype)
-            except VectorizationError as e: raise e
-            except Exception as e: raise VectorizationError(f"Unexpected error vectorizing query text with '{_vectorizer_name}': {e}") from e
+
+            query_vector_list = vectorizer.vectorize([query_text])
+            if not isinstance(query_vector_list, np.ndarray) or query_vector_list.ndim != 2 or query_vector_list.shape[0] != 1:
+                raise VectorizationError("Vectorizer did not return a single 2D vector for the query.")
+            query_vector = np.ascontiguousarray(query_vector_list[0], dtype=vectorizer.dtype)
             ASCIIColors.debug(f"Query vector generated. Shape: {query_vector.shape}, Dtype: {query_vector.dtype}")
 
             ASCIIColors.debug(f"Loading all vectors for method_id {method_id}...")
-            try:
-                cursor.execute("SELECT v.chunk_id, v.vector_data FROM vectors v WHERE v.method_id = ?", (method_id,))
-                all_vectors_data = cursor.fetchall()
-            except sqlite3.Error as e: raise DatabaseError(f"Database error loading vectors for method '{_vectorizer_name}' (ID: {method_id}): {e}") from e
-            if not all_vectors_data: ASCIIColors.warning(f"No vectors found for method '{_vectorizer_name}'."); return []
-            chunk_ids_ordered: List[int] = [row[0] for row in all_vectors_data]
+            cursor.execute("SELECT v.chunk_id, v.vector_data FROM vectors v WHERE v.method_id = ?", (method_id,))
+            all_vectors_data = cursor.fetchall()
+            if not all_vectors_data:
+                ASCIIColors.warning(f"No vectors found for method '{_vectorizer_name}'.")
+                return []
+
+            chunk_ids_all_candidates: List[int] = [row[0] for row in all_vectors_data]
             vector_blobs: List[bytes] = [row[1] for row in all_vectors_data]
 
             method_details = self.vectorizer_manager._get_method_details_from_db(self.conn, _vectorizer_name)
@@ -1254,130 +1292,167 @@ class SafeStore:
             vector_dtype_str = method_details['vector_dtype']
             vector_dim_expected = method_details['vector_dim']
             ASCIIColors.debug(f"Reconstructing {len(vector_blobs)} vectors from BLOBs with dtype '{vector_dtype_str}'...")
-            try:
-                 candidate_vectors_list = [db.reconstruct_vector(blob, vector_dtype_str) for blob in vector_blobs]
-                 if not candidate_vectors_list: candidate_vectors = np.empty((0, vector_dim_expected or 0), dtype=np.dtype(vector_dtype_str))
-                 else: candidate_vectors = np.stack(candidate_vectors_list, axis=0)
-            except (DatabaseError, ValueError, TypeError) as e: raise QueryError(f"Failed to reconstruct one or more vectors for method '{_vectorizer_name}': {e}") from e
+
+            candidate_vectors_list = [db.reconstruct_vector(blob, vector_dtype_str) for blob in vector_blobs]
+            if not candidate_vectors_list:
+                candidate_vectors = np.empty((0, vector_dim_expected or 0), dtype=np.dtype(vector_dtype_str))
+            else:
+                candidate_vectors = np.stack(candidate_vectors_list, axis=0)
             ASCIIColors.debug(f"Candidate vectors loaded. Matrix shape: {candidate_vectors.shape}")
 
             ASCIIColors.debug("Calculating similarity scores...")
-            try:
-                if candidate_vectors.shape[0] == 0: scores = np.array([], dtype=query_vector.dtype)
-                else: scores = similarity.cosine_similarity(query_vector, candidate_vectors)
-            except (ValueError, TypeError) as e: raise QueryError(f"Error calculating cosine similarity: {e}") from e
-            ASCIIColors.debug(f"Similarity scores calculated. Shape: {scores.shape}")
+            if candidate_vectors.shape[0] == 0:
+                all_scores = np.array([], dtype=query_vector.dtype)
+            else:
+                all_scores = similarity.cosine_similarity(query_vector, candidate_vectors)
+            ASCIIColors.debug(f"All similarity scores calculated. Shape: {all_scores.shape}")
 
-            num_candidates = len(scores); k = min(top_k, num_candidates) if top_k > 0 else 0
-            if k <= 0: ASCIIColors.info("Top-k is 0 or no candidates found."); return []
-            if k < num_candidates // 2 : top_k_indices_unsorted = np.argpartition(scores, -k)[-k:]; top_k_indices = top_k_indices_unsorted[np.argsort(scores[top_k_indices_unsorted])[::-1]]
-            else: top_k_indices = np.argsort(scores)[::-1][:k]
-            ASCIIColors.debug(f"Identified top {k} indices.")
+            min_raw_similarity = (min_similarity_percent / 100.0) * 2.0 - 1.0
+            pass_threshold_mask = all_scores >= min_raw_similarity
 
-            top_chunk_ids = [chunk_ids_ordered[i] for i in top_k_indices]; top_scores = [scores[i] for i in top_k_indices]
+            scores_passing_threshold = all_scores[pass_threshold_mask]
+            chunk_ids_passing_threshold = [cid for idx, cid in enumerate(chunk_ids_all_candidates) if pass_threshold_mask[idx]]
+
+            if not chunk_ids_passing_threshold:
+                ASCIIColors.info(f"No candidates passed the similarity threshold of {min_similarity_percent}%.")
+                return []
+            ASCIIColors.debug(f"{len(scores_passing_threshold)} candidates passed similarity threshold.")
+
+            num_candidates_after_filter = len(scores_passing_threshold)
+            k = min(top_k, num_candidates_after_filter) if top_k > 0 else num_candidates_after_filter
+
+            if k <= 0 and top_k > 0:
+                ASCIIColors.info("Top-k is 0 (no candidates left after filtering for positive top_k).")
+                return []
+            if k == 0 and top_k == 0:
+                 k = num_candidates_after_filter
+
+
+            sorted_indices_in_filtered_array = np.argsort(scores_passing_threshold)[::-1]
+            top_k_indices_in_filtered_array = sorted_indices_in_filtered_array[:k]
+            ASCIIColors.debug(f"Identified top {k} indices from {num_candidates_after_filter} filtered candidates.")
+
+            top_chunk_ids = [chunk_ids_passing_threshold[i] for i in top_k_indices_in_filtered_array]
+            top_scores = [scores_passing_threshold[i] for i in top_k_indices_in_filtered_array]
+
             if not top_chunk_ids: return []
 
             placeholders = ','.join('?' * len(top_chunk_ids))
-            sql_chunk_details = f"SELECT c.chunk_id, c.chunk_text, c.start_pos, c.end_pos, c.chunk_seq, c.is_encrypted, d.doc_id, d.file_path, d.metadata FROM chunks c JOIN documents d ON c.doc_id = d.doc_id WHERE c.chunk_id IN ({placeholders})"
+            sql_chunk_details = f"""
+                SELECT c.chunk_id, c.chunk_text, c.start_pos, c.end_pos, c.chunk_seq,
+                       c.is_encrypted, d.doc_id, d.file_path, d.metadata
+                FROM chunks c JOIN documents d ON c.doc_id = d.doc_id
+                WHERE c.chunk_id IN ({placeholders})
+            """
+            original_text_factory = self.conn.text_factory
             try:
-                original_text_factory = self.conn.text_factory
                 self.conn.text_factory = bytes
                 cursor.execute(sql_chunk_details, top_chunk_ids)
                 chunk_details_list_raw = cursor.fetchall()
+            finally:
                 self.conn.text_factory = original_text_factory
-            except sqlite3.Error as e: self.conn.text_factory = original_text_factory; raise DatabaseError(f"Database error fetching chunk details for top-k results: {e}") from e
 
             chunk_details_map: Dict[int, Dict[str, Any]] = {}
             ASCIIColors.debug(f"Processing {len(chunk_details_list_raw)} chunk details (decrypting if needed)...")
             logged_decryption_status_query = False
 
             for row in chunk_details_list_raw:
-                 chunk_id, chunk_text_data, start_pos, end_pos, chunk_seq, is_encrypted_flag, doc_id, file_path_bytes, metadata_json_bytes = row
-                 chunk_text_final: str; file_path = file_path_bytes.decode('utf-8') if isinstance(file_path_bytes, bytes) else file_path_bytes; metadata_json = metadata_json_bytes.decode('utf-8') if isinstance(metadata_json_bytes, bytes) else metadata_json_bytes
+                 chunk_id_val, chunk_text_data, start_pos, end_pos, chunk_seq, is_encrypted_flag, doc_id_val, file_path_bytes, metadata_json_bytes = row
+                 chunk_text_final: str
+                 file_path_val = file_path_bytes.decode('utf-8') if isinstance(file_path_bytes, bytes) else file_path_bytes
+                 metadata_json_val = metadata_json_bytes.decode('utf-8') if isinstance(metadata_json_bytes, bytes) else metadata_json_bytes
 
                  if is_encrypted_flag:
                       if self.encryptor.is_enabled:
                            try:
-                                if not isinstance(chunk_text_data, bytes): chunk_text_final = "[Encrypted - Decryption Failed: Invalid Type]"; ASCIIColors.error(f"Cannot decrypt chunk {chunk_id}: data type {type(chunk_text_data)}.")
-                                else: chunk_text_final = self.encryptor.decrypt(chunk_text_data);
+                                if not isinstance(chunk_text_data, bytes):
+                                     chunk_text_final = "[Encrypted - Decryption Failed: Invalid Type]"
+                                     ASCIIColors.error(f"Cannot decrypt chunk {chunk_id_val}: data type {type(chunk_text_data)} for encrypted field.")
+                                else: chunk_text_final = self.encryptor.decrypt(chunk_text_data)
                                 if not logged_decryption_status_query: ASCIIColors.debug("Decrypting result chunk text."); logged_decryption_status_query = True
-                           except EncryptionError as e: chunk_text_final = "[Encrypted - Decryption Failed]"; ASCIIColors.error(f"Failed to decrypt result chunk {chunk_id}: {e}")
-                      else: chunk_text_final = "[Encrypted - Key Unavailable]"; ASCIIColors.warning(f"Chunk {chunk_id} is encrypted, but no key provided.")
+                           except EncryptionError as e:
+                                chunk_text_final = "[Encrypted - Decryption Failed]"
+                                ASCIIColors.error(f"Failed to decrypt result chunk {chunk_id_val}: {e}")
+                      else:
+                           chunk_text_final = "[Encrypted - Key Unavailable]"
+                           ASCIIColors.warning(f"Chunk {chunk_id_val} is encrypted, but no key provided.")
                  else:
                       if isinstance(chunk_text_data, bytes):
-                           ASCIIColors.debug(f"Chunk {chunk_id} not marked encrypted, but read as bytes. Decoding.")
+                           ASCIIColors.debug(f"Chunk {chunk_id_val} not marked encrypted, but read as bytes. Decoding.")
                            try: chunk_text_final = chunk_text_data.decode('utf-8')
-                           except UnicodeDecodeError: chunk_text_final = "[Data Decode Error]"; ASCIIColors.error(f"Failed to decode non-encrypted bytes for chunk {chunk_id}.")
-                      elif isinstance(chunk_text_data, str): chunk_text_final = chunk_text_data
-                      else: chunk_text_final = str(chunk_text_data); ASCIIColors.warning(f"Chunk {chunk_id} data type unexpected ({type(chunk_text_data)}).")
+                           except UnicodeDecodeError:
+                                chunk_text_final = "[Data Decode Error]"
+                                ASCIIColors.error(f"Failed to decode non-encrypted bytes for chunk {chunk_id_val}.")
+                      elif isinstance(chunk_text_data, str):
+                           chunk_text_final = chunk_text_data
+                      else:
+                           chunk_text_final = str(chunk_text_data)
+                           ASCIIColors.warning(f"Chunk {chunk_id_val} data type unexpected ({type(chunk_text_data)}), converting to string.")
 
                  metadata_dict = None
-                 if metadata_json:
-                      try: metadata_dict = json.loads(metadata_json)
-                      except json.JSONDecodeError: metadata_dict = {"error": "invalid JSON"}; ASCIIColors.warning(f"Failed to decode metadata JSON for chunk {chunk_id}")
-                 chunk_details_map[chunk_id] = {"chunk_id": chunk_id, "chunk_text": chunk_text_final, "start_pos": start_pos, "end_pos": end_pos, "chunk_seq": chunk_seq, "doc_id": doc_id, "file_path": file_path, "metadata": metadata_dict}
+                 if metadata_json_val:
+                      try: metadata_dict = json.loads(metadata_json_val)
+                      except json.JSONDecodeError:
+                           metadata_dict = {"error": "invalid JSON"}
+                           ASCIIColors.warning(f"Failed to decode metadata JSON for chunk {chunk_id_val}")
+                 chunk_details_map[chunk_id_val] = {"chunk_id": chunk_id_val, "chunk_text": chunk_text_final, "start_pos": start_pos, "end_pos": end_pos, "chunk_seq": chunk_seq, "doc_id": doc_id_val, "file_path": file_path_val, "metadata": metadata_dict}
 
             results: List[Dict[str, Any]] = []
-            for chunk_id_res, score_res in zip(top_chunk_ids, top_scores):
+            for i, chunk_id_res in enumerate(top_chunk_ids):
+                score_res = top_scores[i]
                 if chunk_id_res in chunk_details_map:
                     result_item = chunk_details_map[chunk_id_res].copy()
                     similarity_value = float(np.float64(score_res))
                     result_item["similarity"] = similarity_value
-                    result_item["similarity_percent"] = round(((similarity_value + 1) / 2) * 100, 2) # Scale -1..1 to 0..100
+                    result_item["similarity_percent"] = round(((similarity_value + 1) / 2) * 100, 2)
                     results.append(result_item)
-                else: ASCIIColors.warning(f"Could not find details for chunk_id {chunk_id_res}. Skipping.")
+                else:
+                    ASCIIColors.warning(f"Could not find details for chunk_id {chunk_id_res} that was in top results. Skipping.")
 
-            ASCIIColors.success(f"Query successful. Found {len(results)} relevant chunks.")
+            ASCIIColors.success(f"Query successful. Found {len(results)} relevant chunks meeting criteria.")
             return results
 
-        except (DatabaseError, ConfigurationError, VectorizationError, QueryError, EncryptionError, ValueError, SafeStoreError) as e: raise e
-        except Exception as e: raise SafeStoreError(f"Unexpected error during query implementation for '{query_text[:50]}...': {e}") from e
+        except (DatabaseError, ConfigurationError, VectorizationError, QueryError, EncryptionError, ValueError, ConnectionError, SafeStoreError) as e:
+            raise
+        except Exception as e:
+            raise SafeStoreError(f"Unexpected error during query implementation for '{query_text[:50]}...': {e}") from e
 
     def query_all(
         self,
         query_text: str,
         top_k: int = 5,
-        mode: Literal['union', 'intersection'] = 'union'
+        mode: Literal['union', 'intersection'] = 'union',
+        min_similarity_percent: float = 0.0
     ) -> List[Dict[str, Any]]:
         """
         Queries the store using *all* available vectorization methods.
 
         Combines results based on the specified mode ('union' or 'intersection').
+        Filters results from each method by `min_similarity_percent` before combination.
 
         Args:
             query_text: The text to search for.
-            top_k: The maximum number of results *per vectorizer* to consider before combining.
-            mode: How to combine results:
-                  - 'union': Returns unique chunks found by any method, ranked by the highest
-                             score achieved by any method finding that chunk. (Default)
-                  - 'intersection': Returns only chunks found by *all* queried methods, ranked
-                                    by the average score across those methods.
+            top_k: The maximum number of results *per vectorizer* to consider before combining. If 0, all results passing threshold are considered.
+            mode: How to combine results: 'union' or 'intersection'.
+            min_similarity_percent: The minimum similarity percentage (0-100) for individual results.
 
         Returns:
-            A list of dictionaries, similar to `query`, but with an additional field:
-            - 'found_by_methods': (List[str]) List of vectorizer names that retrieved this chunk.
-            - 'similarity': (float) Max score in 'union' mode, Average score in 'intersection' mode.
-            - 'similarity_percent': (float) Corresponding percentage score.
+            A list of dictionaries, similar to `query`, with additional combination information.
 
         Raises:
-            ValueError: If the mode is invalid.
-            ConfigurationError: If vectorizer dependencies are missing.
-            VectorizationError: If query vectorization fails for any method.
-            DatabaseError: If fetching data fails.
-            QueryError: For similarity calculation or logic errors.
-            ConnectionError: If database connection is closed.
-            SafeStoreError: For other unexpected errors.
-            EncryptionError: If result decryption fails.
+            ValueError: If the mode is invalid or `min_similarity_percent` is out of range.
+            Various SafeStoreErrors: Propagated from underlying query operations.
         """
         if mode not in ['union', 'intersection']:
             raise ValueError("Invalid mode specified. Must be 'union' or 'intersection'.")
+        if not (0.0 <= min_similarity_percent <= 100.0):
+            raise ValueError("min_similarity_percent must be between 0.0 and 100.0, inclusive.")
 
         with self._instance_lock:
             self._ensure_connection()
             try:
-                return self._query_all_impl(query_text, top_k, mode)
-            except (DatabaseError, ConfigurationError, VectorizationError, QueryError,
-                    EncryptionError, ValueError, ConnectionError, SafeStoreError) as e:
+                return self._query_all_impl(query_text, top_k, mode, min_similarity_percent)
+            except (DatabaseError, ConfigurationError, VectorizationError, QueryError, EncryptionError, ValueError, ConnectionError, SafeStoreError) as e:
                 ASCIIColors.error(f"Error during query_all: {e.__class__.__name__}: {e}", exc_info=False)
                 raise
             except Exception as e:
@@ -1389,11 +1464,12 @@ class SafeStore:
         self,
         query_text: str,
         top_k: int,
-        mode: Literal['union', 'intersection']
+        mode: Literal['union', 'intersection'],
+        min_similarity_percent: float
     ) -> List[Dict[str, Any]]:
         """Internal implementation of query_all logic."""
         assert self.conn is not None
-        ASCIIColors.info(f"Received query_all (mode={mode}). Searching across all methods, top_k={top_k} per method.")
+        ASCIIColors.info(f"Received query_all (mode={mode}). Searching across all methods, top_k={top_k} per method, min_similarity_percent={min_similarity_percent}%.")
 
         all_methods = self.list_vectorization_methods()
         if not all_methods:
@@ -1403,18 +1479,14 @@ class SafeStore:
         method_names = [m['method_name'] for m in all_methods]
         ASCIIColors.debug(f"Querying across methods: {method_names}")
 
-        # Store results per chunk_id
-        # For union: {chunk_id: {'max_score': float, 'details': dict, 'methods': set}}
-        # For intersection: {chunk_id: {'scores': list, 'details': dict, 'methods': set}}
         combined_results: Dict[int, Dict[str, Any]] = {}
-        successful_method_count = 0
+        successful_method_query_attempts = 0
 
         for method_name in method_names:
             try:
                 ASCIIColors.debug(f"Querying with method: {method_name}")
-                # Use _query_impl which handles vectorization, similarity, details, decryption
-                method_results = self._query_impl(query_text, method_name, top_k)
-                successful_method_count += 1
+                method_results = self._query_impl(query_text, method_name, top_k, min_similarity_percent)
+                successful_method_query_attempts += 1
 
                 for res in method_results:
                     chunk_id = res['chunk_id']
@@ -1424,10 +1496,9 @@ class SafeStore:
                         if chunk_id not in combined_results:
                             combined_results[chunk_id] = {'max_score': score, 'details': res, 'methods': {method_name}}
                         else:
-                            # Update if this score is higher, always add method name
                             if score > combined_results[chunk_id]['max_score']:
                                 combined_results[chunk_id]['max_score'] = score
-                                combined_results[chunk_id]['details'] = res # Update details if score is higher
+                                combined_results[chunk_id]['details'] = res
                             combined_results[chunk_id]['methods'].add(method_name)
                     elif mode == 'intersection':
                         if chunk_id not in combined_results:
@@ -1436,47 +1507,44 @@ class SafeStore:
                             combined_results[chunk_id]['scores'].append(score)
                             combined_results[chunk_id]['methods'].add(method_name)
 
-            except (DatabaseError, ConfigurationError, VectorizationError, QueryError, EncryptionError) as e:
+            except (DatabaseError, ConfigurationError, VectorizationError, QueryError, EncryptionError, ConnectionError) as e:
                 ASCIIColors.warning(f"Skipping method '{method_name}' in query_all due to error: {e}")
             except Exception as e:
                 ASCIIColors.warning(f"Skipping method '{method_name}' in query_all due to unexpected error: {e}", exc_info=True)
 
-        if successful_method_count == 0:
-             ASCIIColors.error("query_all failed: No vectorization methods could be successfully queried.")
+        if not combined_results:
+             ASCIIColors.info("query_all: No results found matching criteria from any method.")
              return []
 
-        # Final processing based on mode
         final_results: List[Dict[str, Any]] = []
         if mode == 'union':
             for chunk_id, data in combined_results.items():
                 details = data['details']
                 final_score = data['max_score']
-                details['similarity'] = final_score # Overwrite with max score
+                details['similarity'] = final_score
                 details['similarity_percent'] = round(((final_score + 1) / 2) * 100, 2)
                 details['found_by_methods'] = sorted(list(data['methods']))
                 final_results.append(details)
-            # Sort by the max score (descending)
             final_results.sort(key=lambda x: x['similarity'], reverse=True)
 
         elif mode == 'intersection':
+            if successful_method_query_attempts == 0:
+                 ASCIIColors.warning("query_all (intersection): No methods were successfully queried, returning empty.")
+                 return []
             for chunk_id, data in combined_results.items():
-                # Only include chunks found by all successfully queried methods
-                if len(data['methods']) == successful_method_count:
+                if len(data['methods']) == successful_method_query_attempts:
                     details = data['details']
                     avg_score = sum(data['scores']) / len(data['scores'])
-                    details['similarity'] = avg_score # Use average score
+                    details['similarity'] = avg_score
                     details['similarity_percent'] = round(((avg_score + 1) / 2) * 100, 2)
                     details['found_by_methods'] = sorted(list(data['methods']))
                     final_results.append(details)
-            # Sort by the average score (descending)
             final_results.sort(key=lambda x: x['similarity'], reverse=True)
 
-        ASCIIColors.success(f"query_all ({mode}) successful. Found {len(final_results)} combined results across {successful_method_count} methods.")
-        # Note: Final list length might be more or less than top_k depending on overlap and mode
+        ASCIIColors.success(f"query_all ({mode}) successful. Found {len(final_results)} combined results across {successful_method_query_attempts} successfully queried methods.")
         return final_results
 
 
-    # --- Helper Methods ---
     def list_documents(self) -> List[Dict[str, Any]]:
          """Lists all documents currently stored in the database."""
          with self._instance_lock:
@@ -1487,10 +1555,10 @@ class SafeStore:
                    for row in cursor.fetchall():
                         metadata_dict = None
                         if row[4]:
-                            try: 
+                            try:
                                 metadata_dict = json.loads(row[4])
-                            except json.JSONDecodeError: 
-                                pass
+                            except json.JSONDecodeError:
+                                metadata_dict = {"error": "Invalid JSON in metadata"}
                         docs.append({"doc_id": row[0], "file_path": row[1], "file_hash": row[2], "added_timestamp": row[3], "metadata": metadata_dict})
                    return docs
               except sqlite3.Error as e: raise DatabaseError(f"Database error listing documents: {e}") from e
@@ -1504,11 +1572,11 @@ class SafeStore:
                    methods = []
                    for row in cursor.fetchall():
                         params_dict = None
-                        if row[5]: 
-                            try: 
-                                params_dict = json.loads(row[5]) 
+                        if row[5]:
+                            try:
+                                params_dict = json.loads(row[5])
                             except json.JSONDecodeError:
-                                pass
+                                params_dict = {"error": "Invalid JSON in params"}
                         methods.append({"method_id": row[0], "method_name": row[1], "method_type": row[2], "vector_dim": row[3], "vector_dtype": row[4], "params": params_dict})
                    return methods
               except sqlite3.Error as e: raise DatabaseError(f"Database error listing vectorization methods: {e}") from e
@@ -1516,7 +1584,7 @@ class SafeStore:
     @staticmethod
     def list_possible_vectorizer_names() -> List[str]:
         """
-        Provides example and common vectorizer names. See documentation for details.
+        Provides example and common vectorizer names.
         - 'st:...' : Use any model from huggingface.co/models?library=sentence-transformers
         - 'tfidf:<your_custom_name>' : Fitted on your data during add/vectorize.
         """

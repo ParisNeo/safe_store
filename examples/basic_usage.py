@@ -14,6 +14,8 @@ USE_OPENAI = False   # deactivate of not using open ai or you don't have any key
 USE_COHERE = False   # deactivate of not using cohere ai or you don't have any key
 USE_PARSING = True  # Set to False if parsing libs not installed
 
+print(safe_store.SAFE_STORE_SUPPORTED_FILE_EXTENSIONS)
+
 st_vectorizer_name = "st:all-MiniLM-L6-v2"
 tfidf_vectorizer_name="tfidf:my_tfidf"
 ollama_vectorizer_name = "ollama:bge-m3:latest"
