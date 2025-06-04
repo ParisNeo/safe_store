@@ -167,9 +167,16 @@ def parse_docx(file_path: Union[str, Path]) -> str:
         from docx import Document
         from docx.opc.exceptions import PackageNotFoundError
     except ImportError as e:
-        msg = "Parsing DOCX files requires 'python-docx'. Install with: pip install safe_store[parsing]"
-        ASCIIColors.error(msg)
-        raise ConfigurationError(msg) from e
+        import pipmaster as pm
+        pm.ensure_packages("python-docx")
+        try:
+            # Import dynamically
+            from docx import Document
+            from docx.opc.exceptions import PackageNotFoundError
+        except ImportError as e:
+            msg = "Parsing DOCX files requires 'python-docx'. Install with: pip install safe_store[parsing]"
+            ASCIIColors.error(msg)
+            raise ConfigurationError(msg) from e
 
     full_text = ""
     try:
