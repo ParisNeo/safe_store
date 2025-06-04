@@ -78,7 +78,7 @@ def llm_executor(prompt_to_llm: str) -> str:
     ASCIIColors.debug(f"WebUI LLM Executor: Sending prompt (len {len(prompt_to_llm)}) to LLM...")
     try:
         response = lc_client.generate_code(
-            prompt_to_llm, language="json", temperature=0.1, max_size=16096
+            prompt_to_llm, language="json"
         )
         ASCIIColors.debug(f"WebUI LLM Executor: Raw response from generate_code: {response[:200]}...")
         return response if response else ""

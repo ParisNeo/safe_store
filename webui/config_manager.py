@@ -10,15 +10,15 @@ DEFAULT_CONFIG = {
     "lollms": {
         "binding_name": "ollama",
         "host_address": "http://localhost:11434",
-        "model_name": "mistral:latest",
+        "model_name": "mistral-nemo:latest",
         "service_key": None, # Explicitly None if not set
     },
     "safestore": {
         "db_file": "webui_store.db",
         "doc_dir": "webui_safestore_docs",
         "default_vectorizer": "st:all-MiniLM-L6-v2",
-        "chunk_size": 250,
-        "chunk_overlap": 40,
+        "chunk_size": 10000,
+        "chunk_overlap": 100,
     },
     "graphstore": {
         # "graph_extraction_prompt_template_file": None, # Example for file-based prompts

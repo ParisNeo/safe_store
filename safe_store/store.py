@@ -1209,7 +1209,9 @@ class SafeStore:
         query_text: str,
         vectorizer_name: Optional[str] = None,
         top_k: int = 5,
-        min_similarity_percent: float = 0.0
+        min_similarity_percent: float = 0.0,
+        use_available_vectorization_if_vectorizer_not_present: bool = True,
+        add_vectorizer_if_vectorizer_not_present: bool = False
     ) -> List[Dict[str, Any]]:
         """
         Queries the store for chunks semantically similar to the query text.
@@ -1245,7 +1247,7 @@ class SafeStore:
         with self._instance_lock:
             self._ensure_connection()
             try:
-                return self._query_impl(query_text, vectorizer_name, top_k, min_similarity_percent)
+                return self._query_impl(query_text, vectorizer_name, top_k, min_similarity_percent, use_available_vectorization_if_vectorizer_not_present, add_vectorizer_if_vectorizer_not_present)
             except (DatabaseError, ConfigurationError, VectorizationError, QueryError, EncryptionError, ValueError, ConnectionError, SafeStoreError) as e:
                 ASCIIColors.error(f"Error during query: {e.__class__.__name__}: {e}", exc_info=False)
                 raise
@@ -1259,7 +1261,9 @@ class SafeStore:
         query_text: str,
         vectorizer_name: Optional[str],
         top_k: int,
-        min_similarity_percent: float
+        min_similarity_percent: float,
+        use_available_vectorization_if_vectorizer_not_present: bool = True,
+        add_vectorizer_if_vectorizer_not_present: bool = False
     ) -> List[Dict[str, Any]]:
         """Internal implementation of query logic."""
         assert self.conn is not None
@@ -1267,6 +1271,21 @@ class SafeStore:
         ASCIIColors.info(f"Received query. Searching with '{_vectorizer_name}', top_k={top_k}, min_similarity_percent={min_similarity_percent}%.")
         cursor = self.conn.cursor()
         try:
+            cursor.execute("SELECT m.method_id, m.method_name FROM vectorization_methods m WHERE m.method_name = ?", (_vectorizer_name,))
+            all_vectors_data = cursor.fetchall()
+            if len(all_vectors_data)==0:
+                ASCIIColors.warning(f"The database was not vectorized using the vectorizer you are specifying ({_vectorizer_name}).")
+                if use_available_vectorization_if_vectorizer_not_present:
+                    cursor.execute("SELECT m.method_name FROM vectorization_methods m", ())
+                    all_vectors_data = cursor.fetchone()
+                    if len(all_vectors_data)>0:
+                        _vectorizer_name = all_vectors_data[0]
+                        ASCIIColors.warning(f"Setting vectorizer to: ({_vectorizer_name}).")
+                elif add_vectorizer_if_vectorizer_not_present: # takes a long time
+                    self.add_vectorization(_vectorizer_name)
+                else:
+                    raise Exception("The vectorization method is not present in the database and you did not specify a fallback method")
+
             vectorizer, method_id = self.vectorizer_manager.get_vectorizer(_vectorizer_name, self.conn, None)
             ASCIIColors.debug(f"Using vectorizer '{_vectorizer_name}' (method_id={method_id})")
             ASCIIColors.debug("Vectorizing query text...")
@@ -1282,6 +1301,7 @@ class SafeStore:
             all_vectors_data = cursor.fetchall()
             if not all_vectors_data:
                 ASCIIColors.warning(f"No vectors found for method '{_vectorizer_name}'.")
+                
                 return []
 
             chunk_ids_all_candidates: List[int] = [row[0] for row in all_vectors_data]

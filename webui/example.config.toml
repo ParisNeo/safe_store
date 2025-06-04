@@ -10,8 +10,8 @@ model_name = "mistral:latest" # e.g., "mistral:latest", "gpt-4", specific model 
 db_file = "webui_store.db"
 doc_dir = "webui_safestore_docs" # Directory where SafeStore processes files from
 default_vectorizer = "st:all-MiniLM-L6-v2"
-chunk_size = 250
-chunk_overlap = 40
+chunk_size = 10000
+chunk_overlap = 100
 
 [graphstore]
 # Prompt templates can be very long, consider if they should be in config or loaded from separate files
