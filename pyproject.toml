@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 [project]
 name = "safe-store"
 # Bump version for this release
-version = "2.2.1"
+version = "2.3.1"
 description = "Simple, concurrent SQLite-based vector store optimized for local RAG pipelines, with optional encryption."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -90,8 +90,8 @@ dev = [
     "twine", # For checking/uploading packages
 ]
 #To be added in the future
-#[project.scripts]
-#safestore-webui = "safe_store.webui.main:launch_webui"
+[project.scripts]
+safestore-webui = "safe_store.webui.main:launch_webui"
 
 [project.urls]
 Homepage = "https://github.com/ParisNeo/safe_store"

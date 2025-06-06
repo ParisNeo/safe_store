@@ -1,218 +1,81 @@
-/* webui/static/style.css */
+/* webui/static_assets/style.css */
 
-/* --- General Body & Typography --- */
-body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-    background-color: #f0f2f5; /* A slightly different light gray */
-    color: #1d2129; /* Darker text for better contrast */
-    display: flex;
-    flex-direction: column;
-    min-height: 100vh;
-    margin: 0;
-    font-size: 15px; /* Base font size */
-}
+/* 
+  This file is significantly reduced due to the adoption of Tailwind CSS.
+  Most styling is now handled by Tailwind utility classes in index.html or inline <style> tags.
+  This file is for:
+  1. Base styles not covered by Tailwind's preflight (if any, usually minimal).
+  2. Specific overrides for third-party components (e.g., Vis.js) if their default CSS conflicts 
+     or needs theme adjustments not easily done with utilities.
+  3. Very complex custom component styles that are cleaner to define in CSS (rare with Tailwind).
+*/
 
-/* --- Navbar --- */
-.navbar {
-    background-color: #ffffff !important; /* White navbar */
-    border-bottom: 1px solid #dbdbdb;
-    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-    padding-top: 0.75rem;
-    padding-bottom: 0.75rem;
+/* --- Vis.js Network Tweaks --- */
+
+/* General Vis.js container, ensure it doesn't have unexpected borders/backgrounds */
+.vis-network, .vis-network canvas {
+    /* background: transparent !important; /* Example if needed */
+    border: none !important; /* Usually good to ensure no default border interferes */
 }
 
-.navbar-brand, .navbar-brand:hover, .navbar-brand:focus {
-    color: #0d6efd !important; /* Bootstrap primary blue */
-    font-weight: 600;
-    font-size: 1.25rem;
+/* Styling for Vis.js default tooltips (if they are used and don't pick up Tailwind styles well) */
+.vis-tooltip {
+    position: absolute; /* Ensure it's positioned correctly */
+    background-color: #1F2937; /* bg-gray-800 */
+    color: #F9FAFB; /* text-gray-100 */
+    padding: 6px 10px; /* p-1.5 or p-2ish */
+    border-radius: 0.375rem; /* rounded-md */
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); /* shadow-lg */
+    font-size: 0.75rem; /* text-xs */
+    border: 1px solid #374151; /* border-gray-700 */
+    z-index: 1000; /* Ensure it's above other elements */
+    max-width: 300px; /* Prevent overly wide tooltips */
+    /* Add pointer if desired */
+    /* pointer-events: none; */ /* If it should not be interactive */
 }
 
-.navbar-brand .fas {
-    margin-right: 0.5rem;
-    color: #0d6efd;
+/* Vis.js manipulation bar buttons (if default styling is an issue) */
+/* Example:
+.vis-manipulation .vis-button,
+.vis-navigation .vis-button {
+    background-color: #e5e7eb; 
+    color: #374151;
+    padding: 4px;
+    border-radius: 0.25rem;
+    box-shadow: 0 1px 2px 0 rgba(0,0,0,0.05);
+    margin: 2px;
+    border: 1px solid #d1d5db;
+}
+html.dark .vis-manipulation .vis-button,
+html.dark .vis-navigation .vis-button {
+    background-color: #374151;
+    color: #d1d5db;
+    border-color: #4b5567;
 }
 
-.nav-link {
-    color: #4b4f56 !important; /* Darker gray for nav links */
-    font-weight: 500;
+.vis-manipulation .vis-button:hover,
+.vis-navigation .vis-button:hover {
+    background-color: #d1d5db;
 }
-
-.nav-link:hover, .nav-link.active {
-    color: #0d6efd !important;
+html.dark .vis-manipulation .vis-button:hover,
+html.dark .vis-navigation .vis-button:hover {
+    background-color: #4b5567;
 }
-
-/* --- Main Content Layout --- */
-.main-content-wrapper { /* New wrapper for consistent padding */
-    flex-grow: 1;
-    padding: 1.5rem; /* Add padding around the main content area */
-    overflow-y: hidden; /* Prevent vertical scroll on the wrapper */
-}
-
-.main-content {
-    display: flex;
-    height: calc(100vh - 56px - 3rem); /* Adjust based on navbar and wrapper padding */
-    max-height: calc(100vh - 56px - 3rem);
-    overflow: hidden;
-    background-color: #ffffff;
-    border-radius: 8px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-}
-
-/* --- Sidebar --- */
-.sidebar {
-    width: 320px; /* Slightly wider sidebar */
-    min-width: 280px; /* Minimum width */
-    padding: 1.5rem;
-    background-color: #f8f9fa; /* Light background for sidebar */
-    border-right: 1px solid #e0e0e0;
-    overflow-y: auto;
-    display: flex;
-    flex-direction: column;
-}
-
-.sidebar h4, .sidebar h5, .sidebar h6 {
-    color: #0d6efd; /* Primary color for headings */
-    margin-bottom: 0.75rem;
-}
-.sidebar h4 .fas, .sidebar h5 .fas {
-    margin-right: 0.5rem;
-}
-
-.sidebar hr {
-    margin-top: 1rem;
-    margin-bottom: 1rem;
-    border-top: 1px solid #ced4da;
-}
-
-/* --- Upload Section --- */
-.upload-section {
-    background-color: #ffffff;
-    padding: 1rem;
-    border-radius: 6px;
-    border: 1px solid #e0e0e0;
-    margin-bottom: 1.5rem;
-}
-
-.upload-section .form-control {
-    font-size: 0.9rem;
-}
-
-.upload-section .btn-primary {
-    background-color: #0d6efd;
-    border-color: #0d6efd;
-    font-weight: 500;
-}
-.upload-section .btn-primary:hover {
-    background-color: #0b5ed7;
-    border-color: #0a58ca;
-}
-
-#upload-status {
-    font-size: 0.85em;
-    margin-top: 0.75rem;
-}
-#upload-status .text-success .fas {
-    color: #198754; /* Bootstrap success green */
-}
-#upload-status .text-danger .fas {
-    color: #dc3545; /* Bootstrap danger red */
-}
+*/
 
 
-/* --- Selection Info Panel --- */
-#selection-info {
-    background-color: #ffffff;
-    padding: 1rem;
-    border-radius: 6px;
-    border: 1px solid #e0e0e0;
-    flex-grow: 1; /* Allow it to take remaining space in sidebar */
-    overflow-y: auto; /* Scroll if content is too long */
-}
+/* 
+  The custom scrollbar and toggle switch styles were moved to an inline <style> 
+  tag in index.html for easier use of Tailwind color classes conceptually and 
+  to ensure they are applied correctly without a PostCSS build step for this file.
+  If this file were processed by PostCSS with Tailwind, @apply could be used here.
+*/
 
-#node-info-panel p, #edge-info-panel p {
-    margin-bottom: 0.5rem;
-    font-size: 0.9em;
-    word-break: break-word; /* Prevent long property values from breaking layout */
-}
-#node-info-panel strong, #edge-info-panel strong {
-    color: #495057;
-}
+/* Placeholder for any other highly specific global styles or complex component overrides */
 
-#no-selection {
-    color: #6c757d; /* Muted text color */
-    font-style: italic;
-    text-align: center;
-    padding-top: 1rem;
-}
-
-pre {
-    background-color: #212529; /* Darker background for code/JSON */
-    color: #ced4da; /* Lighter text for contrast */
-    padding: 0.75em 1em;
-    border-radius: 4px;
-    overflow-x: auto;
-    font-size: 0.8em; /* Smaller font for pre */
-    border: 1px solid #343a40;
-    white-space: pre-wrap; /* Wrap long lines */
-    word-break: break-all;
-}
-
-/* --- Graph Container --- */
-#graph-container {
-    flex-grow: 1;
-    height: 100%; /* Take full height of its flex parent (.main-content) */
-    background-color: #ffffff;
-    position: relative; /* For potential overlays or tooltips later */
-}
-
-/* --- Vis.js Specific Tweaks (Optional) --- */
-.vis-network { /* Target the canvas container */
-    border: none !important; /* Remove default Vis.js border if any */
-}
-
-/* --- Utility Classes --- */
-.text-primary {
-    color: #0d6efd !important;
-}
-
-/* --- Scrollbar Styling (Optional, WebKit browsers) --- */
-::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-}
-::-webkit-scrollbar-track {
-    background: #f1f1f1;
-    border-radius: 10px;
-}
-::-webkit-scrollbar-thumb {
-    background: #adb5bd;
-    border-radius: 10px;
-}
-::-webkit-scrollbar-thumb:hover {
-    background: #868e96;
-}
-
-/* --- Responsive Adjustments --- */
-@media (max-width: 768px) {
-    .main-content {
-        flex-direction: column;
-        height: auto; /* Allow content to determine height */
-        max-height: none;
-    }
-    .sidebar {
-        width: 100%;
-        min-width: unset;
-        border-right: none;
-        border-bottom: 1px solid #e0e0e0;
-        max-height: 50vh; /* Limit sidebar height on small screens */
-        margin-bottom: 1rem;
-    }
-    #graph-container {
-        height: 60vh; /* Fixed height for graph on small screens */
-        min-height: 300px;
-    }
-    .main-content-wrapper {
-        padding: 0.75rem;
-        overflow-y: auto; /* Allow vertical scroll on wrapper for small screens */
-    }
+/* Example of styling for the pretty-json class if you implement JS-based JSON formatting */
+pre.pretty-json {
+    /* white-space: pre-wrap; */ /* Already applied by Tailwind pre */
+    /* word-break: break-all;  */ /* Already applied by Tailwind pre */
+    /* Add specific styling for keys, values, braces if doing manual pretty print styling */
 }

@@ -57,3 +57,14 @@ class GraphProcessingError(GraphError):
 class LLMCallbackError(GraphProcessingError):
     """Errors related to the LLM processing callback function."""
     pass
+
+class NodeNotFoundError(GraphError):
+    """Errors occurring during the processing of text to extract graph elements."""
+    pass
+class RelationshipNotFoundError(GraphError):
+    """Errors occurring during the processing of text to extract graph elements."""
+    pass
+class DocumentNotFoundError(GraphError):
+    """Errors occurring during the processing of text or file."""
+    pass
+

@@ -47,10 +47,11 @@ def connect_db(db_path: Union[str, Path]) -> sqlite3.Connection:
     """
     Establishes a connection to the SQLite database.
 
-    Enables WAL mode for better concurrency. Creates parent directories if needed.
+    Enables WAL mode for better concurrency for file-based databases.
+    Creates parent directories if needed for file-based databases.
 
     Args:
-        db_path: The path to the SQLite database file.
+        db_path: The path to the SQLite database file or ":memory:" for an in-memory database.
 
     Returns:
         An active sqlite3.Connection object.
@@ -58,23 +59,47 @@ def connect_db(db_path: Union[str, Path]) -> sqlite3.Connection:
     Raises:
         DatabaseError: If the connection fails.
     """
-    db_path_obj = Path(db_path).resolve()
+    db_path_str = str(db_path)
+
     try:
-        db_path_obj.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(
-            str(db_path_obj),
-            detect_types=sqlite3.PARSE_DECLTYPES,
-            check_same_thread=False
-        )
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA foreign_keys = ON;")
-        ASCIIColors.debug(f"Connected to database: {db_path_obj} (WAL enabled)")
+        if db_path_str.lower() == ":memory:":
+            conn = sqlite3.connect(
+                ":memory:",
+                detect_types=sqlite3.PARSE_DECLTYPES,
+                check_same_thread=False # Important for multi-threaded access if SafeStore uses it
+            )
+            # WAL mode is not applicable for :memory: databases.
+            # It might even error or be ignored.
+            # conn.execute("PRAGMA journal_mode=WAL;") # Skip for :memory:
+            conn.execute("PRAGMA foreign_keys = ON;")
+            ASCIIColors.debug("Connected to in-memory SQLite database")
+        else:
+            db_path_obj = Path(db_path_str).resolve()
+            # Create parent directories only if it's a file path
+            db_path_obj.parent.mkdir(parents=True, exist_ok=True)
+            conn = sqlite3.connect(
+                str(db_path_obj),
+                detect_types=sqlite3.PARSE_DECLTYPES,
+                check_same_thread=False
+            )
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA foreign_keys = ON;")
+            ASCIIColors.debug(f"Connected to database: {db_path_obj} (WAL enabled)")
+        
         return conn
     except sqlite3.Error as e:
-        msg = f"Database connection error to {db_path_obj}: {e}"
+        # For :memory:, db_path_obj might not be defined, so use db_path_str
+        error_location = db_path_str if db_path_str.lower() == ":memory:" else str(Path(db_path_str).resolve())
+        msg = f"Database connection error to {error_location}: {e}"
         ASCIIColors.error(msg, exc_info=True)
         raise DatabaseError(msg) from e
-
+    except OSError as e: # For issues like mkdir failing due to permissions
+        db_path_obj = Path(db_path_str).resolve()
+        msg = f"OS error during database setup for {db_path_obj}: {e}"
+        ASCIIColors.error(msg, exc_info=True)
+        raise DatabaseError(msg) from e
+    
+    
 def initialize_schema(conn: sqlite3.Connection) -> None:
     """
     Initializes the database schema if tables don't exist.

@@ -1,161 +1,284 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class=""> <!-- Ensure this class is dynamically managed by JS for dark mode -->
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SafeStore Graph Explorer</title>
-    <!-- Bootstrap CSS -->
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
-    <!-- Font Awesome CSS -->
+    <!-- Tailwind CSS via CDN -->
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <!-- Font Awesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Vis.js Network CSS (if you use a theme or need specific styling beyond default) -->
+    <!-- Vis.js Network CSS -->
     <link href="https://visjs.github.io/vis-network/standalone/umd/vis-network.min.css" rel="stylesheet" type="text/css" />
-    <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static_assets/style.css">
+    
     <style>
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f8f9fa; /* Light gray background */
-            color: #333;
-            display: flex;
-            flex-direction: column;
-            min-height: 100vh;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            @apply bg-gray-50 text-gray-900 transition-colors duration-300; /* Light mode default */
         }
-        .navbar {
-            background-color: #343a40 !important; /* Dark navbar */
+        html.dark body {
+            @apply bg-gray-900 text-gray-100; /* Dark mode styles */
         }
-        .navbar-brand, .nav-link {
-            color: #f8f9fa !important;
+        #graph-container { height: 100%; }
+        .modal-backdrop-custom { @apply fixed inset-0 bg-black bg-opacity-60 z-40; }
+
+        /* Custom File Input Styling */
+        .custom-file-input-container {
+            @apply flex flex-col items-center justify-center p-6 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg cursor-pointer hover:border-blue-500 dark:hover:border-blue-400 bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors;
         }
-        .nav-link:hover {
-            color: #adb5bd !important;
-        }
-        .main-content {
-            flex-grow: 1;
-            display: flex;
-            overflow: hidden; /* Prevent scrollbars on main content if graph fits */
-        }
-        #graph-container {
-            flex-grow: 1;
-            height: calc(100vh - 56px - 2rem); /* Full height minus navbar and some padding */
-            border: 1px solid #dee2e6;
-            background-color: #ffffff; /* White background for graph */
-            border-radius: 0.25rem;
-            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
-        }
-        .sidebar {
-            width: 300px; /* Fixed width for sidebar */
-            padding: 1rem;
-            background-color: #e9ecef; /* Lighter gray for sidebar */
-            border-left: 1px solid #dee2e6;
-            overflow-y: auto;
-            height: calc(100vh - 56px - 2rem);
-        }
-        .status-bar {
-            padding: 0.5rem 1rem;
-            background-color: #343a40;
-            color: #f8f9fa;
-            font-size: 0.9em;
-        }
-        .upload-section {
-            background-color: #ffffff;
-            padding: 1.5rem;
-            border-radius: 0.25rem;
-            box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
-            margin-bottom: 1rem;
-        }
-        .card-header {
-            background-color: #007bff; /* Primary color for card headers */
-            color: white;
-        }
-        #node-info-panel h5, #edge-info-panel h5 {
-            color: #007bff;
-        }
-        pre {
-            background-color: #282c34; /* Dark background for code/JSON */
-            color: #abb2bf;
-            padding: 1em;
-            border-radius: 0.25rem;
-            overflow-x: auto;
-            font-size: 0.85em;
-        }
+        .custom-file-input-container i { @apply text-3xl text-gray-400 dark:text-gray-500 mb-2; }
+        .custom-file-input-container p { @apply text-sm text-gray-600 dark:text-gray-300; }
+        .custom-file-input-container input[type="file"] { @apply hidden; }
+
+        /* Toggle switch styles (from previous iteration, ensure they work with dark mode) */
+        .toggle-checkbox:checked { right: 0; @apply border-blue-500 dark:border-blue-400; }
+        .toggle-checkbox:checked + .toggle-label { @apply bg-blue-500 dark:bg-blue-400; }
+        input.toggle-checkbox-sm { @apply appearance-none w-10 h-5 bg-gray-300 dark:bg-gray-600 rounded-full shadow-inner cursor-pointer transition-colors relative; }
+        input.toggle-checkbox-sm:checked { @apply bg-blue-500 dark:bg-blue-400; }
+        input.toggle-checkbox-sm::after { content: ''; @apply absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform; }
+        input.toggle-checkbox-sm:checked::after { @apply transform translate-x-full; left:auto; right:0.5rem; transform: translateX(calc(100% - 0.25rem));} /* Adjusted for w-10, circle w-4 */
+         input.toggle-checkbox-sm:checked::after { transform: translateX(100%); left: calc(100% - 1rem - 0.125rem); }
+
+
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { @apply bg-gray-200 dark:bg-gray-700; }
+        ::-webkit-scrollbar-thumb { @apply bg-gray-400 dark:bg-gray-500 rounded-full; }
+        ::-webkit-scrollbar-thumb:hover { @apply bg-gray-500 dark:bg-gray-400; }
     </style>
 </head>
-<body>
+<body class="flex flex-col min-h-screen">
 
-    <!-- Navigation Bar -->
-    <nav class="navbar navbar-expand-lg navbar-dark">
-        <div class="container-fluid">
-            <a class="navbar-brand" href="#">
-                <i class="fas fa-project-diagram"></i> SafeStore Graph Explorer
-            </a>
-            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
-                <span class="navbar-toggler-icon"></span>
-            </button>
-            <div class="collapse navbar-collapse" id="navbarNav">
-                <ul class="navbar-nav ms-auto">
-                    <!-- <li class="nav-item">
-                        <a class="nav-link active" aria-current="page" href="#">Home</a>
-                    </li> -->
-                </ul>
+    <!-- Navbar -->
+    <nav class="bg-white dark:bg-gray-800 shadow-md sticky top-0 z-30">
+        <div class="container mx-auto px-4">
+            <div class="flex items-center justify-between h-16">
+                <div class="flex items-center">
+                    <i class="fas fa-project-diagram text-blue-600 dark:text-blue-400 text-2xl mr-3"></i>
+                    <span class="font-semibold text-xl text-gray-800 dark:text-white">Graph Explorer</span>
+                </div>
+                <div class="flex items-center space-x-2 sm:space-x-3">
+                    <button id="upload-document-btn" title="Upload Document(s)" class="p-2 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                        <i class="fas fa-plus text-lg"></i>
+                    </button>
+                    <button id="theme-toggle-btn" title="Toggle Dark/Light Mode" class="p-2 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                        <i class="fas fa-sun text-lg" id="theme-icon-sun"></i>
+                        <i class="fas fa-moon text-lg hidden" id="theme-icon-moon"></i>
+                    </button>
+                    <button id="settings-btn" title="Settings & Databases" class="p-2 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                        <i class="fas fa-cog text-lg"></i>
+                    </button>
+                </div>
             </div>
         </div>
     </nav>
 
     <!-- Main Content Area -->
-    <div class="container-fluid mt-3 main-content">
-        <!-- Sidebar for Controls and Info -->
-        <div class="sidebar me-3">
-            <h4><i class="fas fa-cogs"></i> Controls & Info</h4>
-            <hr>
-            <!-- File Upload Section -->
-            <div class="upload-section">
-                <h5><i class="fas fa-file-upload"></i> Upload Document</h5>
-                <form id="upload-form" class="mt-2">
-                    <div class="mb-3">
-                        <input class="form-control" type="file" id="file-input" name="file" required>
+    <div class="flex-grow flex flex-col md:flex-row overflow-hidden p-3 sm:p-4 space-y-3 md:space-y-0 md:space-x-4">
+        <!-- Sidebar -->
+        <aside class="w-full md:w-80 lg:w-96 bg-white dark:bg-gray-800 shadow-lg rounded-lg p-4 flex flex-col space-y-4 overflow-y-auto flex-shrink-0">
+            <!-- Graph Controls Section -->
+            <div>
+                <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-3 border-b pb-2 dark:border-gray-700 flex items-center">
+                    <i class="fas fa-sitemap mr-2 text-blue-500 dark:text-blue-400"></i>Graph Controls
+                </h3>
+                <div class="space-y-3">
+                    <div class="flex items-center justify-between">
+                        <label for="edit-mode-toggle" class="text-sm font-medium text-gray-700 dark:text-gray-300">Enable Editing</label>
+                        <input type="checkbox" id="edit-mode-toggle" class="toggle-checkbox-sm"/>
                     </div>
-                    <button type="submit" class="btn btn-primary w-100">
-                        <i class="fas fa-cloud-upload-alt"></i> Upload & Process
-                    </button>
-                </form>
-                <div id="upload-status" class="mt-2" style="font-size: 0.9em;"></div>
-            </div>
-            <hr>
-            <!-- Node/Edge Info Panel -->
-            <div id="selection-info">
-                <h5><i class="fas fa-info-circle"></i> Selection Details</h5>
-                <div id="node-info-panel" class="mt-2" style="display: none;">
-                    <h6>Node Info: <span id="node-id-display"></span></h6>
-                    <p><strong>Label:</strong> <span id="node-label-display"></span></p>
-                    <strong>Properties:</strong>
-                    <pre id="node-properties-display"></pre>
+                    <small class="text-xs text-gray-500 dark:text-gray-400 block -mt-2" id="edit-mode-hint">Allows direct graph manipulation.</small>
+
+                    <div class="grid grid-cols-2 gap-2">
+                        <button id="toggle-physics-btn" class="w-full text-sm bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 py-2 px-3 rounded-md flex items-center justify-center">
+                            <i class="fas fa-pause-circle mr-2"></i> <span id="physics-btn-text">Stop Physics</span>
+                        </button>
+                        <button id="fit-graph-btn" class="w-full text-sm bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 py-2 px-3 rounded-md flex items-center justify-center">
+                            <i class="fas fa-expand-arrows-alt mr-2"></i> Fit View
+                        </button>
+                    </div>
+                    <div>
+                        <label for="layout-select" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Layout</label>
+                        <select id="layout-select" class="w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white">
+                            <option value="default" selected>Force-Directed</option>
+                            <option value="hierarchicalRepulsion">Hierarchical (Repel)</option>
+                            <option value="hierarchicalDirected">Hierarchical (LR)</option>
+                            <option value="barnesHut">BarnesHut Physics</option>
+                        </select>
+                        <button id="apply-layout-btn" class="mt-2 w-full text-sm bg-blue-500 hover:bg-blue-600 text-white py-2 px-3 rounded-md flex items-center justify-center">
+                            <i class="fas fa-sync-alt mr-2"></i> Apply Layout
+                        </button>
+                    </div>
+                     <div id="graph-action-status" class="text-xs text-gray-600 dark:text-gray-400 min-h-[20px] mt-1 text-center"></div>
                 </div>
-                <div id="edge-info-panel" class="mt-2" style="display: none;">
-                    <h6>Edge Info: <span id="edge-id-display"></span></h6>
-                    <p><strong>Type:</strong> <span id="edge-type-display"></span></p>
-                    <p><strong>From:</strong> Node <span id="edge-from-display"></span></p>
-                    <p><strong>To:</strong> Node <span id="edge-to-display"></span></p>
-                    <strong>Properties:</strong>
-                    <pre id="edge-properties-display"></pre>
-                </div>
-                <p id="no-selection" class="text-muted">Click on a node or edge to see details.</p>
             </div>
-        </div>
+
+            <!-- Selection Details Section -->
+            <div class="flex-grow">
+                <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-3 border-b pb-2 dark:border-gray-700 flex items-center">
+                    <i class="fas fa-info-circle mr-2 text-blue-500 dark:text-blue-400"></i>Selection Details
+                </h3>
+                <div id="selection-info-content" class="text-sm space-y-3">
+                    <div id="node-info-panel" style="display: none;" class="space-y-2 p-2 bg-gray-50 dark:bg-gray-700 rounded-md">
+                        <p><strong class="text-gray-600 dark:text-gray-300">ID:</strong> <span id="node-id-display" class="font-mono text-xs bg-gray-200 dark:bg-gray-600 p-1 rounded"></span></p>
+                        <p><strong class="text-gray-600 dark:text-gray-300">Label:</strong> <span id="node-label-display" class="text-gray-800 dark:text-gray-100"></span></p>
+                        <div>
+                            <strong class="text-gray-600 dark:text-gray-300">Properties:</strong>
+                            <pre id="node-properties-display" class="mt-1 text-xs bg-gray-800 dark:bg-black text-gray-200 dark:text-gray-300 p-2 rounded-md max-h-32 overflow-auto pretty-json"></pre>
+                        </div>
+                        <button id="edit-selected-node-btn" class="mt-2 w-full text-sm bg-green-500 hover:bg-green-600 text-white py-1.5 px-3 rounded-md flex items-center justify-center" disabled>
+                            <i class="fas fa-edit mr-2"></i> Edit Node
+                        </button>
+                    </div>
+                    <div id="edge-info-panel" style="display: none;" class="space-y-2 p-2 bg-gray-50 dark:bg-gray-700 rounded-md">
+                        <p><strong class="text-gray-600 dark:text-gray-300">ID:</strong> <span id="edge-id-display" class="font-mono text-xs bg-gray-200 dark:bg-gray-600 p-1 rounded"></span></p>
+                        <p><strong class="text-gray-600 dark:text-gray-300">Type:</strong> <span id="edge-type-display" class="text-gray-800 dark:text-gray-100"></span></p>
+                        <p><strong class="text-gray-600 dark:text-gray-300">From:</strong> <span id="edge-from-display" class="font-mono text-xs bg-gray-200 dark:bg-gray-600 p-1 rounded"></span></p>
+                        <p><strong class="text-gray-600 dark:text-gray-300">To:</strong> <span id="edge-to-display" class="font-mono text-xs bg-gray-200 dark:bg-gray-600 p-1 rounded"></span></p>
+                        <div>
+                            <strong class="text-gray-600 dark:text-gray-300">Properties:</strong>
+                            <pre id="edge-properties-display" class="mt-1 text-xs bg-gray-800 dark:bg-black text-gray-200 dark:text-gray-300 p-2 rounded-md max-h-32 overflow-auto pretty-json"></pre>
+                        </div>
+                         <button id="edit-selected-edge-btn" class="mt-2 w-full text-sm bg-green-500 hover:bg-green-600 text-white py-1.5 px-3 rounded-md flex items-center justify-center" disabled>
+                            <i class="fas fa-edit mr-2"></i> Edit Edge
+                        </button>
+                    </div>
+                    <p id="no-selection" class="text-gray-500 dark:text-gray-400 italic text-center p-4">Click on a node or edge to see details.</p>
+                </div>
+            </div>
+        </aside>
 
         <!-- Graph Visualization Area -->
-        <div id="graph-container">
-            <!-- Vis.js Network will render here -->
+        <main id="graph-container-wrapper" class="flex-grow bg-white dark:bg-gray-800 shadow-lg rounded-lg overflow-hidden relative">
+            <div id="graph-container"></div>
+            <!-- Loading overlay for graph -->
+            <div id="graph-loading-overlay" class="absolute inset-0 bg-white dark:bg-gray-800 bg-opacity-75 dark:bg-opacity-75 flex items-center justify-center z-10 hidden">
+                <i class="fas fa-spinner fa-spin text-blue-500 dark:text-blue-400 text-4xl"></i>
+            </div>
+        </main>
+    </div>
+
+    <!-- Upload Modal -->
+    <div id="upload-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg transform transition-all" role="dialog" aria-modal="true">
+            <div class="flex items-center justify-between mb-4">
+                <h3 class="text-xl font-semibold text-gray-900 dark:text-white">Upload Document(s)</h3>
+                <button id="close-upload-modal-btn" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><i class="fas fa-times text-xl"></i></button>
+            </div>
+            <form id="upload-form">
+                <label for="file-input" class="custom-file-input-container mb-4">
+                    <i class="fas fa-cloud-upload-alt"></i>
+                    <p class="font-semibold">Click to browse or drag and drop</p>
+                    <p class="text-xs">Select one or more files</p>
+                    <input type="file" id="file-input" name="files" multiple />
+                </label>
+                <div id="file-list-preview" class="mb-3 max-h-32 overflow-y-auto text-sm space-y-1">
+                    <!-- Selected files will be listed here -->
+                </div>
+                <button type="submit" id="upload-submit-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 flex items-center justify-center" disabled>
+                    <i class="fas fa-arrow-up-from-bracket mr-2"></i>Upload Selected
+                </button>
+            </form>
+            <div id="upload-progress-area" class="mt-3 space-y-1"></div>
+            <div id="upload-overall-status" class="mt-3 text-sm min-h-[20px]"></div>
         </div>
     </div>
 
-    <!-- Status Bar (Optional Footer) -->
-    <!-- <div class="status-bar fixed-bottom">
-        Status: Ready
-    </div> -->
+    <!-- Node/Edge Edit Modals (structure largely same, ensure Tailwind classes) -->
+    <div id="node-edit-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg" role="dialog">
+            <div class="flex items-center justify-between mb-4"><h3 class="text-xl font-semibold dark:text-white">Edit Node</h3><button id="close-node-edit-modal-btn" class="dark:text-gray-300"><i class="fas fa-times"></i></button></div>
+            <form id="node-edit-form" class="space-y-4">
+                <input type="hidden" id="modal-node-id">
+                <div><label for="modal-node-label" class="block text-sm font-medium dark:text-gray-300">Label</label><input type="text" id="modal-node-label" required class="input-prevent-graph-interaction mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md"></div>
+                <div><label for="modal-node-properties" class="block text-sm font-medium dark:text-gray-300">Properties (JSON)</label><textarea id="modal-node-properties" rows="5" class="input-prevent-graph-interaction mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md font-mono text-xs"></textarea><small class="text-xs dark:text-gray-400">Valid JSON object.</small></div>
+                <div class="flex justify-end space-x-3 pt-2"><button type="button" id="cancel-node-edit-btn" class="px-4 py-2 text-sm dark:bg-gray-600 dark:hover:bg-gray-500 rounded-md">Cancel</button><button type="button" id="save-node-changes-btn" class="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-md">Save</button></div>
+            </form>
+        </div>
+    </div>
+    <div id="edge-edit-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg" role="dialog">
+            <div class="flex items-center justify-between mb-4"><h3 class="text-xl font-semibold dark:text-white">Edit Edge</h3><button id="close-edge-edit-modal-btn" class="dark:text-gray-300"><i class="fas fa-times"></i></button></div>
+            <form id="edge-edit-form" class="space-y-4">
+                <input type="hidden" id="modal-edge-id"><input type="hidden" id="modal-edge-from"><input type="hidden" id="modal-edge-to">
+                <div><label for="modal-edge-label" class="block text-sm font-medium dark:text-gray-300">Label/Type</label><input type="text" id="modal-edge-label" class="input-prevent-graph-interaction mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md"></div>
+                <div><label for="modal-edge-properties" class="block text-sm font-medium dark:text-gray-300">Properties (JSON)</label><textarea id="modal-edge-properties" rows="5" class="input-prevent-graph-interaction mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md font-mono text-xs"></textarea><small class="text-xs dark:text-gray-400">Valid JSON object.</small></div>
+                <div class="flex justify-end space-x-3 pt-2"><button type="button" id="cancel-edge-edit-btn" class="px-4 py-2 text-sm dark:bg-gray-600 dark:hover:bg-gray-500 rounded-md">Cancel</button><button type="button" id="save-edge-changes-btn" class="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-md">Save</button></div>
+            </form>
+        </div>
+    </div>
 
-    <!-- Bootstrap JS Bundle (Popper.js included) -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Settings & Database Management Modal -->
+    <div id="settings-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg transform transition-all" role="dialog">
+            <div class="flex items-center justify-between mb-6">
+                <h3 class="text-xl font-semibold text-gray-900 dark:text-white">Settings & Databases</h3>
+                <button id="close-settings-modal-btn" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><i class="fas fa-times text-xl"></i></button>
+            </div>
+            
+            <div class="space-y-6">
+                <!-- Appearance Settings -->
+                <div>
+                    <h4 class="text-md font-semibold text-gray-700 dark:text-gray-300 mb-2 border-b dark:border-gray-700 pb-1">Appearance</h4>
+                    <div class="flex items-center justify-between py-2">
+                        <label for="modal-theme-toggle" class="text-sm text-gray-700 dark:text-gray-300">Dark Mode</label>
+                        <input type="checkbox" id="modal-theme-toggle" class="toggle-checkbox-sm"/>
+                    </div>
+                    <div class="flex items-center justify-between py-2">
+                        <label for="setting-physics-on-load" class="text-sm text-gray-700 dark:text-gray-300">Enable physics on load</label>
+                        <input type="checkbox" id="setting-physics-on-load" class="toggle-checkbox-sm"/>
+                    </div>
+                </div>
+
+                <!-- Database Management -->
+                <div>
+                    <h4 class="text-md font-semibold text-gray-700 dark:text-gray-300 mb-2 border-b dark:border-gray-700 pb-1">Database Management</h4>
+                    <div class="mb-3">
+                        <label class="block text-sm font-medium dark:text-gray-300 mb-1">Active Database:</label>
+                        <div class="flex items-center">
+                            <span id="active-database-name" class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-md text-sm flex-grow">Default</span>
+                            <!-- <button id="switch-db-list-btn" class="ml-2 px-3 py-2 text-sm bg-gray-200 dark:bg-gray-600 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500">Switch</button> -->
+                        </div>
+                    </div>
+                    <div class="space-y-2 mb-3">
+                        <p class="text-sm dark:text-gray-300">Available Databases:</p>
+                        <div id="database-list-container" class="max-h-40 overflow-y-auto border dark:border-gray-600 rounded-md p-2 space-y-1 text-sm">
+                            <!-- DB list items will be populated here by JS -->
+                            <p class="text-xs italic dark:text-gray-400">No databases configured or loaded.</p> 
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        <button id="create-new-db-btn" class="w-full text-sm bg-green-500 hover:bg-green-600 text-white py-2 px-3 rounded-md flex items-center justify-center">
+                            <i class="fas fa-plus-circle mr-2"></i> Create New
+                        </button>
+                         <button id="load-existing-db-btn" class="w-full text-sm bg-yellow-500 hover:bg-yellow-600 text-white py-2 px-3 rounded-md flex items-center justify-center">
+                            <i class="fas fa-folder-open mr-2"></i> Load Existing
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="mt-8 flex justify-end">
+                 <button id="save-settings-btn" class="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md">Apply & Close</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Create/Load Database Modal (Placeholder structure) -->
+    <div id="database-config-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md" role="dialog">
+            <div class="flex items-center justify-between mb-4"><h3 id="db-config-modal-title" class="text-xl font-semibold dark:text-white">Configure Database</h3><button id="close-db-config-modal-btn" class="dark:text-gray-300"><i class="fas fa-times"></i></button></div>
+            <form id="db-config-form" class="space-y-4">
+                <div><label for="db-name-input" class="block text-sm font-medium dark:text-gray-300">Database Name</label><input type="text" id="db-name-input" required class="mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md"></div>
+                <div><label for="db-path-input" class="block text-sm font-medium dark:text-gray-300">Database File Path (.db)</label><input type="text" id="db-path-input" required class="mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md" placeholder="e.g., data/my_graph.db"></div>
+                <div class="flex justify-end space-x-3 pt-2">
+                    <button type="button" id="cancel-db-config-btn" class="px-4 py-2 text-sm dark:bg-gray-600 dark:hover:bg-gray-500 rounded-md">Cancel</button>
+                    <button type="submit" id="save-db-config-btn" class="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-md">Save Database</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+
     <!-- Vis.js Network JS -->
     <script type="text/javascript" src="https://visjs.github.io/vis-network/standalone/umd/vis-network.min.js"></script>
     <!-- Custom JavaScript -->
