@@ -144,6 +144,63 @@ def parse_pdf(file_path: Union[str, Path]) -> str:
         ASCIIColors.error(msg, exc_info=True)
         raise ParsingError(msg) from e
 
+def parse_pptx(file_path: Union[str, Path]) -> str:
+    """
+    Parses a PPTX file to extract text content using python-pptx.
+
+    Args:
+        file_path: Path to the PPTX file.
+
+    Returns:
+        The extracted text content, concatenated from all slides and shapes.
+
+    Raises:
+        ConfigurationError: If 'python-pptx' is not installed.
+        FileHandlingError: If the file is not found or OS error occurs during reading.
+        ParsingError: If the file is not a valid PPTX format or text extraction fails.
+    """
+    _file_path = Path(file_path)
+    ASCIIColors.debug(f"Attempting to parse PPTX file: {_file_path}")
+
+    try:
+        # Import dynamically
+        from pptx import Presentation
+    except ImportError as e:
+        pm.ensure_packages("python-pptx")
+        try:
+            # Import dynamically
+            from pptx import Presentation
+        except ImportError as e:
+            msg = "Parsing PPTX files requires 'python-pptx'. Install with: pip install python-pptx"
+            ASCIIColors.error(msg)
+            raise ConfigurationError(msg) from e
+
+    full_text = ""
+    try:
+        presentation = Presentation(_file_path)
+        ASCIIColors.debug(f"PPTX '{_file_path.name}' loaded.")
+
+        for slide in presentation.slides:
+            for shape in slide.shapes:
+                if hasattr(shape, "text"):
+                    full_text += shape.text + "\n"
+
+        ASCIIColors.debug(f"Successfully parsed PPTX file: {_file_path}")
+        return full_text.strip()  # Remove leading/trailing whitespace
+
+    except FileNotFoundError as e:
+        msg = f"File not found: {_file_path}"
+        ASCIIColors.error(msg)
+        raise FileHandlingError(msg) from e
+    except OSError as e:  # Catch potential OS errors during file reading by python-pptx
+        msg = f"OS error reading PPTX file {_file_path}: {e}"
+        ASCIIColors.error(msg)
+        raise FileHandlingError(msg) from e
+    except Exception as e:  # Catch other unexpected errors from python-pptx
+        msg = f"Unexpected error parsing PPTX file {_file_path}: {e}"
+        ASCIIColors.error(msg, exc_info=True)
+        raise ParsingError(msg) from e
+
 
 def parse_docx(file_path: Union[str, Path]) -> str:
     """
@@ -283,6 +340,7 @@ parser_map: Dict[str, ParserFunc] = {
     '.docx': parse_docx,
     '.html': parse_html,
     '.htm': parse_html, # Treat .htm the same as .html
+    '.pptx': parse_pptx,
 
     # --- General Text & Document Formats ---
     '.md': parse_txt,        # Markdown
