@@ -1,10 +1,13 @@
 # webui/config_manager.py
 import toml
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, List
 from ascii_colors import ASCIIColors, LogLevel
 
 CONFIG_FILE_PATH = Path("config.toml") # In the same directory as main.py or project root
+
+# Define the root for all database storage
+DATABASES_ROOT = Path("databases")
 
 DEFAULT_CONFIG = {
     "lollms": {
@@ -14,22 +17,27 @@ DEFAULT_CONFIG = {
         "service_key": None, # Explicitly None if not set
     },
     "safestore": {
-        "db_file": "webui_store.db",
-        "doc_dir": "webui_safestore_docs",
+        # General settings, db_file and doc_dir are now per-database
         "default_vectorizer": "st:all-MiniLM-L6-v2",
         "chunk_size": 10000,
         "chunk_overlap": 100,
     },
-    "graphstore": {
-        # "graph_extraction_prompt_template_file": None, # Example for file-based prompts
-        # "query_parsing_prompt_template_file": None,
-    },
+    "graphstore": {},
     "webui": {
         "host": "0.0.0.0",
         "port": 8000,
         "temp_upload_dir": "temp_uploaded_files_webui",
         "log_level": "INFO",
-    }
+        "active_database_name": "default",
+    },
+    # Databases are now stored in a standardized structure
+    "databases": [
+        {
+            "name": "default",
+            "db_file": str(DATABASES_ROOT / "default" / "default.db"),
+            "doc_dir": str(DATABASES_ROOT / "default" / "docs"),
+        }
+    ]
 }
 
 config_data: Dict[str, Any] = {}
@@ -42,11 +50,17 @@ def load_config() -> Dict[str, Any]:
             config_data = toml.load(CONFIG_FILE_PATH)
             # Ensure all sections and keys from default_config exist, fill if not
             for section, defaults in DEFAULT_CONFIG.items():
+                if section == "databases": continue # Handle databases separately
                 if section not in config_data:
                     config_data[section] = defaults
-                else:
+                elif isinstance(defaults, dict):
                     for key, default_value in defaults.items():
                         config_data[section].setdefault(key, default_value)
+
+            # Special handling for the list of databases
+            if "databases" not in config_data or not config_data["databases"]:
+                config_data["databases"] = DEFAULT_CONFIG["databases"]
+
             # Special handling for None values if toml library omits them
             if config_data.get("lollms") and "service_key" not in config_data["lollms"]:
                 config_data["lollms"]["service_key"] = None

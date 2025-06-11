@@ -7,8 +7,7 @@ model_name = "mistral:latest" # e.g., "mistral:latest", "gpt-4", specific model 
 # service_key = "sk-your_openai_key_here" # Only if needed, e.g. for OpenAI if not using env var
 
 [safestore]
-db_file = "webui_store.db"
-doc_dir = "webui_safestore_docs" # Directory where SafeStore processes files from
+# General SafeStore settings (applied to all databases)
 default_vectorizer = "st:all-MiniLM-L6-v2"
 chunk_size = 10000
 chunk_overlap = 100
@@ -24,3 +23,23 @@ host = "localhost"
 port = 9643
 temp_upload_dir = "temp_uploaded_files_webui"
 log_level = "INFO" # DEBUG, INFO, WARNING, ERROR, CRITICAL
+# The 'name' of the database to load on startup. Must match one of the [[databases]] entries.
+active_database_name = "default"
+
+
+# --- Database Configurations ---
+# Database file paths are now standardized and managed by the application.
+# The backend will create these directories and files based on the 'name'.
+# You only need to define the database names here.
+
+[[databases]]
+name = "default"
+db_file = "databases/default/default.db"
+doc_dir = "databases/default/docs"
+
+# To add another database, you can let the UI create it for you, or
+# you can manually add another block like this and restart:
+# [[databases]]
+# name = "project_alpha"
+# db_file = "databases/project_alpha/project_alpha.db"
+# doc_dir = "databases/project_alpha/docs"

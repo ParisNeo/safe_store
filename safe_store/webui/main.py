@@ -13,9 +13,9 @@ pm.ensure_packages([
     "toml",
     "pydantic" # Added for request/response models
 ])
-from config_manager import get_config, get_log_level_from_str, save_config, DEFAULT_CONFIG, CONFIG_FILE_PATH # Explicitly import 
+from config_manager import get_config, get_log_level_from_str, save_config, DATABASES_ROOT # Explicitly import 
 import uvicorn
-from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Body, Path as FastApiPath
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Body, Path as FastApiPath, Query, status
 from fastapi.responses import FileResponse, JSONResponse 
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field # For request/response models
@@ -32,10 +32,13 @@ from config_manager import get_config, get_log_level_from_str, save_config # Rel
 # --- Load Configuration ---
 config = get_config()
 
+# --- Global variables for the active database ---
+# These will be set on startup based on the active_database_name in the config
+ACTIVE_DB_FILE: Optional[Path] = None
+ACTIVE_DOC_DIR: Optional[Path] = None
+
 # --- Use Configuration Values ---
 TEMP_UPLOAD_DIR = Path(config["webui"]["temp_upload_dir"])
-DB_FILE = Path(config["safestore"]["db_file"])
-DOC_DIR_FOR_SAFESTORE = Path(config["safestore"]["doc_dir"])
 
 # LOLLMS Client Configuration from config
 BINDING_NAME = config["lollms"]["binding_name"]
@@ -99,6 +102,13 @@ class EdgeUpdateModel(BaseModel):
     label: Optional[str] = None
     properties: Optional[Dict[str, Any]] = None
 
+class DatabaseConfigModel(BaseModel):
+    name: str
+    db_file: str
+    doc_dir: str
+
+class DatabaseCreationRequest(BaseModel):
+    name: str = Field(..., pattern=r"^[a-zA-Z0-9_-]+$", description="The unique name for the database. No spaces or special characters.")
 
 # --- LLM Executor Callback ---
 def llm_executor(prompt_to_llm: str) -> str:
@@ -121,7 +131,30 @@ def llm_executor(prompt_to_llm: str) -> str:
 # --- FastAPI Events ---
 @app.on_event("startup")
 async def startup_event():
-    global ss_instance, gs_instance, lc_client
+    global ss_instance, gs_instance, lc_client, ACTIVE_DB_FILE, ACTIVE_DOC_DIR, config
+
+    # Ensure the root databases directory exists
+    DATABASES_ROOT.mkdir(parents=True, exist_ok=True)
+
+    # Determine active database
+    active_db_name = config["webui"]["active_database_name"]
+    db_configs = config["databases"]
+    active_db_config = next((db for db in db_configs if db["name"] == active_db_name), None)
+
+    if not active_db_config:
+        ASCIIColors.warning(f"Active database '{active_db_name}' not found. Falling back to the first available database.")
+        if db_configs:
+            active_db_config = db_configs[0]
+            config["webui"]["active_database_name"] = active_db_config["name"]
+            save_config(config)
+        else:
+            ASCIIColors.error("No databases are configured in config.toml. Cannot start services.")
+            return
+
+    ACTIVE_DB_FILE = Path(active_db_config["db_file"])
+    ACTIVE_DOC_DIR = Path(active_db_config["doc_dir"])
+    ASCIIColors.info(f"Activating database '{active_db_config['name']}' (db: {ACTIVE_DB_FILE}, docs: {ACTIVE_DOC_DIR})")
+
     safe_store_log_level_map = {
         LogLevel.DEBUG: SafeStoreLogLevel.DEBUG,
         LogLevel.INFO: SafeStoreLogLevel.INFO,
@@ -134,7 +167,7 @@ async def startup_event():
     ASCIIColors.set_log_level(APP_LOG_LEVEL) 
 
     TEMP_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    DOC_DIR_FOR_SAFESTORE.mkdir(parents=True, exist_ok=True)
+    ACTIVE_DOC_DIR.mkdir(parents=True, exist_ok=True)
 
     ASCIIColors.info("Initializing LollmsClient for WebUI...")
     try:
@@ -159,8 +192,7 @@ async def startup_event():
 
     ASCIIColors.info("Initializing SafeStore for WebUI...")
     try:
-        # Assuming SafeStore is initialized without encryption key for now, or key is handled by SafeStore internally
-        ss_instance = SafeStore(db_path=DB_FILE, log_level=ss_gs_log_level) # encryption_key=None
+        ss_instance = SafeStore(db_path=ACTIVE_DB_FILE, log_level=ss_gs_log_level)
         ASCIIColors.success("SafeStore initialized.")
     except Exception as e:
         ASCIIColors.error(f"Failed to initialize SafeStore: {e}"); trace_exception(e); ss_instance = None
@@ -169,9 +201,9 @@ async def startup_event():
     if lc_client and ss_instance:
         try:
             gs_instance = GraphStore(
-                db_path=DB_FILE, 
+                db_path=ACTIVE_DB_FILE, 
                 llm_executor_callback=llm_executor,
-                log_level=ss_gs_log_level # encryption_key=None (assuming GraphStore uses SafeStore's encryptor or handles its own)
+                log_level=ss_gs_log_level
             )
             ASCIIColors.success("GraphStore initialized.")
         except Exception as e:
@@ -201,31 +233,25 @@ async def read_root():
 
 @app.post("/upload-file/")
 async def upload_file_and_process(file: UploadFile = File(...)):
-    global ss_instance, gs_instance
+    global ss_instance, gs_instance, ACTIVE_DOC_DIR
     if not ss_instance: raise HTTPException(status_code=503, detail="SafeStore not initialized.")
     if not gs_instance: raise HTTPException(status_code=503, detail="GraphStore not initialized. LLM may be unavailable.")
     if not lc_client: raise HTTPException(status_code=503, detail="LLM Client not initialized. Graph building requires LLM.")
+    if not ACTIVE_DOC_DIR: raise HTTPException(status_code=503, detail="Active document directory not set.")
 
     processed_doc_path_in_safestore: Optional[Path] = None
     doc_id_found = -1
 
     try:
         safe_filename = Path(file.filename).name 
-        # Use a unique name for the file in SafeStore's doc_dir to avoid collisions
-        # SafeStore might also rename or manage this internally.
         unique_doc_filename = f"{uuid.uuid4()}_{safe_filename}"
+        target_path_for_safestore_processing = ACTIVE_DOC_DIR / unique_doc_filename
         
-        # Path where the file will be initially saved for SafeStore to pick up
-        target_path_for_safestore_processing = DOC_DIR_FOR_SAFESTORE / unique_doc_filename
-        
-        # Save uploaded file to the DOC_DIR_FOR_SAFESTORE
-        # No intermediate temp_upload_dir step unless SafeStore strictly requires it.
-        # If DOC_DIR_FOR_SAFESTORE is watched, this is usually enough.
         with open(target_path_for_safestore_processing, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
         ASCIIColors.info(f"File '{file.filename}' saved to SafeStore processing directory '{target_path_for_safestore_processing}'")
 
-        with ss_instance: # Context manager for SafeStore
+        with ss_instance:
             ss_instance.add_document(
                 file_path=target_path_for_safestore_processing, 
                 vectorizer_name=SS_DEFAULT_VECTORIZER,
@@ -234,84 +260,45 @@ async def upload_file_and_process(file: UploadFile = File(...)):
             )
             ASCIIColors.info(f"Document '{target_path_for_safestore_processing.name}' submitted to SafeStore for processing.")
 
-            # Retrieve the doc_id. This part depends on how SafeStore manages documents.
-            # Option 1: If SafeStore renames/moves files and tracks them, get by original path (if possible) or new path.
-            # Option 2: List documents and find the most recent or match by filename.
-            # We'll use a robust way to find the document, assuming SafeStore might alter the path or name.
-            # Using get_document_by_path if available and path remains consistent, or list_documents.
-            
-            # Attempt to get the document by its path (which might be what SafeStore uses as an identifier)
-            # This assumes `get_document_by_path` exists and `target_path_for_safestore_processing` is a valid lookup key.
-            # If SafeStore moves the file, we need its new path.
-            # A common pattern is that `add_document` processes and stores metadata, including a stable `doc_id`.
-            
-            # Let's try to find it using list_documents, as it's more generic.
-            # We need the actual path SafeStore uses if it modifies it.
-            # For now, assume target_path_for_safestore_processing is what we can query for.
-            # A better way would be if SafeStore's add_document could signal the final path or ID.
-
-            docs = ss_instance.list_documents() # Get most recent first
+            docs = ss_instance.list_documents()
             found_doc = None
             for doc_meta in docs:
-                # We need a reliable way to match. The path given to add_document might be best.
-                # Or if SafeStore provides the final path in its metadata.
-                # For now, let's assume `doc_meta['file_path']` is the key path.
-                # The file `target_path_for_safestore_processing` was the input.
-                # SafeStore might have moved or renamed it.
-                # The most reliable way is if list_documents returns the *original* path or enough metadata.
-                # Let's assume `doc_meta['file_path']` IS the path we can match against the one we saved.
-                # However, SafeStore often processes into its own structure.
-                # The original `webui/main.py` used `Path(doc['file_path']).resolve() == saved_file_path.resolve()`
-                # `saved_file_path` in that context was `DOC_DIR_FOR_SAFESTORE / temp_file_name`
-                
-                # If SafeStore keeps the file name part:
                 if Path(doc_meta['file_path']).name == unique_doc_filename:
                     found_doc = doc_meta
                     break
             
             if found_doc:
                 doc_id_found = found_doc['doc_id']
-                processed_doc_path_in_safestore = Path(found_doc['file_path'])
-                ASCIIColors.info(f"Document '{unique_doc_filename}' (ID: {doc_id_found}) confirmed in SafeStore. Path: {processed_doc_path_in_safestore}")
+                ASCIIColors.info(f"Document '{unique_doc_filename}' (ID: {doc_id_found}) confirmed in SafeStore.")
             else:
-                # If not found by name, maybe it's the absolute latest one and we risk a race condition.
-                # This part is tricky without knowing exactly how SafeStore's list_documents and path management work.
                 ASCIIColors.warning(f"Could not definitively find '{unique_doc_filename}' by name in SafeStore listing. Trying most recent.")
-                if docs: # Fallback to most recent if list is not empty
+                if docs:
                     doc_id_found = docs[0]['doc_id']
-                    processed_doc_path_in_safestore = Path(docs[0]['file_path'])
-                    ASCIIColors.warning(f"Assuming most recent document (ID: {doc_id_found}, Path: {processed_doc_path_in_safestore}) is the one just added.")
                 else:
-                    raise DocumentNotFoundError(f"Failed to find document '{unique_doc_filename}' in SafeStore after adding, and no documents listed.")
+                    raise DocumentNotFoundError(f"Failed to find document '{unique_doc_filename}' in SafeStore after adding.")
 
-        if doc_id_found == -1: # Should be caught by DocumentNotFoundError now
+        if doc_id_found == -1:
              raise HTTPException(status_code=500, detail=f"Failed to obtain doc_id for '{file.filename}' from SafeStore.")
 
         ASCIIColors.info(f"Doc '{file.filename}' (ID: {doc_id_found}) ready. Building graph...")
-        with gs_instance: # Context manager for GraphStore
+        with gs_instance:
             gs_instance.build_graph_for_document(doc_id_found)
         ASCIIColors.success(f"Graph built for doc '{file.filename}' (ID: {doc_id_found}).")
         
-        return JSONResponse(
-            status_code=200, 
-            content={"message": f"File '{file.filename}' processed.", "doc_id": doc_id_found}
-        )
+        return JSONResponse(status_code=200, content={"message": f"File '{file.filename}' processed.", "doc_id": doc_id_found})
     except safe_store.LLMCallbackError as e: 
         ASCIIColors.error(f"LLM Callback Error for {file.filename}: {e}"); trace_exception(e)
         raise HTTPException(status_code=500, detail=f"LLM processing error: {e}")
     except DocumentNotFoundError as e:
         ASCIIColors.error(f"Document not found error for {file.filename}: {e}"); trace_exception(e)
-        # Cleanup the initially saved file if it's still there and SafeStore failed to process/recognize it
         if target_path_for_safestore_processing and target_path_for_safestore_processing.exists():
             target_path_for_safestore_processing.unlink(missing_ok=True)
-            ASCIIColors.debug(f"Cleaned up file from SafeStore doc dir due to DocumentNotFoundError: {target_path_for_safestore_processing}")
         raise HTTPException(status_code=500, detail=f"Failed to confirm document in SafeStore: {e}")
     except HTTPException: raise 
     except Exception as e:
         ASCIIColors.error(f"Error processing file {file.filename}: {e}"); trace_exception(e)
         if 'target_path_for_safestore_processing' in locals() and target_path_for_safestore_processing.exists():
             target_path_for_safestore_processing.unlink(missing_ok=True)
-            ASCIIColors.debug(f"Cleaned up file from SafeStore doc dir due to error: {target_path_for_safestore_processing}")
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
     finally:
         if file: await file.close()
@@ -330,7 +317,118 @@ async def get_graph_data_endpoint():
         ASCIIColors.error(f"Error fetching graph data: {e}"); trace_exception(e)
         raise HTTPException(status_code=500, detail=f"Error fetching graph data: {str(e)}")
 
-# --- Graph Element CRUD Endpoints ---
+@app.get("/graph/search/")
+async def search_graph(q: str = Query(..., min_length=1, description="Text to search for in node labels and properties.")):
+    global gs_instance
+    if not gs_instance:
+        raise HTTPException(status_code=503, detail="GraphStore not initialized.")
+
+    try:
+        with gs_instance:
+            all_nodes = gs_instance.get_all_nodes_for_visualization(limit=-1)
+            all_edges = gs_instance.get_all_relationships_for_visualization(limit=-1)
+
+        search_term = q.lower()
+        matching_nodes = []
+        matching_node_ids = set()
+        
+        ASCIIColors.info(f"Performing simple text search for: '{q}'")
+
+        for node in all_nodes:
+            if node['id'] in matching_node_ids: continue
+            if search_term in node.get('label', '').lower():
+                matching_nodes.append(node)
+                matching_node_ids.add(node['id'])
+                continue
+            for key, value in node.get('properties', {}).items():
+                if isinstance(value, str) and search_term in value.lower():
+                    matching_nodes.append(node)
+                    matching_node_ids.add(node['id'])
+                    break
+
+        matching_edges = []
+        if matching_node_ids:
+            for edge in all_edges:
+                if edge.get('from') in matching_node_ids or edge.get('to') in matching_node_ids:
+                    matching_edges.append(edge)
+        
+        ASCIIColors.success(f"Search found {len(matching_nodes)} nodes and {len(matching_edges)} related edges.")
+        return {"nodes": matching_nodes, "edges": matching_edges}
+
+    except Exception as e:
+        ASCIIColors.error(f"Error during graph search for query '{q}': {e}")
+        trace_exception(e)
+        raise HTTPException(status_code=500, detail=f"An error occurred during search: {str(e)}")
+
+
+# --- Database Management Endpoints ---
+@app.get("/api/databases", response_model=List[DatabaseConfigModel])
+async def get_all_databases():
+    """Returns a list of all configured databases."""
+    db_list = get_config().get("databases", [])
+    active_name = get_config().get("webui", {}).get("active_database_name")
+    # Add an is_active flag for the frontend
+    for db in db_list:
+        db["is_active"] = (db["name"] == active_name)
+    return db_list
+
+@app.post("/api/databases", response_model=DatabaseConfigModel, status_code=status.HTTP_201_CREATED)
+async def create_database(request: DatabaseCreationRequest):
+    """Creates a new database configuration and its directory structure."""
+    global config
+    db_name = request.name
+    if any(db["name"] == db_name for db in config["databases"]):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"Database with name '{db_name}' already exists.")
+    
+    db_folder = DATABASES_ROOT / db_name
+    db_file = db_folder / f"{db_name}.db"
+    doc_dir = db_folder / "docs"
+
+    new_db_dict = {"name": db_name, "db_file": str(db_file), "doc_dir": str(doc_dir)}
+    
+    try:
+        doc_dir.mkdir(parents=True, exist_ok=True)
+        ASCIIColors.info(f"Created database directory structure at: {db_folder.resolve()}")
+        
+        config["databases"].append(new_db_dict)
+        save_config(config)
+        return new_db_dict
+    except Exception as e:
+        ASCIIColors.error(f"Failed to create database configuration: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+@app.delete("/api/databases/{db_name}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_database(db_name: str):
+    """Deletes a database configuration. Does not delete files on disk."""
+    global config
+    if len(config["databases"]) <= 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot delete the last remaining database.")
+    
+    original_dbs = list(config["databases"])
+    config["databases"] = [db for db in original_dbs if db["name"] != db_name]
+    
+    if len(config["databases"]) == len(original_dbs):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Database '{db_name}' not found.")
+    
+    if config["webui"]["active_database_name"] == db_name:
+        config["webui"]["active_database_name"] = config["databases"][0]["name"]
+        ASCIIColors.warning(f"Deleted active database. Switched active DB to '{config['databases'][0]['name']}'.")
+
+    save_config(config)
+
+@app.put("/api/databases/{db_name}/activate", status_code=status.HTTP_200_OK)
+async def activate_database(db_name: str):
+    """Sets the specified database as the active one for the next startup."""
+    global config
+    if not any(db["name"] == db_name for db in config["databases"]):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Database '{db_name}' not found.")
+    
+    config["webui"]["active_database_name"] = db_name
+    save_config(config)
+    return {"message": f"Database '{db_name}' set as active. Please reload the application."}
+
+
+# --- Graph Element CRUD Endpoints (unchanged) ---
 @app.post("/graph/node/", response_model=NodeModel, status_code=201)
 async def add_graph_node(node_data: NodeCreateModel):
     if not gs_instance: raise HTTPException(status_code=503, detail="GraphStore not initialized.")
@@ -340,54 +438,36 @@ async def add_graph_node(node_data: NodeCreateModel):
             created_node_dict = gs_instance.get_node_by_id(node_id) 
             if not created_node_dict:
                 raise HTTPException(status_code=500, detail="Failed to retrieve created node.")
-            return NodeModel(**created_node_dict) # Use Pydantic model directly with dict
+            return NodeModel(**created_node_dict)
     except Exception as e:
         ASCIIColors.error(f"Error adding node: {e}"); trace_exception(e)
         raise HTTPException(status_code=500, detail=f"Error adding node: {str(e)}")
 
 @app.put("/graph/node/{node_id}", response_model=NodeModel)
-async def update_graph_node(node_id: int = FastApiPath(..., title="The ID of the node to update"), node_data: NodeUpdateModel = Body(...)):
+async def update_graph_node(node_id: int, node_data: NodeUpdateModel):
     if not gs_instance: raise HTTPException(status_code=503, detail="GraphStore not initialized.")
     try:
         with gs_instance:
-            success = gs_instance.update_node(
-                node_id, 
-                label=node_data.label if node_data.label is not None else None, # Explicitly pass None if not provided
-                properties=node_data.properties if node_data.properties is not None else None
-            )
-            if not success: # update_node should raise NodeNotFound if not found, or return False for other non-update.
-                            # Let's assume it raises NodeNotFound, so this case is for "no change needed" or other logical non-update.
-                # Check if node still exists to differentiate "not found" from "no change"
-                current_node = gs_instance.get_node_by_id(node_id)
-                if not current_node:
-                     raise HTTPException(status_code=404, detail=f"Node with ID {node_id} not found.")
-                # If it exists but update returned false, maybe no change was made.
-                ASCIIColors.info(f"Update call for node {node_id} resulted in no change or logical non-update.")
-                return NodeModel(**current_node) # Return current state
-
+            gs_instance.update_node(node_id, label=node_data.label, properties=node_data.properties)
             updated_node_dict = gs_instance.get_node_by_id(node_id)
-            if not updated_node_dict: 
-                 raise HTTPException(status_code=500, detail="Failed to retrieve updated node post-update.")
+            if not updated_node_dict:
+                 raise HTTPException(status_code=404, detail=f"Node with ID {node_id} not found post-update.")
             return NodeModel(**updated_node_dict)
-    except safe_store.core.exceptions.NodeNotFoundError as e: # Catch specific exception from GraphStore
+    except safe_store.core.exceptions.NodeNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except HTTPException: raise
     except Exception as e:
         ASCIIColors.error(f"Error updating node {node_id}: {e}"); trace_exception(e)
         raise HTTPException(status_code=500, detail=f"Error updating node: {str(e)}")
 
 @app.delete("/graph/node/{node_id}", status_code=204)
-async def delete_graph_node(node_id: int = FastApiPath(..., title="The ID of the node to delete")):
+async def delete_graph_node(node_id: int):
     if not gs_instance: raise HTTPException(status_code=503, detail="GraphStore not initialized.")
     try:
         with gs_instance:
-            success = gs_instance.delete_node(node_id)
-            if not success: # If delete_node returns False for "not found"
+            if not gs_instance.delete_node(node_id):
                  raise HTTPException(status_code=404, detail=f"Node with ID {node_id} not found for deletion.")
-            # HTTP 204 No Content implies success, no body needed.
     except safe_store.core.exceptions.NodeNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except HTTPException: raise
     except Exception as e:
         ASCIIColors.error(f"Error deleting node {node_id}: {e}"); trace_exception(e)
         raise HTTPException(status_code=500, detail=f"Error deleting node: {str(e)}")
@@ -397,12 +477,9 @@ async def add_graph_edge(edge_data: EdgeCreateModel):
     if not gs_instance: raise HTTPException(status_code=503, detail="GraphStore not initialized.")
     try:
         with gs_instance:
-            from_node_id_int = int(edge_data.from_node_id)
-            to_node_id_int = int(edge_data.to_node_id)
-
             edge_id = gs_instance.add_relationship(
-                source_node_id=from_node_id_int,
-                target_node_id=to_node_id_int,
+                source_node_id=int(edge_data.from_node_id),
+                target_node_id=int(edge_data.to_node_id),
                 label=edge_data.label,
                 properties=edge_data.properties
             )
@@ -410,65 +487,42 @@ async def add_graph_edge(edge_data: EdgeCreateModel):
             if not created_edge_dict:
                 raise HTTPException(status_code=500, detail="Failed to retrieve created edge.")
             
-            # Map GraphStore dict to EdgeModel, ensuring 'from' and 'to' aliases
-            api_edge_data = {
-                "id": created_edge_dict["id"],
-                "from": created_edge_dict["source_node_id"], # Alias for frontend
-                "to": created_edge_dict["target_node_id"],   # Alias for frontend
-                "label": created_edge_dict["label"],
-                "properties": created_edge_dict["properties"]
-            }
+            api_edge_data = {"id": created_edge_dict["id"], "from": created_edge_dict["source_node_id"], "to": created_edge_dict["target_node_id"], "label": created_edge_dict["label"], "properties": created_edge_dict["properties"]}
             return EdgeModel(**api_edge_data)
     except safe_store.core.exceptions.NodeNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) # If source/target node not found
+        raise HTTPException(status_code=404, detail=str(e))
     except ValueError: 
-        raise HTTPException(status_code=400, detail="Invalid node ID format. Node IDs must be integers.")
-    except HTTPException: raise
+        raise HTTPException(status_code=400, detail="Invalid node ID format.")
     except Exception as e:
         ASCIIColors.error(f"Error adding edge: {e}"); trace_exception(e)
         raise HTTPException(status_code=500, detail=f"Error adding edge: {str(e)}")
 
 @app.put("/graph/edge/{edge_id}", response_model=EdgeModel)
-async def update_graph_edge(edge_id: int = FastApiPath(..., title="The ID of the edge to update"), edge_data: EdgeUpdateModel = Body(...)):
+async def update_graph_edge(edge_id: int, edge_data: EdgeUpdateModel):
     if not gs_instance: raise HTTPException(status_code=503, detail="GraphStore not initialized.")
     try:
         with gs_instance:
-            success = gs_instance.update_relationship(
-                edge_id, 
-                label=edge_data.label if edge_data.label is not None else None,
-                properties=edge_data.properties if edge_data.properties is not None else None
-            )
-            if not success:
-                current_edge = gs_instance.get_relationship_by_id(edge_id)
-                if not current_edge:
-                    raise HTTPException(status_code=404, detail=f"Edge with ID {edge_id} not found.")
-                ASCIIColors.info(f"Update call for edge {edge_id} resulted in no change.")
-                api_edge_data = {"id": current_edge["id"], "from": current_edge["source_node_id"], "to": current_edge["target_node_id"], "label": current_edge["label"], "properties": current_edge["properties"]}
-                return EdgeModel(**api_edge_data)
-
+            gs_instance.update_relationship(edge_id, label=edge_data.label, properties=edge_data.properties)
             updated_edge_dict = gs_instance.get_relationship_by_id(edge_id)
             if not updated_edge_dict:
-                 raise HTTPException(status_code=500, detail="Failed to retrieve updated edge.")
+                 raise HTTPException(status_code=404, detail=f"Edge with ID {edge_id} not found.")
             api_edge_data = {"id": updated_edge_dict["id"], "from": updated_edge_dict["source_node_id"], "to": updated_edge_dict["target_node_id"], "label": updated_edge_dict["label"], "properties": updated_edge_dict["properties"]}
             return EdgeModel(**api_edge_data)
     except safe_store.core.exceptions.RelationshipNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except HTTPException: raise
     except Exception as e:
         ASCIIColors.error(f"Error updating edge {edge_id}: {e}"); trace_exception(e)
         raise HTTPException(status_code=500, detail=f"Error updating edge: {str(e)}")
 
 @app.delete("/graph/edge/{edge_id}", status_code=204)
-async def delete_graph_edge(edge_id: int = FastApiPath(..., title="The ID of the edge to delete")):
+async def delete_graph_edge(edge_id: int):
     if not gs_instance: raise HTTPException(status_code=503, detail="GraphStore not initialized.")
     try:
         with gs_instance:
-            success = gs_instance.delete_relationship(edge_id)
-            if not success: # If delete_relationship returns False for "not found"
+            if not gs_instance.delete_relationship(edge_id):
                 raise HTTPException(status_code=404, detail=f"Edge with ID {edge_id} not found for deletion.")
     except safe_store.core.exceptions.RelationshipNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
-    except HTTPException: raise
     except Exception as e:
         ASCIIColors.error(f"Error deleting edge {edge_id}: {e}"); trace_exception(e)
         raise HTTPException(status_code=500, detail=f"Error deleting edge: {str(e)}")
@@ -477,25 +531,20 @@ async def delete_graph_edge(edge_id: int = FastApiPath(..., title="The ID of the
 # --- Launcher function for command-line entry point ---
 def launch_webui():
     script_dir = Path(__file__).parent.resolve()
-    os.chdir(script_dir)
-    ASCIIColors.info(f"WebUI Launcher: Changed CWD to: {os.getcwd()} for reliable relative path resolution.")
+    os.chdir(script_dir) # Change CWD to the script's dir for relative path consistency
 
-    global config 
+    global config
     config = get_config() 
 
     _webui_host = config["webui"]["host"]
     _webui_port = int(config["webui"]["port"])
     _app_log_level_str = config["webui"]["log_level"] 
 
-    if not CONFIG_FILE_PATH.exists():
-         ASCIIColors.warning(f"config.toml not found at {CONFIG_FILE_PATH}. Creating default.")
-         save_config(DEFAULT_CONFIG)
-
     ASCIIColors.info(f"Launching SafeStore WebUI on http://{_webui_host}:{_webui_port}")
     ASCIIColors.info(f"Uvicorn log level will be based on application setting: {_app_log_level_str.lower()}")
-
+    
     uvicorn.run(
-        "main:app", 
+        app,
         host=_webui_host,
         port=_webui_port,
         log_level=_app_log_level_str.lower(), 

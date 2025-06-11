@@ -1,4 +1,3 @@
-# pyproject.toml
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -14,7 +13,7 @@ license = { file = "LICENSE" }
 authors = [
     { name = "ParisNeo", email = "parisneo_ai@gmail.com" },
 ]
-keywords = ["vector", "database", "sqlite", "rag", "llm", "embedding", "semantic search", "local", "concurrent", "encryption"]
+keywords = ["vector", "database", "sqlite", "rag", "llm", "embedding", "semantic search", "local", "concurrent", "encryption", "webui"]
 classifiers = [
     "Development Status :: 5 - Production/Stable", # Or "5 - Production/Stable" if ready
     "Programming Language :: Python :: 3",
@@ -60,19 +59,32 @@ tfidf = ["scikit-learn>=1.0"]
 # --- Encryption Library ---
 encryption = ["cryptography>=40.0"] # Added Encryption
 
+# --- WebUI Dependencies ---
+webui = [
+    "lollms-client>=1.0.1", # Ensure a recent version
+    "uvicorn>=0.23.0",
+    "fastapi>=0.100.0",
+    "python-multipart>=0.0.6",
+    "toml>=0.10.2",
+    "pydantic>=2.0",
+]
+
+
 # --- Combined Extras ---
 all-vectorizers = [
-    "safe_store[sentence-transformers]",
-    "safe_store[tfidf]",
+    "safe-store[sentence-transformers]",
+    "safe-store[tfidf]",
 ]
-# Combined extra for everything (parsing, all vectorizers, encryption)
+# Combined extra for everything (parsing, all vectorizers, encryption, webui)
 all = [
-    "safe_store[parsing]",
-    "safe_store[all-vectorizers]",
-    "safe_store[encryption]", # Added Encryption to 'all'
+    "safe-store[parsing]",
+    "safe-store[all-vectorizers]",
+    "safe-store[encryption]",
+    "safe-store[webui]", # Added WebUI to 'all'
 ]
 # Extra for development dependencies (testing, linting, building, docs)
 dev = [
+    "safe-store[all]", # Dev should include all optional features
     "pytest>=7.0",
     "pytest-cov>=3.0",
     "flake8>=5.0",     # Or ruff
@@ -89,8 +101,10 @@ dev = [
     "wheel",
     "twine", # For checking/uploading packages
 ]
-#To be added in the future
+
 [project.scripts]
+# This makes the `safestore-webui` command available after installation.
+# It requires the `webui` folder to be moved inside the `safe_store` package.
 safestore-webui = "safe_store.webui.main:launch_webui"
 
 [project.urls]
@@ -106,3 +120,11 @@ target-version = ['py38']
 
 [tool.hatch.version]
 path = "safe_store/__init__.py"
+
+[tool.hatch.build]
+# This section ensures that non-python files inside your package are included.
+# It's crucial for including the webui's static assets and config files.
+# Assumes you have moved the `webui` folder into `safe_store`.
+include = [
+  "webui",
+]

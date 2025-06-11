@@ -30,15 +30,12 @@
         .custom-file-input-container p { @apply text-sm text-gray-600 dark:text-gray-300; }
         .custom-file-input-container input[type="file"] { @apply hidden; }
 
-        /* Toggle switch styles (from previous iteration, ensure they work with dark mode) */
-        .toggle-checkbox:checked { right: 0; @apply border-blue-500 dark:border-blue-400; }
-        .toggle-checkbox:checked + .toggle-label { @apply bg-blue-500 dark:bg-blue-400; }
+        /* Toggle switch styles */
         input.toggle-checkbox-sm { @apply appearance-none w-10 h-5 bg-gray-300 dark:bg-gray-600 rounded-full shadow-inner cursor-pointer transition-colors relative; }
         input.toggle-checkbox-sm:checked { @apply bg-blue-500 dark:bg-blue-400; }
         input.toggle-checkbox-sm::after { content: ''; @apply absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform; }
-        input.toggle-checkbox-sm:checked::after { @apply transform translate-x-full; left:auto; right:0.5rem; transform: translateX(calc(100% - 0.25rem));} /* Adjusted for w-10, circle w-4 */
-         input.toggle-checkbox-sm:checked::after { transform: translateX(100%); left: calc(100% - 1rem - 0.125rem); }
-
+        input.toggle-checkbox-sm:checked::after { @apply transform translate-x-full; left:auto; right:0.5rem; transform: translateX(calc(100% - 0.25rem));}
+        input.toggle-checkbox-sm:checked::after { transform: translateX(100%); left: calc(100% - 1rem - 0.125rem); }
 
         ::-webkit-scrollbar { width: 8px; height: 8px; }
         ::-webkit-scrollbar-track { @apply bg-gray-200 dark:bg-gray-700; }
@@ -57,14 +54,17 @@
                     <span class="font-semibold text-xl text-gray-800 dark:text-white">Graph Explorer</span>
                 </div>
                 <div class="flex items-center space-x-2 sm:space-x-3">
-                    <button id="upload-document-btn" title="Upload Document(s)" class="p-2 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                    <button id="upload-document-btn" title="Upload Document" class="p-2 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
                         <i class="fas fa-plus text-lg"></i>
+                    </button>
+                    <button id="databases-btn" title="Manage Databases" class="p-2 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                        <i class="fas fa-database text-lg"></i>
                     </button>
                     <button id="theme-toggle-btn" title="Toggle Dark/Light Mode" class="p-2 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
                         <i class="fas fa-sun text-lg" id="theme-icon-sun"></i>
                         <i class="fas fa-moon text-lg hidden" id="theme-icon-moon"></i>
                     </button>
-                    <button id="settings-btn" title="Settings & Databases" class="p-2 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
+                    <button id="settings-btn" title="Appearance Settings" class="p-2 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
                         <i class="fas fa-cog text-lg"></i>
                     </button>
                 </div>
@@ -82,7 +82,21 @@
                     <i class="fas fa-sitemap mr-2 text-blue-500 dark:text-blue-400"></i>Graph Controls
                 </h3>
                 <div class="space-y-3">
-                    <div class="flex items-center justify-between">
+                    <!-- Search Section -->
+                    <form id="graph-search-form">
+                        <label for="graph-search-input" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Search Graph</label>
+                        <div class="relative">
+                            <input type="search" id="graph-search-input" placeholder="e.g., 'find all users'" class="w-full p-2 pr-10 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white input-prevent-graph-interaction">
+                            <button type="button" id="clear-search-btn" class="absolute inset-y-0 right-8 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 px-2 hidden">
+                                <i class="fas fa-times"></i>
+                            </button>
+                            <button type="submit" id="graph-search-submit-btn" class="absolute inset-y-0 right-0 px-3 flex items-center bg-blue-500 hover:bg-blue-600 rounded-r-md text-white">
+                                <i class="fas fa-search"></i>
+                            </button>
+                        </div>
+                    </form>
+
+                    <div class="flex items-center justify-between pt-2">
                         <label for="edit-mode-toggle" class="text-sm font-medium text-gray-700 dark:text-gray-300">Enable Editing</label>
                         <input type="checkbox" id="edit-mode-toggle" class="toggle-checkbox-sm"/>
                     </div>
@@ -109,6 +123,13 @@
                         </button>
                     </div>
                      <div id="graph-action-status" class="text-xs text-gray-600 dark:text-gray-400 min-h-[20px] mt-1 text-center"></div>
+                     <!-- Search Results Container -->
+                     <div id="search-results-container" class="pt-2 border-t dark:border-gray-700 hidden">
+                        <h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Search Results</h4>
+                        <div id="search-results-list" class="max-h-40 overflow-y-auto space-y-1 pr-2">
+                            <!-- JS will populate this -->
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -171,10 +192,8 @@
                     <p class="text-xs">Select one or more files</p>
                     <input type="file" id="file-input" name="files" multiple />
                 </label>
-                <div id="file-list-preview" class="mb-3 max-h-32 overflow-y-auto text-sm space-y-1">
-                    <!-- Selected files will be listed here -->
-                </div>
-                <button type="submit" id="upload-submit-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 flex items-center justify-center" disabled>
+                <div id="file-list-preview" class="mb-3 max-h-32 overflow-y-auto text-sm space-y-1"></div>
+                <button type="submit" id="upload-submit-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-md flex items-center justify-center" disabled>
                     <i class="fas fa-arrow-up-from-bracket mr-2"></i>Upload Selected
                 </button>
             </form>
@@ -183,7 +202,7 @@
         </div>
     </div>
 
-    <!-- Node/Edge Edit Modals (structure largely same, ensure Tailwind classes) -->
+    <!-- Node/Edge Edit Modals -->
     <div id="node-edit-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg" role="dialog">
             <div class="flex items-center justify-between mb-4"><h3 class="text-xl font-semibold dark:text-white">Edit Node</h3><button id="close-node-edit-modal-btn" class="dark:text-gray-300"><i class="fas fa-times"></i></button></div>
@@ -199,7 +218,7 @@
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg" role="dialog">
             <div class="flex items-center justify-between mb-4"><h3 class="text-xl font-semibold dark:text-white">Edit Edge</h3><button id="close-edge-edit-modal-btn" class="dark:text-gray-300"><i class="fas fa-times"></i></button></div>
             <form id="edge-edit-form" class="space-y-4">
-                <input type="hidden" id="modal-edge-id"><input type="hidden" id="modal-edge-from"><input type="hidden" id="modal-edge-to">
+                <input type="hidden" id="modal-edge-id">
                 <div><label for="modal-edge-label" class="block text-sm font-medium dark:text-gray-300">Label/Type</label><input type="text" id="modal-edge-label" class="input-prevent-graph-interaction mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md"></div>
                 <div><label for="modal-edge-properties" class="block text-sm font-medium dark:text-gray-300">Properties (JSON)</label><textarea id="modal-edge-properties" rows="5" class="input-prevent-graph-interaction mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md font-mono text-xs"></textarea><small class="text-xs dark:text-gray-400">Valid JSON object.</small></div>
                 <div class="flex justify-end space-x-3 pt-2"><button type="button" id="cancel-edge-edit-btn" class="px-4 py-2 text-sm dark:bg-gray-600 dark:hover:bg-gray-500 rounded-md">Cancel</button><button type="button" id="save-edge-changes-btn" class="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-md">Save</button></div>
@@ -207,77 +226,67 @@
         </div>
     </div>
 
-    <!-- Settings & Database Management Modal -->
+    <!-- Appearance Settings Modal -->
     <div id="settings-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg transform transition-all" role="dialog">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md transform transition-all" role="dialog">
             <div class="flex items-center justify-between mb-6">
-                <h3 class="text-xl font-semibold text-gray-900 dark:text-white">Settings & Databases</h3>
+                <h3 class="text-xl font-semibold text-gray-900 dark:text-white">Appearance Settings</h3>
                 <button id="close-settings-modal-btn" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><i class="fas fa-times text-xl"></i></button>
             </div>
-            
             <div class="space-y-6">
-                <!-- Appearance Settings -->
-                <div>
-                    <h4 class="text-md font-semibold text-gray-700 dark:text-gray-300 mb-2 border-b dark:border-gray-700 pb-1">Appearance</h4>
-                    <div class="flex items-center justify-between py-2">
-                        <label for="modal-theme-toggle" class="text-sm text-gray-700 dark:text-gray-300">Dark Mode</label>
-                        <input type="checkbox" id="modal-theme-toggle" class="toggle-checkbox-sm"/>
-                    </div>
-                    <div class="flex items-center justify-between py-2">
-                        <label for="setting-physics-on-load" class="text-sm text-gray-700 dark:text-gray-300">Enable physics on load</label>
-                        <input type="checkbox" id="setting-physics-on-load" class="toggle-checkbox-sm"/>
-                    </div>
+                <div class="flex items-center justify-between py-2">
+                    <label for="modal-theme-toggle" class="text-sm text-gray-700 dark:text-gray-300">Dark Mode</label>
+                    <input type="checkbox" id="modal-theme-toggle" class="toggle-checkbox-sm"/>
                 </div>
-
-                <!-- Database Management -->
-                <div>
-                    <h4 class="text-md font-semibold text-gray-700 dark:text-gray-300 mb-2 border-b dark:border-gray-700 pb-1">Database Management</h4>
-                    <div class="mb-3">
-                        <label class="block text-sm font-medium dark:text-gray-300 mb-1">Active Database:</label>
-                        <div class="flex items-center">
-                            <span id="active-database-name" class="px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-md text-sm flex-grow">Default</span>
-                            <!-- <button id="switch-db-list-btn" class="ml-2 px-3 py-2 text-sm bg-gray-200 dark:bg-gray-600 rounded-md hover:bg-gray-300 dark:hover:bg-gray-500">Switch</button> -->
-                        </div>
-                    </div>
-                    <div class="space-y-2 mb-3">
-                        <p class="text-sm dark:text-gray-300">Available Databases:</p>
-                        <div id="database-list-container" class="max-h-40 overflow-y-auto border dark:border-gray-600 rounded-md p-2 space-y-1 text-sm">
-                            <!-- DB list items will be populated here by JS -->
-                            <p class="text-xs italic dark:text-gray-400">No databases configured or loaded.</p> 
-                        </div>
-                    </div>
-                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        <button id="create-new-db-btn" class="w-full text-sm bg-green-500 hover:bg-green-600 text-white py-2 px-3 rounded-md flex items-center justify-center">
-                            <i class="fas fa-plus-circle mr-2"></i> Create New
-                        </button>
-                         <button id="load-existing-db-btn" class="w-full text-sm bg-yellow-500 hover:bg-yellow-600 text-white py-2 px-3 rounded-md flex items-center justify-center">
-                            <i class="fas fa-folder-open mr-2"></i> Load Existing
-                        </button>
-                    </div>
+                <div class="flex items-center justify-between py-2">
+                    <label for="setting-physics-on-load" class="text-sm text-gray-700 dark:text-gray-300">Enable physics on load</label>
+                    <input type="checkbox" id="setting-physics-on-load" class="toggle-checkbox-sm"/>
                 </div>
             </div>
-
             <div class="mt-8 flex justify-end">
                  <button id="save-settings-btn" class="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md">Apply & Close</button>
             </div>
         </div>
     </div>
     
-    <!-- Create/Load Database Modal (Placeholder structure) -->
-    <div id="database-config-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
+    <!-- Database Management Modal -->
+    <div id="databases-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-2xl transform transition-all" role="dialog">
+            <div class="flex items-center justify-between mb-6 border-b dark:border-gray-700 pb-4">
+                <h3 class="text-xl font-semibold text-gray-900 dark:text-white">Database Management</h3>
+                <button id="close-databases-modal-btn" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><i class="fas fa-times text-xl"></i></button>
+            </div>
+            <div class="space-y-4">
+                <div id="database-list-container" class="max-h-96 overflow-y-auto space-y-3 pr-2">
+                    <p class="text-sm italic dark:text-gray-400">Loading databases...</p> 
+                </div>
+                <div class="pt-4 border-t dark:border-gray-700">
+                    <button id="create-new-db-btn" class="text-sm bg-green-500 hover:bg-green-600 text-white py-2 px-4 rounded-md flex items-center justify-center">
+                        <i class="fas fa-plus-circle mr-2"></i> Create New Database
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Create Database Modal -->
+    <div id="create-db-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md" role="dialog">
-            <div class="flex items-center justify-between mb-4"><h3 id="db-config-modal-title" class="text-xl font-semibold dark:text-white">Configure Database</h3><button id="close-db-config-modal-btn" class="dark:text-gray-300"><i class="fas fa-times"></i></button></div>
-            <form id="db-config-form" class="space-y-4">
-                <div><label for="db-name-input" class="block text-sm font-medium dark:text-gray-300">Database Name</label><input type="text" id="db-name-input" required class="mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md"></div>
-                <div><label for="db-path-input" class="block text-sm font-medium dark:text-gray-300">Database File Path (.db)</label><input type="text" id="db-path-input" required class="mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md" placeholder="e.g., data/my_graph.db"></div>
+            <div class="flex items-center justify-between mb-4"><h3 class="text-xl font-semibold dark:text-white">Create New Database</h3><button id="close-create-db-modal-btn" class="dark:text-gray-300"><i class="fas fa-times"></i></button></div>
+            <form id="create-db-form" class="space-y-4">
+                <div>
+                    <label for="create-db-name-input" class="block text-sm font-medium dark:text-gray-300">Database Name</label>
+                    <input type="text" id="create-db-name-input" required class="mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md" placeholder="e.g., project_alpha">
+                    <small class="dark:text-gray-400 text-xs">A unique name. Use only letters, numbers, hyphens, and underscores.</small>
+                </div>
+                <div id="create-db-error" class="text-xs text-red-500 min-h-[16px]"></div>
                 <div class="flex justify-end space-x-3 pt-2">
-                    <button type="button" id="cancel-db-config-btn" class="px-4 py-2 text-sm dark:bg-gray-600 dark:hover:bg-gray-500 rounded-md">Cancel</button>
-                    <button type="submit" id="save-db-config-btn" class="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-md">Save Database</button>
+                    <button type="button" id="cancel-create-db-btn" class="px-4 py-2 text-sm dark:bg-gray-600 dark:hover:bg-gray-500 rounded-md">Cancel</button>
+                    <button type="submit" id="save-create-db-btn" class="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-md">Create Database</button>
                 </div>
             </form>
         </div>
     </div>
-
 
     <!-- Vis.js Network JS -->
     <script type="text/javascript" src="https://visjs.github.io/vis-network/standalone/umd/vis-network.min.js"></script>
