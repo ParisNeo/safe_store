@@ -28,7 +28,7 @@ from .indexing import parser, chunking
 from .search import similarity
 from .vectorization.manager import VectorizationManager
 from .vectorization.methods.tfidf import TfidfVectorizerWrapper
-from ascii_colors import ASCIIColors, LogLevel
+from ascii_colors import ASCIIColors, LogLevel, trace_exception
 
 
 DEFAULT_LOCK_TIMEOUT: int = 60
@@ -1605,6 +1605,7 @@ class SafeStore:
             raise
         except Exception as e:
             if self.conn and self.conn.in_transaction: self.conn.rollback()
+            trace_exception(e)
             raise SafeStoreError(f"Unexpected error during query_impl (metric: {similarity_metric}, query: '{query_text[:50]}...'): {e}") from e
     def query_all(
         self,

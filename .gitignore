@@ -185,3 +185,6 @@ temp_docs_graph_example
 *.db-shm
 *.db-wal
 *.lock
+
+
+benchmark_output
