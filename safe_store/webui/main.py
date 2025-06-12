@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union
 import pipmaster as pm
+import sys
 pm.ensure_packages([
     "lollms_client",
     "uvicorn",
@@ -13,7 +14,13 @@ pm.ensure_packages([
     "toml",
     "pydantic" # Added for request/response models
 ])
-from config_manager import get_config, get_log_level_from_str, save_config, DATABASES_ROOT # Explicitly import 
+# Ajoute le répertoire parent (safe_store/safe_store/) au chemin de recherche de Python
+# Cela permet à Python de trouver config_manager.py
+sys.path.insert(0, str(Path(__file__).parent))
+
+# Maintenant, l'importation originale fonctionnera
+from config_manager import get_config, get_log_level_from_str, save_config, DATABASES_ROOT
+from lollms_client import LollmsClient
 import uvicorn
 from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Body, Path as FastApiPath, Query, status
 from fastapi.responses import FileResponse, JSONResponse 
