@@ -1409,7 +1409,8 @@ class SafeStore:
 
                 ASCIIColors.debug(f"Using requested vectorizer '{_vectorizer_name}' (method_id={method_id})")
             except (DatabaseError, ConfigurationError, VectorizationError) as e_get_vec:
-                ASCIIColors.warning(f"Failed to get/register requested vectorizer '{_vectorizer_name_requested}': {e_get_vec}")
+                trace_exception(e_get_vec)
+                ASCIIColors.warning(f"Failed to get/register requested vectorizer '{_vectorizer_name}': {e_get_vec}")
                 vectorizer = None
 
             query_vector_list = vectorizer.vectorize([query_text])
