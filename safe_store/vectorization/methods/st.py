@@ -3,7 +3,7 @@ import numpy as np
 from typing import List, Optional, Dict, Any # Added Optional
 from ..base import BaseVectorizer
 from ...core.exceptions import ConfigurationError, VectorizationError # Import custom exceptions
-from ascii_colors import ASCIIColors
+from ascii_colors import ASCIIColors, trace_exception
 
 # each vectorizer must have a class name variable to be identified
 class_name="STVectorizer"
@@ -127,6 +127,7 @@ class STVectorizer(BaseVectorizer):
             return embeddings
 
         except Exception as e:
+            trace_exception(e)
             # Catch any unexpected errors during the encode process
             msg = f"Error during sentence-transformer encoding with '{self.model_name}': {e}"
             ASCIIColors.error(msg, exc_info=True)
