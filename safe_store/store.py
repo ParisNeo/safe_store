@@ -52,6 +52,9 @@ class SafeStore:
     Attributes:
         db_path (str): The path to the SQLite database file. This can be a file path,
                        ":memory:", or the path to a temporary file managed by SafeStore.
+        name (Optional[str]): A human-readable name for the store.
+        description (Optional[str]): A description of the store's purpose.
+        metadata (Optional[Dict[str, Any]]): Custom metadata for the store.
         lock_path (Optional[str]): The path to the file lock used for concurrency control.
                                    None if using an in-memory database.
         lock_timeout (int): The maximum time in seconds to wait for the lock.
@@ -64,6 +67,9 @@ class SafeStore:
     def __init__(
         self,
         db_path: Optional[Union[str, Path]] = "safe_store.db",
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         log_level: LogLevel = LogLevel.INFO,
         lock_timeout: int = DEFAULT_LOCK_TIMEOUT,
         encryption_key: Optional[str] = None
@@ -84,6 +90,13 @@ class SafeStore:
                        created by SafeStore, used, and automatically deleted when `close()`
                        is called or the SafeStore instance is used as a context manager.
                      Defaults to "safe_store.db" in the current working directory.
+            name (Optional[str]): A human-readable name for the store. Stored in the database.
+                                  If not provided, defaults to the database filename for file-based
+                                  stores or 'in_memory_store' for in-memory stores. If the database
+                                  already has a name, the stored name will be loaded and used.
+            description (Optional[str]): A description of the store's purpose. Stored in the database.
+            metadata (Optional[Dict[str, Any]]): A JSON-serializable dictionary for custom metadata.
+                                                 Stored in the database.
             log_level: Minimum log level for console output via `ascii_colors`.
                        Defaults to `LogLevel.INFO`.
             lock_timeout: Timeout in seconds for acquiring the inter-process
@@ -108,6 +121,11 @@ class SafeStore:
         self._is_temp_file_db: bool = False
         self._temp_db_actual_path: Optional[str] = None
         self._file_lock: Optional[FileLock] = None
+
+        # --- New Property Attributes ---
+        self.name: Optional[str] = name
+        self.description: Optional[str] = description
+        self.metadata: Optional[Dict[str, Any]] = metadata
 
         actual_db_path_str: str
         lock_path_str: Optional[str] = None
@@ -153,6 +171,12 @@ class SafeStore:
         self.db_path: str = actual_db_path_str
         self.lock_path: Optional[str] = lock_path_str
 
+        # If a name wasn't provided, default it to the filename for file-based DBs
+        if self.name is None and not self._is_in_memory:
+            self.name = Path(self.db_path).stem
+        elif self.name is None and self._is_in_memory:
+            self.name = "in_memory_store"
+
         if self.lock_path:
             ASCIIColors.debug(f"Using lock file: {self.lock_path} with timeout: {self.lock_timeout}s")
         elif self._is_in_memory:
@@ -181,6 +205,186 @@ class SafeStore:
             ASCIIColors.critical(f"SafeStore initialization failed during DB connect/init: {e}")
             self._manual_cleanup_temp_files_on_error()
             raise
+
+    def _connect_and_initialize(self) -> None:
+        """Establishes the database connection, initializes the schema, and loads store properties."""
+        try:
+            with self._optional_file_lock_context("DB connection/schema setup"):
+                if self.conn is None or self._is_closed:
+                     self.conn = db.connect_db(self.db_path)
+                     db.initialize_schema(self.conn)
+                     self._is_closed = False
+                     ASCIIColors.debug(f"Database connection established and schema initialized for: {self.db_path}")
+                else:
+                     ASCIIColors.debug("Connection already established.")
+
+                # Load or set up store properties (handles backward compatibility)
+                self._load_or_initialize_store_properties()
+
+        except (DatabaseError, Timeout, ConcurrencyError) as e:
+            ASCIIColors.error(f"Error during initial DB connection/setup: {e}")
+            if self.conn:
+                 try: self.conn.close()
+                 except Exception: pass
+                 finally: self.conn = None; self._is_closed = True
+            raise
+        except Exception as e:
+            msg = f"Unexpected error during initial DB connection/setup: {e}"
+            ASCIIColors.error(msg, exc_info=True)
+            if self.conn:
+                 try: self.conn.close()
+                 except Exception: pass
+                 finally: self.conn = None; self._is_closed = True
+            raise SafeStoreError(msg) from e
+
+    def _load_or_initialize_store_properties(self) -> None:
+        """
+        Loads store properties (name, description, metadata) from the database.
+        If they don't exist (new store or old DB version), it writes the current
+        instance properties to the database. This acts as an "upgrade" step.
+        This method must be called within a write lock and after `self.conn` is set.
+        """
+        assert self.conn is not None, "Connection must be established before loading properties."
+        
+        try:
+            self.conn.execute("BEGIN")
+            
+            # --- Load existing properties from DB ---
+            db_name = db.get_store_metadata(self.conn, "store_name")
+            db_description = db.get_store_metadata(self.conn, "store_description")
+            db_metadata_json = db.get_store_metadata(self.conn, "store_metadata")
+
+            # --- Logic to decide whether to update DB ---
+            # If the DB has no name, it's either a new DB or an old version.
+            # In either case, we write the current instance properties to it.
+            if db_name is None:
+                ASCIIColors.info("Store properties not found in DB. Initializing them now (first run or upgrade).")
+                if self.name is not None:
+                    db.set_store_metadata(self.conn, "store_name", self.name)
+                if self.description is not None:
+                    db.set_store_metadata(self.conn, "store_description", self.description)
+                if self.metadata is not None:
+                    try:
+                        metadata_json = json.dumps(self.metadata)
+                        db.set_store_metadata(self.conn, "store_metadata", metadata_json)
+                    except (TypeError) as e:
+                        raise ConfigurationError(f"Provided store metadata is not JSON serializable: {e}") from e
+            else:
+                # DB has properties. We load them into the instance, overwriting what was passed to __init__.
+                # This ensures the instance reflects the true state of the persistent DB.
+                ASCIIColors.debug("Loading existing store properties from DB.")
+                self.name = db_name
+                self.description = db_description
+                if db_metadata_json:
+                    try:
+                        self.metadata = json.loads(db_metadata_json)
+                    except json.JSONDecodeError:
+                        ASCIIColors.warning(f"Could not parse stored metadata JSON. Metadata will be None. JSON: {db_metadata_json[:100]}")
+                        self.metadata = None
+                else:
+                    self.metadata = None
+
+            self.conn.commit()
+            ASCIIColors.debug(f"Store properties loaded/initialized. Name: '{self.name}'")
+
+        except (DatabaseError, ConfigurationError) as e:
+            if self.conn and self.conn.in_transaction: self.conn.rollback()
+            raise
+        except Exception as e:
+            if self.conn and self.conn.in_transaction: self.conn.rollback()
+            raise SafeStoreError(f"Unexpected error loading/initializing store properties: {e}") from e
+
+
+    def get_properties(self) -> Dict[str, Any]:
+        """
+        Retrieves the name, description, and metadata of the store.
+
+        Returns:
+            A dictionary containing the 'name', 'description', and 'metadata' of the store.
+        """
+        with self._instance_lock:
+            self._ensure_connection()
+            return {
+                "name": self.name,
+                "description": self.description,
+                "metadata": self.metadata
+            }
+
+    def update_properties(
+        self,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        overwrite_metadata: bool = False
+    ) -> None:
+        """
+        Updates the store's name, description, and/or metadata.
+
+        Changes are persisted to the database.
+
+        Args:
+            name (Optional[str]): The new name for the store. If None, name is not changed.
+            description (Optional[str]): The new description. If None, not changed.
+                                         Pass an empty string "" to clear the description.
+            metadata (Optional[Dict[str, Any]]): New metadata to set.
+            overwrite_metadata (bool): If True, the existing metadata dictionary is completely
+                                       replaced by the new one. If False (default), the new
+                                       metadata is merged into the existing metadata (new keys
+                                       overwrite old ones).
+        
+        Raises:
+            ConfigurationError: If metadata is not JSON serializable.
+            DatabaseError: If the database update fails.
+            ConcurrencyError: If the write lock times out.
+            SafeStoreError: For other unexpected errors.
+        """
+        if name is None and description is None and metadata is None:
+            ASCIIColors.info("update_properties called with no changes specified.")
+            return
+
+        with self._instance_lock:
+            with self._optional_file_lock_context("update_properties"):
+                self._ensure_connection()
+                assert self.conn is not None
+
+                try:
+                    self.conn.execute("BEGIN")
+
+                    if name is not None:
+                        db.set_store_metadata(self.conn, "store_name", name)
+                        self.name = name
+                        ASCIIColors.debug(f"Store name updated to: '{name}'")
+
+                    if description is not None:
+                        db.set_store_metadata(self.conn, "store_description", description)
+                        self.description = description
+                        ASCIIColors.debug(f"Store description updated.")
+                    
+                    if metadata is not None:
+                        new_metadata_to_set = metadata
+                        if not overwrite_metadata and isinstance(self.metadata, dict):
+                            # Merge: start with a copy of old, update with new
+                            merged = self.metadata.copy()
+                            merged.update(metadata)
+                            new_metadata_to_set = merged
+
+                        try:
+                            metadata_json = json.dumps(new_metadata_to_set)
+                            db.set_store_metadata(self.conn, "store_metadata", metadata_json)
+                            self.metadata = new_metadata_to_set
+                            ASCIIColors.debug(f"Store metadata updated (overwrite={overwrite_metadata}).")
+                        except (TypeError) as e:
+                            raise ConfigurationError(f"Provided store metadata is not JSON serializable: {e}") from e
+
+                    self.conn.commit()
+                    ASCIIColors.success("Store properties updated successfully.")
+
+                except (DatabaseError, ConfigurationError) as e:
+                    if self.conn and self.conn.in_transaction: self.conn.rollback()
+                    raise
+                except Exception as e:
+                    if self.conn and self.conn.in_transaction: self.conn.rollback()
+                    raise SafeStoreError(f"Unexpected error updating store properties: {e}") from e
 
     def _manual_cleanup_temp_files_on_error(self):
         """Helper to clean up temp files if __init__ fails after their creation."""
@@ -213,33 +417,6 @@ class SafeStore:
             if description:
                  ASCIIColors.debug(f"Skipping inter-process file lock (in-memory DB or lock disabled) for {description}.")
             yield
-
-    def _connect_and_initialize(self) -> None:
-        """Establishes the database connection and initializes the schema."""
-        try:
-            with self._optional_file_lock_context("DB connection/schema setup"):
-                if self.conn is None or self._is_closed:
-                     self.conn = db.connect_db(self.db_path)
-                     db.initialize_schema(self.conn)
-                     self._is_closed = False
-                     ASCIIColors.debug(f"Database connection established and schema initialized for: {self.db_path}")
-                else:
-                     ASCIIColors.debug("Connection already established.")
-        except (DatabaseError, Timeout, ConcurrencyError) as e:
-            ASCIIColors.error(f"Error during initial DB connection/setup: {e}")
-            if self.conn:
-                 try: self.conn.close()
-                 except Exception: pass
-                 finally: self.conn = None; self._is_closed = True
-            raise
-        except Exception as e:
-            msg = f"Unexpected error during initial DB connection/setup: {e}"
-            ASCIIColors.error(msg, exc_info=True)
-            if self.conn:
-                 try: self.conn.close()
-                 except Exception: pass
-                 finally: self.conn = None; self._is_closed = True
-            raise SafeStoreError(msg) from e
 
     def close(self) -> None:
         """Closes the database connection, clears vectorizer cache, and cleans up temporary files if any."""
