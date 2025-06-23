@@ -27,84 +27,83 @@ class GraphStore:
 
     # --- Default Prompts ---
     DEFAULT_GRAPH_EXTRACTION_PROMPT_TEMPLATE = """
-    Extract entities (nodes) and their relationships from the following text.
-    Format the output strictly as a JSON object.
-    **The entire JSON output MUST be enclosed in a single markdown code block starting with ```json and ending with ```.**
+Extract entities (nodes) and their relationships from the following text.
+Format the output strictly as a JSON object.
+**The entire JSON output MUST be enclosed in a single markdown code block starting with ```json and ending with ```.**
 
-    JSON Structure Example:
-    ```json
-    {{
-        "nodes": [
-            {{"label": "Person", "properties": {{"name": "John Doe", "title": "Engineer"}}}},
-            {{"label": "Company", "properties": {{"name": "Acme Corp", "industry": "Tech"}}}}
-        ],
-        "relationships": [
-            {{"source_node_label": "Person", "source_node_identifying_value": "John Doe",
-             "target_node_label": "Company", "target_node_identifying_value": "Acme Corp",
-             "type": "WORKS_AT", "properties": {{"role": "Engineer"}}}}
-        ]
-    }}
-    ```
+JSON Structure Example:
+```json
+{{
+    "nodes": [
+        {{"label": "Person", "properties": {{"name": "John Doe", "title": "Engineer"}}}},
+        {{"label": "Company", "properties": {{"name": "Acme Corp", "industry": "Tech"}}}}
+    ],
+    "relationships": [
+        {{"source_node_label": "Person", "source_node_identifying_value": "John Doe",
+            "target_node_label": "Company", "target_node_identifying_value": "Acme Corp",
+            "type": "WORKS_AT", "properties": {{"role": "Engineer"}}}}
+    ]
+}}
+```
 
-    For each node:
-    - "label": A general type (e.g., "Person", "Company", "Product", "Location", "Organization", "ResearchPaper", "University", "Journal").
-    - "properties": Dictionary of relevant attributes. Ensure properties like "name", "title", or other unique identifiers are included if available.
+For each node:
+- "label": A general type (e.g., "Person", "Company", "Product", "Location", "Organization", "ResearchPaper", "University", "Journal").
+- "properties": Dictionary of relevant attributes. Ensure properties like "name", "title", or other unique identifiers are included if available.
 
-    For each relationship:
-    - "source_node_label": Label of the source node.
-    - "source_node_identifying_value": The value of a primary identifying property from the source node (e.g., if source node is `{{ "label": "Person", "properties": {{"name": "John Doe"}}}}`, this value would be "John Doe". Use the most prominent identifier like name or title).
-    - "target_node_label": Label of the target node.
-    - "target_node_identifying_value": Similar to "source_node_identifying_value" for the target node.
-    - "type": Relationship type in UPPER_SNAKE_CASE (e.g., "WORKS_AT", "CEO_OF", "PUBLISHED_IN").
-    - "properties": Optional dictionary for relationship attributes.
+For each relationship:
+- "source_node_label": Label of the source node.
+- "source_node_identifying_value": The value of a primary identifying property from the source node (e.g., if source node is `{{ "label": "Person", "properties": {{"name": "John Doe"}}}}`, this value would be "John Doe". Use the most prominent identifier like name or title).
+- "target_node_label": Label of the target node.
+- "target_node_identifying_value": Similar to "source_node_identifying_value" for the target node.
+- "type": Relationship type in UPPER_SNAKE_CASE (e.g., "WORKS_AT", "CEO_OF", "PUBLISHED_IN").
+- "properties": Optional dictionary for relationship attributes. Make sure the entries are in form "property":"detail"
 
-    Text to process:
-    ---
-    {chunk_text}
-    ---
+Text to process:
+---
+{chunk_text}
+---
 
-    Extracted JSON (wrapped in ```json ... ```):
-    """
+Extracted JSON (wrapped in ```json ... ```):
+"""
 
-    DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE = """
-    Parse the following query to identify main entities ("seed_nodes").
-    Format the output STRICTLY as a JSON object.
-    **The entire JSON output MUST be enclosed in a single markdown code block starting with ```json and ending with ```.**
+    DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE = """Parse the following query to identify main entities ("seed_nodes").
+Format the output STRICTLY as a JSON object.
+**The entire JSON output MUST be enclosed in a single markdown code block starting with ```json and ending with ```.**
 
-    JSON structure:
-    ```json
-    {{
-        "seed_nodes": [
-            {{"label": "EntityType", "identifying_property_key": "property_name", "identifying_property_value": "property_value"}}
-        ],
-        "target_relationships": [ {{"type": "REL_TYPE", "direction": "outgoing|incoming|any"}} ],
-        "target_node_labels": ["Label1", "Label2"],
-        "max_depth": 1
-    }}
-    ```
-    - "seed_nodes": List of main entities from the query.
-      - "label": The type of the entity.
-      - "identifying_property_key": The name of the property that identifies the entity (e.g., "name", "title").
-      - "identifying_property_value": The value of that identifying property.
-    - "target_relationships" (Optional): Desired relationship types and directions.
-    - "target_node_labels" (Optional): Desired types of neighbor nodes.
-    - "max_depth" (Optional, default 1): Traversal depth.
+JSON structure:
+```json
+{{
+    "seed_nodes": [
+        {{"label": "EntityType", "identifying_property_key": "property_name", "identifying_property_value": "property_value"}}
+    ],
+    "target_relationships": [ {{"type": "REL_TYPE", "direction": "outgoing|incoming|any"}} ],
+    "target_node_labels": ["Label1", "Label2"],
+    "max_depth": 1
+}}
+```
+- "seed_nodes": List of main entities from the query.
+    - "label": The type of the entity.
+    - "identifying_property_key": The name of the property that identifies the entity (e.g., "name", "title").
+    - "identifying_property_value": The value of that identifying property.
+- "target_relationships" (Optional): Desired relationship types and directions.
+- "target_node_labels" (Optional): Desired types of neighbor nodes.
+- "max_depth" (Optional, default 1): Traversal depth.
 
-    Example Query: "Who is Evelyn Reed and what companies is she associated with?"
-    Example JSON (wrapped in ```json ... ```):
-    ```json
-    {{
-        "seed_nodes": [ {{"label": "Person", "identifying_property_key": "name", "identifying_property_value": "Evelyn Reed"}} ],
-        "target_relationships": [ {{"type": "WORKS_AT", "direction": "any"}}, {{"type": "CEO_OF", "direction": "any"}} ],
-        "target_node_labels": ["Company", "Organization"],
-        "max_depth": 1
-    }}
-    ```
+Example Query: "Who is Evelyn Reed and what companies is she associated with?"
+Example JSON (wrapped in ```json ... ```):
+```json
+{{
+    "seed_nodes": [ {{"label": "Person", "identifying_property_key": "name", "identifying_property_value": "Evelyn Reed"}} ],
+    "target_relationships": [ {{"type": "WORKS_AT", "direction": "any"}}, {{"type": "CEO_OF", "direction": "any"}} ],
+    "target_node_labels": ["Company", "Organization"],
+    "max_depth": 1
+}}
+```
 
-    If no clear entities, return `{{ "seed_nodes": [] }}`.
+If no clear entities, return `{{ "seed_nodes": [] }}`.
 
-    Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ... ```):
-    """
+Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ... ```):
+"""
 
 
     def __init__(
@@ -494,7 +493,7 @@ class GraphStore:
             try:
                 cursor.execute("SELECT node_id, node_label, node_properties, unique_signature FROM graph_nodes WHERE node_label = ? LIMIT ?", (label, limit))
                 for row in cursor.fetchall():
-                    properties = json.loads(row[2]) if row[2] else {}
+                    properties = robust_json_parser(row[2]) if row[2] else {}
                     nodes_found.append({"node_id": row[0], "label": row[1], "properties": properties, "unique_signature": row[3]})
                 return nodes_found
             except sqlite3.Error as e: raise GraphDBError(f"DB error finding nodes by label '{label}': {e}") from e
@@ -631,7 +630,7 @@ class GraphStore:
             try:
                 cursor.execute("SELECT node_id, node_label, node_properties FROM graph_nodes LIMIT ?", (limit,))
                 for row in cursor.fetchall():
-                    props = json.loads(row[2]) if row[2] else {}
+                    props = robust_json_parser(row[2]) if row[2] else {}
                     display_label_prop_val = props.get('name', props.get('title'))
                     display_label = f"{display_label_prop_val} ({row[1]})" if display_label_prop_val else row[1]
                     nodes.append({"id": row[0], "label": display_label, "title": json.dumps(props, indent=2), "group": row[1], "properties": props, "original_label": row[1]})
@@ -647,7 +646,7 @@ class GraphStore:
             try:
                 cursor.execute("SELECT relationship_id, source_node_id, target_node_id, relationship_type, relationship_properties FROM graph_relationships LIMIT ?", (limit,))
                 for row in cursor.fetchall():
-                    props = json.loads(row[4]) if row[4] else {}
+                    props = robust_json_parser(row[4]) if row[4] else {}
                     relationships.append({"id": row[0], "from": row[1], "to": row[2], "label": row[3], "title": json.dumps(props, indent=2) if props else row[3], "properties": props})
                 return relationships
             except (sqlite3.Error, json.JSONDecodeError) as e: ASCIIColors.error(f"Error fetching all relationships for visualization: {e}"); raise GraphDBError("Failed to fetch all relationships for visualization") from e
@@ -866,7 +865,7 @@ class GraphStore:
                 """, (relationship_id,))
                 row = cursor.fetchone()
                 if row:
-                    props = json.loads(row[4]) if row[4] else {}
+                    props = robust_json_parser(row[4]) if row[4] else {}
                     return {
                         "id": row[0], # Match EdgeModel 'id'
                         "source_node_id": row[1], # Match 'from_node_id' indirectly via API model
