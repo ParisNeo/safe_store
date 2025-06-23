@@ -17,7 +17,7 @@ from ..core.exceptions import (
 )
 from ..security.encryption import Encryptor
 from ..store import DEFAULT_LOCK_TIMEOUT
-from ..utils import robust_json_parser
+from ..utils.json_parsing import robust_json_parser
 
 # New callback signatures: they now receive the full prompt from GraphStore
 LLMExecutorCallback = Callable[[str], str] # Input: full_prompt, Output: raw_llm_response_string
