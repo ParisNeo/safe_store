@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, Callable, Dict, List, Any, Union, Tuple, Set
 
 from filelock import FileLock, Timeout
-from ascii_colors import ASCIIColors, LogLevel
+from ascii_colors import ASCIIColors, LogLevel, trace_exception
 
 from ..core import db
 from ..core.exceptions import (
@@ -17,6 +17,7 @@ from ..core.exceptions import (
 )
 from ..security.encryption import Encryptor
 from ..store import DEFAULT_LOCK_TIMEOUT
+from ..utils import robust_json_parser
 
 # New callback signatures: they now receive the full prompt from GraphStore
 LLMExecutorCallback = Callable[[str], str] # Input: full_prompt, Output: raw_llm_response_string
@@ -321,8 +322,9 @@ class GraphStore:
                 ASCIIColors.warning(f"LLM output for chunk {chunk_id} does not appear to be a valid JSON structure after cleaning: {json_candidate[:200]}... Skipping.")
                 return
         try:
-            llm_output = json.loads(json_candidate)
+            llm_output = robust_json_parser(json_candidate)
         except json.JSONDecodeError as e:
+            trace_exception(e)
             ASCIIColors.error(f"Failed to decode JSON from LLM graph extraction for chunk {chunk_id}: {e}. Candidate snippet: {json_candidate[:500]}"); return
 
         if not isinstance(llm_output, dict) or "nodes" not in llm_output or "relationships" not in llm_output:
