@@ -61,7 +61,7 @@ encryption = ["cryptography>=40.0"] # Added Encryption
 
 # --- WebUI Dependencies ---
 webui = [
-    "lollms-client>=1.0.1", # Ensure a recent version
+    "lollms-client>=0.23.0", # Ensure a recent version
     "uvicorn>=0.23.0",
     "fastapi>=0.100.0",
     "python-multipart>=0.0.6",
