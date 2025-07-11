@@ -1573,7 +1573,7 @@ class SafeStore:
                 if use_available_vectorization_if_vectorizer_not_present:
                     cursor.execute("SELECT m.method_name FROM vectorization_methods m", ())
                     all_vectors_data = cursor.fetchone()
-                    if len(all_vectors_data)>0:
+                    if all_vectors_data is not None and len(all_vectors_data)>0:
                         _vectorizer_name = all_vectors_data[0]
                         ASCIIColors.warning(f"Setting vectorizer to: ({_vectorizer_name}).")
                 elif add_vectorizer_if_vectorizer_not_present: # takes a long time
