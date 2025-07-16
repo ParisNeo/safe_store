@@ -22,7 +22,11 @@ DEFAULT_CONFIG = {
         "chunk_size": 10000,
         "chunk_overlap": 100,
     },
-    "graphstore": {},
+    "graphstore": {
+        "fusion": {
+            "enabled": False # Default to disabled
+        }
+    },
     "webui": {
         "host": "0.0.0.0",
         "port": 8000,
@@ -50,12 +54,19 @@ def load_config() -> Dict[str, Any]:
             config_data = toml.load(CONFIG_FILE_PATH)
             # Ensure all sections and keys from default_config exist, fill if not
             for section, defaults in DEFAULT_CONFIG.items():
-                if section == "databases": continue # Handle databases separately
                 if section not in config_data:
                     config_data[section] = defaults
                 elif isinstance(defaults, dict):
                     for key, default_value in defaults.items():
-                        config_data[section].setdefault(key, default_value)
+                        if isinstance(default_value, dict):
+                             if key not in config_data[section]:
+                                config_data[section][key] = default_value
+                             else:
+                                for subkey, sub_default_value in default_value.items():
+                                    config_data[section][key].setdefault(subkey, sub_default_value)
+                        else:
+                            config_data[section].setdefault(key, default_value)
+
 
             # Special handling for the list of databases
             if "databases" not in config_data or not config_data["databases"]:

@@ -13,6 +13,10 @@ chunk_size = 10000
 chunk_overlap = 100
 
 [graphstore]
+# Entity fusion settings
+[graphstore.fusion]
+enabled = true # Set to true to have the LLM try to merge similar entities, false to disable.
+
 # Prompt templates can be very long, consider if they should be in config or loaded from separate files
 # For now, let's assume GraphStore uses its internal defaults if these are not specified or are empty.
 # graph_extraction_prompt_template_file = "prompts/graph_extraction.txt" 

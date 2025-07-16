@@ -4,6 +4,7 @@ import shutil
 import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union
+import asyncio
 import pipmaster as pm
 import sys
 pm.ensure_packages([
@@ -22,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config_manager import get_config, get_log_level_from_str, save_config, DATABASES_ROOT
 from lollms_client import LollmsClient
 import uvicorn
-from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Body, Path as FastApiPath, Query, status
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Body, Path as FastApiPath, Query, status, Form, WebSocket, WebSocketDisconnect, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse 
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field # For request/response models
@@ -64,6 +65,25 @@ SS_DEFAULT_VECTORIZER = config["safestore"]["default_vectorizer"]
 SS_CHUNK_SIZE = int(config["safestore"]["chunk_size"])
 SS_CHUNK_OVERLAP = int(config["safestore"]["chunk_overlap"])
 
+# GraphStore settings
+GS_FUSION_ENABLED = config["graphstore"].get("fusion", {}).get("enabled", False)
+
+# RAG Prompt Template
+RAG_PROMPT_TEMPLATE = """
+Use the following context from a knowledge graph to answer the user's question.
+The context consists of text chunks from documents.
+If the context is not sufficient, say that you don't have enough information.
+
+**Context:**
+---
+{context}
+---
+
+**User Question:**
+{question}
+
+**Answer:**
+"""
 
 # Global instances
 app = FastAPI(title="SafeStore Graph WebUI")
@@ -74,6 +94,37 @@ app.mount("/static_assets", StaticFiles(directory=current_dir / "static_assets")
 ss_instance: Optional[SafeStore] = None
 gs_instance: Optional[GraphStore] = None
 lc_client: Optional[LollmsClient] = None
+
+# --- WebSocket Connection Manager ---
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+
+    async def connect(self, client_id: str, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections[client_id] = websocket
+        ASCIIColors.info(f"WebSocket client connected: {client_id}")
+
+    def disconnect(self, client_id: str):
+        if client_id in self.active_connections:
+            del self.active_connections[client_id]
+            ASCIIColors.info(f"WebSocket client disconnected: {client_id}")
+
+    async def send_progress(self, client_id: str, progress: float, message: str, task_id: str):
+        if client_id in self.active_connections:
+            try:
+                await self.active_connections[client_id].send_json({
+                    "task_id": task_id,
+                    "progress": progress,
+                    "message": message
+                })
+            except WebSocketDisconnect:
+                self.disconnect(client_id)
+            except Exception as e:
+                ASCIIColors.error(f"Error sending progress to client {client_id}: {e}")
+                self.disconnect(client_id)
+
+manager = ConnectionManager()
 
 # --- Pydantic Models for API ---
 class NodeModel(BaseModel):
@@ -116,6 +167,12 @@ class DatabaseConfigModel(BaseModel):
 
 class DatabaseCreationRequest(BaseModel):
     name: str = Field(..., pattern=r"^[a-zA-Z0-9_-]+$", description="The unique name for the database. No spaces or special characters.")
+class PathRequest(BaseModel):
+    start_node_id: int
+    end_node_id: int
+
+class ChatRequest(BaseModel):
+    query: str
 
 # --- LLM Executor Callback ---
 def llm_executor(prompt_to_llm: str) -> str:
@@ -125,9 +182,7 @@ def llm_executor(prompt_to_llm: str) -> str:
         raise ConnectionError("LLM Client not ready for executor callback.")
     ASCIIColors.debug(f"WebUI LLM Executor: Sending prompt (len {len(prompt_to_llm)}) to LLM...")
     try:
-        response = lc_client.generate_code(
-            prompt_to_llm, language="json" 
-        ) 
+        response = lc_client.generate_text(prompt_to_llm, max_new_tokens=1024)
         ASCIIColors.debug(f"WebUI LLM Executor: Raw response from LLM: {response[:200]}...")
         return response if response else ""
     except Exception as e:
@@ -212,7 +267,7 @@ async def startup_event():
                 llm_executor_callback=llm_executor,
                 log_level=ss_gs_log_level
             )
-            ASCIIColors.success("GraphStore initialized.")
+            ASCIIColors.success(f"GraphStore initialized.")
         except Exception as e:
             ASCIIColors.error(f"Failed to initialize GraphStore: {e}"); trace_exception(e); gs_instance = None
     else:
@@ -228,6 +283,59 @@ async def shutdown_event():
         try: ss_instance.close(); ASCIIColors.info("SafeStore closed.")
         except Exception as e: ASCIIColors.error(f"Error closing SafeStore: {e}")
 
+# --- WebSocket Endpoint ---
+@app.websocket("/ws/progress/{client_id}")
+async def websocket_endpoint(websocket: WebSocket, client_id: str):
+    await manager.connect(client_id, websocket)
+    try:
+        while True:
+            await websocket.receive_text() # Keep connection alive
+    except WebSocketDisconnect:
+        manager.disconnect(client_id)
+
+# --- Background Task Wrappers ---
+def run_build_graph_task_wrapper(doc_id: int, guidance: Optional[str], client_id: str, task_id: str):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    async def progress_callback(progress, message):
+        await manager.send_progress(client_id, progress, message, task_id)
+        
+    def sync_callback(progress, message):
+        loop.run_until_complete(progress_callback(progress, message))
+
+    try:
+        with gs_instance:
+            gs_instance.build_graph_for_document(doc_id, guidance=guidance, progress_callback=sync_callback)
+    except Exception as e:
+        ASCIIColors.error(f"Error in background task 'build_graph_for_document' for doc {doc_id}: {e}")
+        trace_exception(e)
+        sync_callback(1.0, f"An error occurred: {str(e)}")
+    finally:
+        loop.close()
+
+
+def run_fuse_entities_task_wrapper(client_id: str, task_id: str):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    async def progress_callback(progress, message):
+        await manager.send_progress(client_id, progress, message, task_id)
+        
+    def sync_callback(progress, message):
+        loop.run_until_complete(progress_callback(progress, message))
+
+    try:
+        with gs_instance:
+            gs_instance.fuse_all_similar_entities(progress_callback=sync_callback)
+    except Exception as e:
+        ASCIIColors.error(f"Error in background task 'fuse_all_similar_entities': {e}")
+        trace_exception(e)
+        sync_callback(1.0, f"An error occurred: {str(e)}")
+    finally:
+        loop.close()
+
+
 # --- FastAPI Endpoints ---
 @app.get("/", response_class=FileResponse)
 async def read_root():
@@ -239,15 +347,20 @@ async def read_root():
 
 
 @app.post("/upload-file/")
-async def upload_file_and_process(file: UploadFile = File(...)):
+async def upload_file_and_process(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...), 
+    guidance: str = Form(""),
+    client_id: str = Form(...)
+):
     global ss_instance, gs_instance, ACTIVE_DOC_DIR
     if not ss_instance: raise HTTPException(status_code=503, detail="SafeStore not initialized.")
     if not gs_instance: raise HTTPException(status_code=503, detail="GraphStore not initialized. LLM may be unavailable.")
     if not lc_client: raise HTTPException(status_code=503, detail="LLM Client not initialized. Graph building requires LLM.")
     if not ACTIVE_DOC_DIR: raise HTTPException(status_code=503, detail="Active document directory not set.")
 
-    processed_doc_path_in_safestore: Optional[Path] = None
-    doc_id_found = -1
+    task_id = f"upload_{uuid.uuid4()}"
+    target_path_for_safestore_processing = None
 
     try:
         safe_filename = Path(file.filename).name 
@@ -268,40 +381,24 @@ async def upload_file_and_process(file: UploadFile = File(...)):
             ASCIIColors.info(f"Document '{target_path_for_safestore_processing.name}' submitted to SafeStore for processing.")
 
             docs = ss_instance.list_documents()
-            found_doc = None
-            for doc_meta in docs:
-                if Path(doc_meta['file_path']).name == unique_doc_filename:
-                    found_doc = doc_meta
-                    break
+            found_doc = next((doc for doc in reversed(docs) if Path(doc['file_path']).name == unique_doc_filename), None)
             
-            if found_doc:
-                doc_id_found = found_doc['doc_id']
-                ASCIIColors.info(f"Document '{unique_doc_filename}' (ID: {doc_id_found}) confirmed in SafeStore.")
-            else:
-                ASCIIColors.warning(f"Could not definitively find '{unique_doc_filename}' by name in SafeStore listing. Trying most recent.")
-                if docs:
-                    doc_id_found = docs[0]['doc_id']
-                else:
-                    raise DocumentNotFoundError(f"Failed to find document '{unique_doc_filename}' in SafeStore after adding.")
+            if not found_doc and docs:
+                 found_doc = docs[-1]
 
-        if doc_id_found == -1:
-             raise HTTPException(status_code=500, detail=f"Failed to obtain doc_id for '{file.filename}' from SafeStore.")
+            if not found_doc:
+                raise DocumentNotFoundError(f"Failed to find document '{unique_doc_filename}' in SafeStore after adding.")
 
-        ASCIIColors.info(f"Doc '{file.filename}' (ID: {doc_id_found}) ready. Building graph...")
-        with gs_instance:
-            gs_instance.build_graph_for_document(doc_id_found)
-        ASCIIColors.success(f"Graph built for doc '{file.filename}' (ID: {doc_id_found}).")
+            doc_id_found = found_doc['doc_id']
+            ASCIIColors.info(f"Document '{unique_doc_filename}' (ID: {doc_id_found}) confirmed in SafeStore.")
+
+        background_tasks.add_task(run_build_graph_task_wrapper, doc_id_found, guidance, client_id, task_id)
         
-        return JSONResponse(status_code=200, content={"message": f"File '{file.filename}' processed.", "doc_id": doc_id_found})
-    except safe_store.LLMCallbackError as e: 
-        ASCIIColors.error(f"LLM Callback Error for {file.filename}: {e}"); trace_exception(e)
-        raise HTTPException(status_code=500, detail=f"LLM processing error: {e}")
-    except DocumentNotFoundError as e:
-        ASCIIColors.error(f"Document not found error for {file.filename}: {e}"); trace_exception(e)
+        return JSONResponse(status_code=202, content={"message": f"File '{file.filename}' accepted and processing started in background.", "task_id": task_id})
+    except (DocumentNotFoundError, HTTPException) as e:
         if target_path_for_safestore_processing and target_path_for_safestore_processing.exists():
             target_path_for_safestore_processing.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"Failed to confirm document in SafeStore: {e}")
-    except HTTPException: raise 
+        raise e
     except Exception as e:
         ASCIIColors.error(f"Error processing file {file.filename}: {e}"); trace_exception(e)
         if 'target_path_for_safestore_processing' in locals() and target_path_for_safestore_processing.exists():
@@ -309,7 +406,6 @@ async def upload_file_and_process(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
     finally:
         if file: await file.close()
-
 
 @app.get("/graph-data/")
 async def get_graph_data_endpoint(): 
@@ -323,6 +419,19 @@ async def get_graph_data_endpoint():
     except Exception as e:
         ASCIIColors.error(f"Error fetching graph data: {e}"); trace_exception(e)
         raise HTTPException(status_code=500, detail=f"Error fetching graph data: {str(e)}")
+
+@app.post("/graph/fuse/")
+async def fuse_entities_endpoint(background_tasks: BackgroundTasks, client_id: str = Body(..., embed=True)):
+    global gs_instance
+    if not gs_instance:
+        raise HTTPException(status_code=503, detail="GraphStore not initialized.")
+    if not lc_client:
+        raise HTTPException(status_code=503, detail="LLM Client not initialized, which is required for fusion.")
+        
+    task_id = f"fuse_{uuid.uuid4()}"
+    background_tasks.add_task(run_fuse_entities_task_wrapper, client_id, task_id)
+    return JSONResponse(status_code=202, content={"message": "Entity fusion process started in background.", "task_id": task_id})
+
 
 @app.get("/graph/search/")
 async def search_graph(q: str = Query(..., min_length=1, description="Text to search for in node labels and properties.")):
@@ -366,6 +475,85 @@ async def search_graph(q: str = Query(..., min_length=1, description="Text to se
         ASCIIColors.error(f"Error during graph search for query '{q}': {e}")
         trace_exception(e)
         raise HTTPException(status_code=500, detail=f"An error occurred during search: {str(e)}")
+
+@app.get("/graph/node/{node_id}/neighbors")
+async def get_node_neighbors(node_id: int, limit: int = Query(50, ge=1, le=200)):
+    """
+    Get the neighbors of a specific node.
+    """
+    global gs_instance
+    if not gs_instance:
+        raise HTTPException(status_code=503, detail="GraphStore not initialized.")
+    try:
+        with gs_instance:
+            # The get_neighbors method returns both nodes and edges
+            neighbor_data = gs_instance.get_neighbors(node_id, limit=limit)
+            return neighbor_data
+    except Exception as e:
+        ASCIIColors.error(f"Error fetching neighbors for node {node_id}: {e}")
+        trace_exception(e)
+        raise HTTPException(status_code=500, detail=f"Error fetching neighbors: {str(e)}")
+
+
+@app.post("/graph/path")
+async def find_path_endpoint(path_request: PathRequest):
+    """
+    Finds the shortest path between two nodes.
+    """
+    global gs_instance
+    if not gs_instance:
+        raise HTTPException(status_code=503, detail="GraphStore not initialized.")
+    try:
+        with gs_instance:
+            path = gs_instance.find_shortest_path(path_request.start_node_id, path_request.end_node_id)
+            if path is None:
+                raise HTTPException(status_code=404, detail="No path found between the specified nodes.")
+            return path
+    except HTTPException:
+        raise
+    except Exception as e:
+        ASCIIColors.error(f"Error finding path between {path_request.start_node_id} and {path_request.end_node_id}: {e}")
+        trace_exception(e)
+        raise HTTPException(status_code=500, detail=f"An error occurred while finding the path: {str(e)}")
+
+@app.post("/api/chat/rag")
+async def chat_rag_endpoint(chat_request: ChatRequest):
+    """
+    Handles a chat request using the RAG pipeline.
+    """
+    global gs_instance, lc_client
+    if not gs_instance: raise HTTPException(status_code=503, detail="GraphStore not initialized.")
+    if not lc_client: raise HTTPException(status_code=503, detail="LLM Client not initialized.")
+
+    try:
+        with gs_instance:
+            # Use query_graph to retrieve relevant context chunks
+            context_chunks = gs_instance.query_graph(
+                natural_language_query=chat_request.query,
+                output_mode="chunks_summary"
+            )
+        
+        if not context_chunks:
+            return {"answer": "I couldn't find any information in the knowledge graph related to your question."}
+
+        # Format the context for the LLM prompt
+        context_str = "\n\n".join([chunk['chunk_text'] for chunk in context_chunks])
+        
+        # Build the final prompt for the LLM
+        final_prompt = RAG_PROMPT_TEMPLATE.format(
+            context=context_str,
+            question=chat_request.query
+        )
+
+        # Generate the answer
+        answer = llm_executor(final_prompt)
+        
+        return {"answer": answer}
+        
+    except Exception as e:
+        ASCIIColors.error(f"Error during RAG chat for query '{chat_request.query}': {e}")
+        trace_exception(e)
+        raise HTTPException(status_code=500, detail=f"An error occurred during RAG chat: {str(e)}")
 
 
 # --- Database Management Endpoints ---

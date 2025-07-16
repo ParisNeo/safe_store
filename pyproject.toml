@@ -38,6 +38,7 @@ dependencies = [
     "numpy>=1.21",
     "ascii_colors>=0.7.0", # For logging/console output
     "filelock>=3.9",       # For concurrency control
+    "sqlalchemy"
 ]
 
 [project.optional-dependencies]

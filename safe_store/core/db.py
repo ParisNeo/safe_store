@@ -672,6 +672,49 @@ def get_graph_node_by_label_and_property(
         raise GraphDBError(msg) from e
 
 
+def find_similar_nodes_by_property(
+    conn: sqlite3.Connection,
+    label: str,
+    prop_key: str,
+    prop_value: str,
+    limit: int = 5
+) -> List[Dict[str, Any]]:
+    """
+    Finds graph nodes with the same label and a similar-sounding property value.
+    Uses `LIKE` for basic fuzzy matching on the property value within the JSON.
+    This is a basic implementation; more advanced text similarity might require FTS5 or custom functions.
+    """
+    sql = f"""
+    SELECT node_id, node_label, node_properties, unique_signature
+    FROM graph_nodes
+    WHERE node_label = ? AND json_extract(node_properties, '$.{prop_key}') LIKE ?
+    LIMIT ?;
+    """
+    # Create a LIKE pattern, e.g., '%value%'
+    like_pattern = f"%{prop_value}%"
+    params = (label, like_pattern, limit)
+    
+    cursor = conn.cursor()
+    nodes_found = []
+    try:
+        cursor.execute(sql, params)
+        for row in cursor.fetchall():
+            properties = json.loads(row[2]) if row[2] else {}
+            # Secondary check to ensure the property actually exists, as LIKE on NULL is NULL (not true)
+            if prop_key in properties:
+                nodes_found.append({
+                    "node_id": row[0],
+                    "label": row[1],
+                    "properties": properties,
+                    "unique_signature": row[3]
+                })
+        return nodes_found
+    except sqlite3.Error as e:
+        msg = f"DB error finding similar nodes for label '{label}' and prop '{prop_key}' LIKE '{prop_value}': {e}"
+        ASCIIColors.error(msg)
+        raise GraphDBError(msg) from e
+
+
 def get_node_details_db(conn: sqlite3.Connection, node_id: int) -> Optional[Dict[str, Any]]:
     """Fetches details (label, properties, signature) for a single node by its ID."""
     sql: SQLQuery = "SELECT node_label, node_properties, unique_signature FROM graph_nodes WHERE node_id = ?"
@@ -692,6 +735,29 @@ def get_node_details_db(conn: sqlite3.Connection, node_id: int) -> Optional[Dict
         raise GraphDBError(f"DB error fetching details for node_id {node_id}: {e}") from e
     except json.JSONDecodeError as e:
         raise GraphDBError(f"JSON decode error for properties of node_id {node_id}: {e}") from e
+
+def get_nodes_details_db(conn: sqlite3.Connection, node_ids: List[int]) -> List[Dict[str, Any]]:
+    """Fetches details for multiple nodes by their IDs."""
+    if not node_ids:
+        return []
+    placeholders = ",".join("?" * len(node_ids))
+    sql: SQLQuery = f"SELECT node_id, node_label, node_properties, unique_signature FROM graph_nodes WHERE node_id IN ({placeholders})"
+    cursor = conn.cursor()
+    nodes = []
+    try:
+        cursor.execute(sql, tuple(node_ids))
+        for row in cursor.fetchall():
+            properties = json.loads(row[2]) if row[2] else {}
+            nodes.append({
+                "node_id": row[0],
+                "label": row[1],
+                "properties": properties,
+                "unique_signature": row[3]
+            })
+        return nodes
+    except sqlite3.Error as e:
+        raise GraphDBError(f"DB error fetching details for multiple nodes: {e}") from e
+
 
 def get_relationship_details_db(conn: sqlite3.Connection, relationship_id: int) -> Optional[Dict[str, Any]]:
     """Fetches details for a single relationship by its ID."""
@@ -942,3 +1008,113 @@ def update_graph_node_properties_db(
         raise GraphDBError(f"DB error updating properties for node ID {node_id}: {e}") from e
     except json.JSONDecodeError as e:
         raise GraphDBError(f"JSON error processing properties for node ID {node_id}: {e}") from e
+
+def merge_nodes_db(conn: sqlite3.Connection, source_node_id: int, target_node_id: int) -> None:
+    """
+    Merges a source node into a target node.
+    - Re-links all relationships pointing to/from the source node to the target node.
+    - Merges properties (target's properties take precedence).
+    - Re-links all chunk links.
+    - Deletes the source node.
+    This function expects to be called within an existing transaction.
+    """
+    if source_node_id == target_node_id:
+        return
+
+    cursor = conn.cursor()
+    try:
+        # 1. Re-link incoming relationships
+        cursor.execute(
+            "UPDATE graph_relationships SET target_node_id = ? WHERE target_node_id = ?",
+            (target_node_id, source_node_id)
+        )
+        
+        # 2. Re-link outgoing relationships
+        cursor.execute(
+            "UPDATE graph_relationships SET source_node_id = ? WHERE source_node_id = ?",
+            (target_node_id, source_node_id)
+        )
+
+        # 3. Merge properties
+        source_props = get_node_details_db(conn, source_node_id).get('properties', {})
+        target_props = get_node_details_db(conn, target_node_id).get('properties', {})
+        
+        merged_props = {**source_props, **target_props} # Target overwrites source
+        update_graph_node_properties_db(conn, target_node_id, merged_props, merge_strategy="overwrite_all")
+
+        # 4. Re-link chunk links (INSERT OR IGNORE to handle conflicts)
+        cursor.execute(
+            """
+            INSERT OR IGNORE INTO node_chunk_links (node_id, chunk_id)
+            SELECT ?, chunk_id FROM node_chunk_links WHERE node_id = ?
+            """,
+            (target_node_id, source_node_id)
+        )
+        
+        # 5. Delete the original source node (and its now-obsolete chunk links)
+        cursor.execute("DELETE FROM graph_nodes WHERE node_id = ?", (source_node_id,))
+        
+        ASCIIColors.debug(f"Successfully prepared merge of node {source_node_id} into {target_node_id}.")
+
+    except sqlite3.Error as e:
+        msg = f"Database error during merge of node {source_node_id} into {target_node_id}: {e}"
+        ASCIIColors.error(msg, exc_info=True)
+        # The calling function should handle rollback.
+        raise GraphDBError(msg) from e
+def find_shortest_path_db(conn: sqlite3.Connection, start_node_id: int, end_node_id: int) -> Optional[Dict[str, List[Any]]]:
+    """
+    Finds the shortest path between two nodes using a bidirectional BFS approach simulated with recursive CTEs.
+    Returns the path as a list of nodes and a list of relationships.
+    """
+    if start_node_id == end_node_id:
+        node = get_node_details_db(conn, start_node_id)
+        return {"nodes": [node] if node else [], "relationships": []}
+
+    # This recursive CTE performs a breadth-first search.
+    # It stores the path as a JSON array of visited node IDs.
+    sql = """
+    WITH RECURSIVE
+      path_finder(current_node_id, target_node_id, path_nodes_json, path_rels_json) AS (
+        SELECT
+          ?, ?, json_array(?), json_array()
+        UNION
+        SELECT
+          r.target_node_id,
+          p.target_node_id,
+          json_insert(p.path_nodes_json, '$[#]', r.target_node_id),
+          json_insert(p.path_rels_json, '$[#]', r.relationship_id)
+        FROM
+          graph_relationships r,
+          path_finder p
+        WHERE
+          r.source_node_id = p.current_node_id
+          AND instr(p.path_nodes_json, json_quote(r.target_node_id)) = 0
+      )
+    SELECT path_nodes_json, path_rels_json
+    FROM path_finder
+    WHERE current_node_id = target_node_id
+    ORDER BY json_array_length(path_nodes_json) ASC
+    LIMIT 1;
+    """
+    cursor = conn.cursor()
+    try:
+        cursor.execute(sql, (start_node_id, end_node_id, start_node_id))
+        result = cursor.fetchone()
+        
+        if not result:
+            return None # No path found
+
+        node_ids_json, rel_ids_json = result
+        node_ids = json.loads(node_ids_json)
+        rel_ids = json.loads(rel_ids_json)
+
+        # Fetch full details for the nodes and relationships in the path
+        path_nodes = get_nodes_details_db(conn, node_ids)
+        path_relationships = [get_relationship_details_db(conn, rid) for rid in rel_ids]
+
+        return {
+            "nodes": [n for n in path_nodes if n],
+            "relationships": [r for r in path_relationships if r]
+        }
+    except sqlite3.Error as e:
+        raise GraphDBError(f"DB error finding shortest path between {start_node_id} and {end_node_id}: {e}") from e

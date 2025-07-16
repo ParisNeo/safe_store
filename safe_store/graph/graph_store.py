@@ -4,23 +4,25 @@ import threading
 import json
 import uuid # For generating unique signatures for manually added nodes
 from pathlib import Path
-from typing import Optional, Callable, Dict, List, Any, Union, Tuple, Set
+from typing import Optional, Callable, Dict, List, Any, Union, Tuple, Set, Awaitable
 
 from filelock import FileLock, Timeout
-from ascii_colors import ASCIIColors, LogLevel, trace_exception
+from ascii_colors import ASCIIColors, trace_exception, LogLevel
 
 from ..core import db
 from ..core.exceptions import (
     DatabaseError, ConfigurationError, ConcurrencyError, SafeStoreError,
     EncryptionError, GraphDBError, GraphProcessingError, LLMCallbackError,
-    GraphError, QueryError, NodeNotFoundError, RelationshipNotFoundError
+    GraphError, QueryError, NodeNotFoundError, RelationshipNotFoundError, GraphEntityFusionError
 )
 from ..security.encryption import Encryptor
 from ..store import DEFAULT_LOCK_TIMEOUT
 from ..utils.json_parsing import robust_json_parser
 
-# New callback signatures: they now receive the full prompt from GraphStore
-LLMExecutorCallback = Callable[[str], str] # Input: full_prompt, Output: raw_llm_response_string
+# Callback signatures
+LLMExecutorCallback = Callable[[str], str] 
+ProgressCallback = Callable[[float, str], None]
+
 
 class GraphStore:
     GRAPH_FEATURES_ENABLED_KEY = "graph_features_enabled"
@@ -30,6 +32,11 @@ class GraphStore:
 Extract entities (nodes) and their relationships from the following text.
 Format the output strictly as a JSON object.
 **The entire JSON output MUST be enclosed in a single markdown code block starting with ```json and ending with ```.**
+
+---
+**Extraction Guidance:**
+{user_guidance}
+---
 
 JSON Structure Example:
 ```json
@@ -48,7 +55,7 @@ JSON Structure Example:
 
 For each node:
 - "label": A general type (e.g., "Person", "Company", "Product", "Location", "Organization", "ResearchPaper", "University", "Journal").
-- "properties": Dictionary of relevant attributes. Ensure properties like "name", "title", or other unique identifiers are included if available.
+- "properties": Dictionary of relevant attributes. Pay close attention to the **Extraction Guidance**. Ensure properties like "name", "title", or other unique identifiers are included if available.
 
 For each relationship:
 - "source_node_label": Label of the source node.
@@ -66,6 +73,59 @@ Text to process:
 Extracted JSON (wrapped in ```json ... ```):
 """
 
+    DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE = """
+Given a "New Entity" extracted from a document and a list of "Candidate Existing Entities" from a knowledge graph, determine if the New Entity should be merged with one of the existing entities.
+
+**New Entity:**
+- Label: {new_entity_label}
+- Properties: {new_entity_properties}
+
+**Candidate Existing Entities:**
+{candidate_entities_str}
+
+**Task:**
+Analyze the entities and decide if the "New Entity" represents the same real-world concept as one of the candidates.
+
+**Output Format:**
+Respond with a JSON object in a markdown code block.
+- If a merge is appropriate, identify the `node_id` of the best candidate to merge with.
+- If no candidate is a suitable match, decide to create a new entity.
+
+**JSON Response Structure:**
+```json
+{{
+  "decision": "MERGE" | "CREATE_NEW",
+  "reason": "Your detailed reasoning for the decision.",
+  "merge_target_id": <node_id_of_candidate_to_merge_with_if_decision_is_MERGE> | null
+}}
+```
+
+**Example 1 (Merge):**
+New Entity: { "label": "Person", "properties": { "name": "Dr. Smith", "affiliation": "MIT" } }
+Candidates: [ { "node_id": 101, "properties": { "name": "Dr. J. Smith", "title": "Professor" } } ]
+Response:
+```json
+{{
+  "decision": "MERGE",
+  "reason": "The new entity 'Dr. Smith' from MIT very likely refers to the existing entity 'Dr. J. Smith', who is a professor. The names are a close match.",
+  "merge_target_id": 101
+}}
+```
+
+**Example 2 (Create New):**
+New Entity: { "label": "Company", "properties": { "name": "Innovate Inc." } }
+Candidates: [ { "node_id": 205, "properties": { "name": "Innovate Corp", "location": "New York" } } ]
+Response:
+```json
+{{
+  "decision": "CREATE_NEW",
+  "reason": "'Innovate Inc.' and 'Innovate Corp' could be different companies despite the similar names. Without more context, it's safer to create a new entity.",
+  "merge_target_id": null
+}}
+```
+Your decision:
+"""
+
     DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE = """Parse the following query to identify main entities ("seed_nodes").
 Format the output STRICTLY as a JSON object.
 **The entire JSON output MUST be enclosed in a single markdown code block starting with ```json and ending with ```.**
@@ -79,8 +139,7 @@ JSON structure:
     "target_relationships": [ {{"type": "REL_TYPE", "direction": "outgoing|incoming|any"}} ],
     "target_node_labels": ["Label1", "Label2"],
     "max_depth": 1
-}}
-```
+}}```
 - "seed_nodes": List of main entities from the query.
     - "label": The type of the entity.
     - "identifying_property_key": The name of the property that identifies the entity (e.g., "name", "title").
@@ -114,7 +173,9 @@ Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ..
         log_level: LogLevel = LogLevel.INFO, 
         lock_timeout: int = DEFAULT_LOCK_TIMEOUT,
         graph_extraction_prompt_template: Optional[str] = None,
-        query_parsing_prompt_template: Optional[str] = None
+        query_parsing_prompt_template: Optional[str] = None,
+        entity_fusion_prompt_template: Optional[str] = None
+
     ):
         self.db_path: str = str(Path(db_path).resolve())
         self.llm_executor: LLMExecutorCallback = llm_executor_callback
@@ -124,6 +185,8 @@ Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ..
 
         self.graph_extraction_prompt_template = graph_extraction_prompt_template or self.DEFAULT_GRAPH_EXTRACTION_PROMPT_TEMPLATE
         self.query_parsing_prompt_template = query_parsing_prompt_template or self.DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE
+        self.entity_fusion_prompt_template = entity_fusion_prompt_template or self.DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE
+
 
         ASCIIColors.info(f"Initializing GraphStore with database: {self.db_path}")
         self.conn: Optional[sqlite3.Connection] = None
@@ -137,8 +200,24 @@ Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ..
         except (DatabaseError, Timeout, ConcurrencyError, GraphError) as e: ASCIIColors.critical(f"GraphStore init failed: {e}"); raise
 
 
-    def _get_graph_extraction_prompt(self, chunk_text: str) -> str:
-        return self.graph_extraction_prompt_template.format(chunk_text=chunk_text)
+    def _get_graph_extraction_prompt(self, chunk_text: str, guidance: Optional[str] = None) -> str:
+        user_guidance = guidance if guidance and guidance.strip() else "Extract all relevant properties you can identify."
+        return self.graph_extraction_prompt_template.format(chunk_text=chunk_text, user_guidance=user_guidance)
+
+    def _get_entity_fusion_prompt(self, source_node: Dict, candidate_nodes: List[Dict]) -> str:
+        """Constructs the prompt for the LLM to decide on entity fusion."""
+        # Format candidate entities for display in the prompt
+        candidate_entities_str = "\n".join(
+            [f"- ID: {c.get('node_id')}, Properties: {json.dumps(c.get('properties', {}))}" for c in candidate_nodes]
+        )
+        if not candidate_entities_str:
+            candidate_entities_str = "None"
+            
+        return self.entity_fusion_prompt_template.format(
+            new_entity_label=source_node.get('label'),
+            new_entity_properties=json.dumps(source_node.get('properties', {})),
+            candidate_entities_str=candidate_entities_str
+        )
 
     def _get_query_parsing_prompt(self, natural_language_query: str) -> str:
         return self.query_parsing_prompt_template.format(natural_language_query=natural_language_query)
@@ -257,24 +336,25 @@ Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ..
             return None, None
         id_key: Optional[str] = None
         id_value: Any = None
-        if "name" in properties:
+        # Prefer 'name', then 'title', then any other string/numeric property
+        if "name" in properties and properties["name"]:
             id_key = "name"; id_value = properties["name"]
-        elif "title" in properties:
+        elif "title" in properties and properties["title"]:
             id_key = "title"; id_value = properties["title"]
         else:
+            # Fallback to the first non-empty string/numeric property, sorted by key for determinism
             for key in sorted(properties.keys()):
                 value = properties[key]
-                if isinstance(value, (str, int, float)) and value != "":
+                if isinstance(value, (str, int, float)) and value: # Ensure value is not empty
                     id_key = key; id_value = value; break
-            if id_key is None and properties:
-                first_key = sorted(properties.keys())[0]
-                if isinstance(properties[first_key], (str, int, float, bool)):
-                    id_key = first_key; id_value = properties[first_key]
-        if id_key is None or id_value is None: return None, None
+        
+        if id_key is None or id_value is None:
+            return None, None
+            
         return str(id_key), str(id_value)
 
 
-    def _process_chunk_for_graph_impl(self, chunk_id: int) -> None:
+    def _process_chunk_for_graph_impl(self, chunk_id: int, guidance: Optional[str] = None) -> None:
         assert self.conn is not None
         cursor = self.conn.cursor()
         decrypted_chunk_text: str
@@ -295,7 +375,7 @@ Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ..
         except (sqlite3.Error, EncryptionError, GraphProcessingError, ConfigurationError) as e:
             raise GraphProcessingError(f"Error preparing chunk {chunk_id} for LLM processing: {e}") from e
 
-        extraction_prompt = self._get_graph_extraction_prompt(decrypted_chunk_text)
+        extraction_prompt = self._get_graph_extraction_prompt(decrypted_chunk_text, guidance)
         ASCIIColors.debug(f"GraphStore: Processing chunk {chunk_id} with LLM for graph extraction.")
         raw_llm_response: str
         try:
@@ -339,17 +419,20 @@ Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ..
             properties_dict = node_data["properties"]
             id_key, id_value = self._get_node_identifying_parts(properties_dict)
 
-            if not id_key or id_value is None: 
+            if not id_key or id_value is None:
                 ASCIIColors.warning(f"GraphStore: Skipping node (label: {label_str}) because no identifiable property could be determined for chunk {chunk_id}. Properties: {str(properties_dict)[:200]}"); continue
 
             normalized_id_value = id_value.strip().lower()
-            unique_signature = f"{label_str}:{id_key}:{normalized_id_value}" 
+            unique_signature = f"{label_str}:{id_key}:{normalized_id_value}"
 
             try:
+                # Standard creation without fusion during import
                 node_id = db.add_or_update_graph_node(self.conn, label_str, properties_dict, unique_signature)
                 db.link_node_to_chunk(self.conn, node_id, chunk_id)
+                # Map the original identifying value to the final node_id for relationship processing
                 processed_nodes_map[(label_str, normalized_id_value)] = node_id
-            except (GraphDBError, json.JSONDecodeError) as e: ASCIIColors.error(f"GraphStore: Error storing node (Sig: {unique_signature}) from chunk {chunk_id}: {e}")
+            except (GraphDBError, json.JSONDecodeError) as e:
+                ASCIIColors.error(f"GraphStore: Error storing node (Sig: {unique_signature}) from chunk {chunk_id}: {e}")
 
         for rel_data in llm_output.get("relationships", []):
             required_keys = ["source_node_label", "source_node_identifying_value", 
@@ -408,7 +491,7 @@ Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ..
                 msg = f"GraphStore: Timeout ({self.lock_timeout}s) acquiring write lock for process_chunk_for_graph: chunk_id {chunk_id}"
                 ASCIIColors.error(msg); raise ConcurrencyError(msg) from e_lock
 
-    def build_graph_for_document(self, doc_id: int) -> None:
+    def build_graph_for_document(self, doc_id: int, guidance: Optional[str] = None, progress_callback: Optional[ProgressCallback] = None) -> None:
         with self._instance_lock:
             ASCIIColors.debug(f"GraphStore: Attempting to acquire write lock for build_graph_for_document: doc_id {doc_id}")
             try:
@@ -419,21 +502,36 @@ Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ..
                     try: cursor.execute("SELECT chunk_id FROM chunks WHERE doc_id = ? AND graph_processed_at IS NULL ORDER BY chunk_seq", (doc_id,))
                     except sqlite3.Error as e: raise GraphDBError(f"Database error fetching chunks for document {doc_id}: {e}") from e
                     chunk_ids_to_process = [row[0] for row in cursor.fetchall()]
-                    if not chunk_ids_to_process: ASCIIColors.info(f"GraphStore: No unprocessed chunks found for document {doc_id}. Nothing to do."); return
-                    ASCIIColors.info(f"GraphStore: Processing {len(chunk_ids_to_process)} chunks for document {doc_id} to build graph.")
+                    total_chunks = len(chunk_ids_to_process)
+                    if total_chunks==0: 
+                        ASCIIColors.info(f"GraphStore: No unprocessed chunks found for document {doc_id}. Nothing to do.")
+                        if progress_callback: progress_callback(1.0, "No new chunks to process.")
+                        return
+
+                    ASCIIColors.info(f"GraphStore: Processing {total_chunks} chunks for document {doc_id} to build graph.")
+                    if progress_callback: progress_callback(0.0, f"Starting to process {total_chunks} chunks.")
+                    
                     try:
                         self.conn.execute("BEGIN")
-                        for chunk_id in chunk_ids_to_process: self._process_chunk_for_graph_impl(chunk_id)
+                        for i, chunk_id in enumerate(chunk_ids_to_process):
+                            self._process_chunk_for_graph_impl(chunk_id, guidance)
+                            if progress_callback:
+                                progress = (i + 1) / total_chunks
+                                progress_callback(progress, f"Processed chunk {i + 1} of {total_chunks}.")
+                        
                         db.mark_chunks_graph_processed(self.conn, chunk_ids_to_process)
                         self.conn.commit()
+                        if progress_callback: progress_callback(1.0, "Graph building complete.")
                         ASCIIColors.success(f"GraphStore: Successfully built graph for document {doc_id}.")
                     except (GraphDBError, GraphProcessingError, LLMCallbackError, EncryptionError, ConfigurationError, DatabaseError) as e:
                         ASCIIColors.error(f"GraphStore: Error building graph for document {doc_id}: {e}")
                         if self.conn and self.conn.in_transaction: self.conn.rollback()
+                        if progress_callback: progress_callback(1.0, f"Error: {e}")
                         raise
                     except Exception as e_unexp:
                         ASCIIColors.error(f"GraphStore: Unexpected error building graph for document {doc_id}: {e_unexp}", exc_info=True)
                         if self.conn and self.conn.in_transaction: self.conn.rollback()
+                        if progress_callback: progress_callback(1.0, f"An unexpected error occurred: {e_unexp}")
                         raise GraphProcessingError(f"Unexpected error for document {doc_id}: {e_unexp}") from e_unexp
                 ASCIIColors.debug(f"GraphStore: Write lock released for build_graph_for_document: doc_id {doc_id}")
             except Timeout as e_lock:
@@ -544,6 +642,82 @@ Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ..
                 return chunk_details
             except GraphDBError as e: ASCIIColors.error(f"GraphStore: Error getting chunks for node ID {node_id}: {e}"); raise
             except Exception as e_unexp: ASCIIColors.error(f"GraphStore: Unexpected error getting chunks for node ID {node_id}: {e_unexp}", exc_info=True); raise GraphError(f"Unexpected error getting chunks for node: {e_unexp}") from e_unexp
+
+    def get_neighbors(self, node_id: int, limit: int = 50) -> Dict[str, List[Any]]:
+        """
+        Fetches the immediate neighbors of a given node and the relationships
+        connecting them. Designed for interactive graph expansion.
+
+        Args:
+            node_id: The ID of the central node.
+            limit: The maximum number of relationships (and thus neighbors) to return.
+
+        Returns:
+            A dictionary containing a list of neighbor nodes and a list of
+            the relationships connecting them to the central node.
+            { "nodes": [neighbor_node_1, ...], "relationships": [rel_1, ...] }
+        """
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+            
+            try:
+                # Use the existing DB function to get all relationship details
+                relationships = db.get_relationships_for_node_db(self.conn, node_id, direction="any", limit=limit)
+                
+                neighbor_nodes = []
+                neighbor_node_ids = set()
+
+                for rel in relationships:
+                    # Identify the neighbor node in the relationship
+                    if rel['source_node_id'] == node_id:
+                        neighbor_id = rel['target_node_id']
+                        if neighbor_id not in neighbor_node_ids:
+                            neighbor_nodes.append(rel['target_node'])
+                            neighbor_node_ids.add(neighbor_id)
+                    elif rel['target_node_id'] == node_id:
+                        neighbor_id = rel['source_node_id']
+                        if neighbor_id not in neighbor_node_ids:
+                            neighbor_nodes.append(rel['source_node'])
+                            neighbor_node_ids.add(neighbor_id)
+
+                return {
+                    "nodes": neighbor_nodes,
+                    "relationships": relationships
+                }
+            except GraphDBError as e:
+                ASCIIColors.error(f"GraphStore: Error getting neighbors for node ID {node_id}: {e}")
+                raise
+            except Exception as e_unexp:
+                ASCIIColors.error(f"GraphStore: Unexpected error getting neighbors for node ID {node_id}: {e_unexp}", exc_info=True)
+                raise GraphError(f"Unexpected error getting neighbors: {e_unexp}") from e_unexp
+
+    def find_shortest_path(self, start_node_id: int, end_node_id: int) -> Optional[Dict[str, List[Any]]]:
+        """
+        Finds the shortest path between two nodes in the graph.
+
+        Args:
+            start_node_id: The ID of the starting node.
+            end_node_id: The ID of the ending node.
+
+        Returns:
+            A dictionary containing the lists of nodes and relationships that
+            form the shortest path, or None if no path is found.
+            { "nodes": [...], "relationships": [...] }
+        """
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+
+            try:
+                path_data = db.find_shortest_path_db(self.conn, start_node_id, end_node_id)
+                return path_data
+            except GraphDBError as e:
+                ASCIIColors.error(f"GraphStore: Error finding shortest path between {start_node_id} and {end_node_id}: {e}")
+                raise
+            except Exception as e_unexp:
+                ASCIIColors.error(f"GraphStore: Unexpected error finding shortest path: {e_unexp}", exc_info=True)
+                raise GraphError(f"Unexpected error finding shortest path: {e_unexp}") from e_unexp
 
 
     # --- Main Query Method (Existing) ---
@@ -760,7 +934,7 @@ Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ..
                     # props_json = json.dumps(properties)
                     # cursor.execute("UPDATE graph_nodes SET node_properties = ? WHERE node_id = ?", (props_json, node_id))
 
-                    db.update_graph_node_properties_db(self.conn, node_id, properties, merge_strategy="replace") # Assuming "replace" strategy
+                    db.update_graph_node_properties_db(self.conn, node_id, properties, merge_strategy="overwrite_all")
                     ASCIIColors.debug(f"Node {node_id} properties updated.")
 
                 # Re-calculate unique_signature if identifying properties or label changed.
@@ -967,3 +1141,72 @@ Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ..
                 ASCIIColors.error(f"GraphStore: Unexpected error deleting relationship {relationship_id}: {e_unexp}", exc_info=True)
                 if self.conn and self.conn.in_transaction: self.conn.rollback()
                 raise GraphError(f"Unexpected error deleting relationship {relationship_id}: {e_unexp}") from e_unexp
+
+    def fuse_all_similar_entities(self, progress_callback: Optional[ProgressCallback] = None) -> Dict[str, int]:
+        """
+        Scans the entire graph for similar entities and fuses them based on LLM decisions.
+        This is a post-processing step.
+
+        Returns:
+            A dictionary with counts of 'scanned' nodes and 'merged' nodes.
+        """
+        with self._instance_lock, self._file_lock:
+            self._ensure_connection(); assert self.conn is not None
+            
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT node_id, node_label, node_properties FROM graph_nodes")
+            all_nodes = [{"node_id": r[0], "label": r[1], "properties": json.loads(r[2]) if r[2] else {}} for r in cursor.fetchall()]
+            
+            total_nodes = len(all_nodes)
+            scanned_count = 0
+            merged_count = 0
+            processed_ids = set()
+            if progress_callback: progress_callback(0.0, f"Starting fusion scan of {total_nodes} nodes.")
+
+            for i, source_node in enumerate(all_nodes):
+                source_id = source_node['node_id']
+                if source_id in processed_ids:
+                    continue
+
+                scanned_count += 1
+                if progress_callback:
+                    progress = (i + 1) / total_nodes
+                    progress_callback(progress, f"Scanning node {i+1}/{total_nodes} (ID: {source_id})...")
+
+                id_key, id_value = self._get_node_identifying_parts(source_node['properties'])
+                if not id_key or not id_value:
+                    continue
+
+                candidates = db.find_similar_nodes_by_property(self.conn, source_node['label'], id_key, id_value)
+                # Filter out self and already processed nodes
+                candidates = [c for c in candidates if c['node_id'] != source_id and c['node_id'] not in processed_ids]
+
+                if not candidates:
+                    continue
+                
+                fusion_prompt = self._get_entity_fusion_prompt(source_node, candidates)
+                try:
+                    raw_llm_response = self.llm_executor(fusion_prompt)
+                    json_response = robust_json_parser(raw_llm_response)
+                    decision = json_response.get("decision")
+                    merge_target_id = json_response.get("merge_target_id")
+
+                    if decision == "MERGE" and merge_target_id and merge_target_id != source_id:
+                        self.conn.execute("BEGIN")
+                        db.merge_nodes_db(self.conn, source_id, merge_target_id)
+                        self.conn.commit()
+                        merged_count += 1
+                        processed_ids.add(source_id)
+                        ASCIIColors.success(f"Fused node {source_id} into {merge_target_id}")
+
+                except (GraphEntityFusionError, GraphDBError, json.JSONDecodeError) as e:
+                    ASCIIColors.error(f"Error during fusion for source node {source_id}: {e}")
+                    if self.conn.in_transaction:
+                        self.conn.rollback()
+                except Exception as e:
+                    ASCIIColors.error(f"Unexpected error during fusion for source node {source_id}: {e}")
+                    if self.conn.in_transaction:
+                        self.conn.rollback()
+
+            if progress_callback: progress_callback(1.0, f"Fusion complete. Scanned {scanned_count} nodes, merged {merged_count}.")
+            return {"nodes_scanned": scanned_count, "nodes_merged": merged_count}

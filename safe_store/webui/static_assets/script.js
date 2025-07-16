@@ -5,8 +5,12 @@ const API_BASE_URL = ""; // Assuming API calls are relative to the current host
 const API_ENDPOINT_UPLOAD = `${API_BASE_URL}/upload-file/`;
 const API_ENDPOINT_GRAPH_DATA = `${API_BASE_URL}/graph-data/`;
 const API_ENDPOINT_GRAPH_SEARCH = `${API_BASE_URL}/graph/search/`;
+const API_ENDPOINT_GRAPH_FUSE = `${API_BASE_URL}/graph/fuse/`;
 const API_ENDPOINT_NODE = `${API_BASE_URL}/graph/node/`;
 const API_ENDPOINT_EDGE = `${API_BASE_URL}/graph/edge/`;
+const API_ENDPOINT_NEIGHBORS = (nodeId) => `${API_BASE_URL}/graph/node/${nodeId}/neighbors`;
+const API_ENDPOINT_PATH = `${API_BASE_URL}/graph/path`;
+const API_ENDPOINT_CHAT = `${API_BASE_URL}/api/chat/rag`;
 const API_ENDPOINT_DATABASES = `${API_BASE_URL}/api/databases`; // GET, POST
 const API_ENDPOINT_DATABASE_ACTION = (dbName, action) => `${API_BASE_URL}/api/databases/${encodeURIComponent(dbName)}/${action}`; // activate, delete
 
@@ -23,12 +27,14 @@ const graphLoadingOverlay = document.getElementById("graph-loading-overlay");
 // Graph & Sidebar
 const graphContainer = document.getElementById("graph-container");
 const graphActionStatus = document.getElementById("graph-action-status");
+const taskProgressContainer = document.getElementById("task-progress-container");
 const nodeInfoPanel = document.getElementById("node-info-panel");
 const edgeInfoPanel = document.getElementById("edge-info-panel");
 const nodeIDDisplay = document.getElementById("node-id-display");
 const nodeLabelDisplay = document.getElementById("node-label-display");
 const nodePropertiesDisplay = document.getElementById("node-properties-display");
 const editSelectedNodeBtn = document.getElementById("edit-selected-node-btn");
+const expandNeighborsBtn = document.getElementById("expand-neighbors-btn");
 const edgeIDDisplay = document.getElementById("edge-id-display");
 const edgeFromDisplay = document.getElementById("edge-from-display");
 const edgeToDisplay = document.getElementById("edge-to-display");
@@ -47,19 +53,31 @@ const editModeToggle = document.getElementById("edit-mode-toggle");
 const editModeHint = document.getElementById("edit-mode-hint");
 const togglePhysicsBtn = document.getElementById("toggle-physics-btn");
 const physicsBtnText = document.getElementById("physics-btn-text");
+const fuseEntitiesBtn = document.getElementById("fuse-entities-btn");
 const fitGraphBtn = document.getElementById("fit-graph-btn");
 const layoutSelect = document.getElementById("layout-select");
 const applyLayoutBtn = document.getElementById("apply-layout-btn");
+const findPathForm = document.getElementById("find-path-form");
+const startNodeInput = document.getElementById("start-node-input");
+const endNodeInput = document.getElementById("end-node-input");
 
 // Upload Modal
 const uploadModal = document.getElementById("upload-modal");
 const closeUploadModalBtn = document.getElementById("close-upload-modal-btn");
 const uploadForm = document.getElementById("upload-form");
 const fileInput = document.getElementById("file-input");
+const extractionGuidanceInput = document.getElementById("extraction-guidance-input");
 const fileListPreview = document.getElementById("file-list-preview");
 const uploadSubmitBtn = document.getElementById("upload-submit-btn");
 const uploadProgressArea = document.getElementById("upload-progress-area");
 const uploadOverallStatus = document.getElementById("upload-overall-status");
+
+// Chat Panel
+const chatPanel = document.getElementById("chat-panel");
+const chatMessages = document.getElementById("chat-messages");
+const chatForm = document.getElementById("chat-form");
+const chatInput = document.getElementById("chat-input");
+const chatSubmitBtn = document.getElementById("chat-submit-btn");
 
 // Node/Edge Edit Modals
 const nodeEditModal = document.getElementById("node-edit-modal");
@@ -103,6 +121,10 @@ let edgesDataSet = new vis.DataSet();
 let appSettings = { theme: 'light', physicsOnLoad: true, editModeEnabled: false };
 let isEditingText = false;
 let currentLayoutMethod = "default";
+let webSocket = null;
+let clientId = `webui-${Math.random().toString(36).substr(2, 9)}`;
+const markdownConverter = new showdown.Converter();
+
 
 // --- Helper Functions ---
 function showUserStatus(element, message, type = "success", duration = 4000) {
@@ -134,10 +156,63 @@ async function apiRequest(endpoint, method = 'GET', body = null, isFormData = fa
             const errorData = await response.json().catch(() => ({ detail: `HTTP error ${response.status}` }));
             throw new Error(errorData.detail || `Request failed with status ${response.status}`);
         }
-        return response.status === 204 ? null : await response.json();
+        return response.status === 204 || response.status === 202 ? response : await response.json();
     } catch (error) {
         console.error(`API call to ${endpoint} failed:`, error);
         throw error;
+    }
+}
+
+// --- WebSocket Management ---
+function setupWebSocket() {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/progress/${clientId}`;
+
+    webSocket = new WebSocket(wsUrl);
+
+    webSocket.onopen = () => console.log("WebSocket connection established.");
+    webSocket.onmessage = (event) => handleProgressUpdate(JSON.parse(event.data));
+    webSocket.onclose = () => {
+        console.log("WebSocket connection closed. Attempting to reconnect...");
+        setTimeout(setupWebSocket, 3000); // Reconnect after 3 seconds
+    };
+    webSocket.onerror = (error) => console.error("WebSocket error:", error);
+}
+
+function handleProgressUpdate(data) {
+    const { task_id, progress, message } = data;
+    let progressElement = document.getElementById(`progress-${task_id}`);
+
+    if (!progressElement) {
+        progressElement = document.createElement('div');
+        progressElement.id = `progress-${task_id}`;
+        progressElement.className = 'p-2 my-1 bg-gray-100 dark:bg-gray-700 rounded-md text-xs';
+        progressElement.innerHTML = `
+            <div class="font-semibold mb-1 truncate" id="progress-message-${task_id}"></div>
+            <div class="progress-bar-container">
+                <div id="progress-bar-${task_id}" class="progress-bar" style="width: 0%;"></div>
+            </div>
+        `;
+        taskProgressContainer.appendChild(progressElement);
+    }
+
+    const messageElement = document.getElementById(`progress-message-${task_id}`);
+    const barElement = document.getElementById(`progress-bar-${task_id}`);
+
+    messageElement.textContent = message;
+    barElement.style.width = `${progress * 100}%`;
+
+    if (progress >= 1.0) {
+        // Change bar color on completion
+        if (message.toLowerCase().includes("error")) {
+             barElement.classList.remove('bg-blue-600');
+             barElement.classList.add('bg-red-600');
+        } else {
+             barElement.classList.remove('bg-blue-600');
+             barElement.classList.add('bg-green-600');
+        }
+        // Remove after a delay
+        setTimeout(() => progressElement.remove(), 8000);
     }
 }
 
@@ -312,31 +387,36 @@ uploadForm?.addEventListener("submit", async (event) => {
     uploadSubmitBtn.disabled = true;
     uploadProgressArea.innerHTML = '';
     let successCount = 0, errorCount = 0;
+    const guidance = extractionGuidanceInput.value.trim();
 
     for (let i = 0; i < fileInput.files.length; i++) {
         const file = fileInput.files[i];
-        const fileId = `file-progress-${i}`;
-        const progressDiv = document.createElement('div');
-        progressDiv.id = fileId;
-        progressDiv.className = 'text-xs p-1.5 rounded-md bg-gray-100 dark:bg-gray-700 flex justify-between items-center';
-        progressDiv.innerHTML = `<span>${file.name}</span><span class="status-icon"><i class="fas fa-spinner fa-spin text-blue-500"></i> Uploading...</span>`;
-        uploadProgressArea.appendChild(progressDiv);
-
+        
         const formData = new FormData();
         formData.append("file", file);
+        formData.append("guidance", guidance);
+        formData.append("client_id", clientId);
+
         try {
-            await apiRequest(API_ENDPOINT_UPLOAD, "POST", formData, true);
-            document.querySelector(`#${fileId} .status-icon`).innerHTML = `<i class="fas fa-check-circle text-green-500"></i> Processed`;
+            const response = await apiRequest(API_ENDPOINT_UPLOAD, "POST", formData, true);
+            const data = await response.json(); // Wait for the 202 response to be parsed
+            showUserStatus(uploadOverallStatus, `File '${file.name}' submitted for processing (Task ID: ${data.task_id}).`, "info", 6000);
             successCount++;
         } catch (error) {
-            document.querySelector(`#${fileId} .status-icon`).innerHTML = `<i class="fas fa-exclamation-circle text-red-500"></i> Error`;
+            showUserStatus(uploadOverallStatus, `Failed to submit '${file.name}': ${error.message}`, "error", 0);
             errorCount++;
         }
     }
-    showUserStatus(uploadOverallStatus, `${successCount} processed. ${errorCount} failed.`, errorCount > 0 ? "warning" : "success", 0);
-    if (successCount > 0) fetchGraphData();
+    
+    if (errorCount === 0) {
+        showUserStatus(uploadOverallStatus, "All files submitted. Processing in background.", "success", 5000);
+    }
+    
+    // Refresh graph data after a short delay to allow backend processing to start
+    setTimeout(fetchGraphData, 3000);
     uploadSubmitBtn.disabled = false;
 });
+
 
 // --- Node & Edge Edit Modal Logic ---
 function setupEditModal(modal, closeBtn, cancelBtn, saveBtn, saveFn) {
@@ -559,7 +639,11 @@ function updateVisThemeOptions() {
 
 function updateSelectionInfoPanel(params) {
     nodeInfoPanel.style.display = "none"; edgeInfoPanel.style.display = "none";
-    noSelectionMessage.style.display = "block"; editSelectedNodeBtn.disabled = true; editSelectedEdgeBtn.disabled = true;
+    noSelectionMessage.style.display = "block"; 
+    editSelectedNodeBtn.disabled = true; 
+    editSelectedEdgeBtn.disabled = true;
+    expandNeighborsBtn.disabled = true;
+
 
     const { nodes, edges } = params;
     if (nodes.length > 0) {
@@ -568,7 +652,11 @@ function updateSelectionInfoPanel(params) {
             nodeIDDisplay.textContent = node.id; nodeLabelDisplay.textContent = node.original_label || node.label || "N/A";
             nodePropertiesDisplay.textContent = JSON.stringify(node.properties || {}, null, 2);
             nodeInfoPanel.style.display = "block"; noSelectionMessage.style.display = "none";
-            editSelectedNodeBtn.disabled = !editModeToggle.checked; editSelectedNodeBtn.dataset.nodeId = node.id;
+            editSelectedNodeBtn.disabled = !editModeToggle.checked; 
+            editSelectedNodeBtn.dataset.nodeId = node.id;
+            expandNeighborsBtn.disabled = false;
+            expandNeighborsBtn.dataset.nodeId = node.id;
+
         }
     } else if (edges.length > 0) {
         const edge = edgesDataSet.get(edges[0]);
@@ -605,6 +693,71 @@ applyLayoutBtn?.addEventListener("click", () => {
     currentLayoutMethod = layoutSelect.value;
     applyCurrentLayout();
 });
+fuseEntitiesBtn?.addEventListener("click", async () => {
+    if (!confirm("This will scan the entire graph for similar entities and try to merge them using an LLM. This may take some time. Continue?")) {
+        return;
+    }
+    showUserStatus(graphActionStatus, "Starting entity fusion...", "info", 0);
+    graphLoadingOverlay.classList.remove('hidden');
+    try {
+        const response = await apiRequest(API_ENDPOINT_GRAPH_FUSE, 'POST', {client_id: clientId});
+        const data = await response.json();
+        showUserStatus(graphActionStatus, `Fusion process started in background (Task ID: ${data.task_id}).`, "success", 10000);
+        // Do not reload graph here, wait for completion message
+    } catch (error) {
+        showUserStatus(graphActionStatus, `Failed to start fusion: ${error.message}`, "error");
+    } finally {
+        graphLoadingOverlay.classList.add('hidden');
+    }
+});
+
+findPathForm?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const startId = parseInt(startNodeInput.value, 10);
+    const endId = parseInt(endNodeInput.value, 10);
+    if (isNaN(startId) || isNaN(endId)) {
+        showUserStatus(graphActionStatus, "Please enter valid Start and End Node IDs.", "warning");
+        return;
+    }
+    showUserStatus(graphActionStatus, `Finding path from ${startId} to ${endId}...`, "info", 0);
+    graphLoadingOverlay.classList.remove("hidden");
+    try {
+        const pathData = await apiRequest(API_ENDPOINT_PATH, 'POST', { start_node_id: startId, end_node_id: endId });
+        network.unselectAll();
+        const nodeIdsInPath = pathData.nodes.map(n => n.node_id);
+        const edgeIdsInPath = pathData.relationships.map(r => r.relationship_id);
+        network.selectNodes(nodeIdsInPath);
+        network.selectEdges(edgeIdsInPath);
+        network.fit({ nodes: nodeIdsInPath, animation: true });
+        showUserStatus(graphActionStatus, `Path found with ${nodeIdsInPath.length} nodes.`, "success");
+    } catch (error) {
+        showUserStatus(graphActionStatus, `Pathfinding failed: ${error.message}`, "error");
+    } finally {
+        graphLoadingOverlay.classList.add("hidden");
+    }
+});
+
+expandNeighborsBtn?.addEventListener("click", async (e) => {
+    const nodeId = parseInt(e.currentTarget.dataset.nodeId, 10);
+    if (isNaN(nodeId)) return;
+    
+    showUserStatus(graphActionStatus, `Expanding neighbors for node ${nodeId}...`, "info", 0);
+    graphLoadingOverlay.classList.remove("hidden");
+    try {
+        const neighborData = await apiRequest(API_ENDPOINT_NEIGHBORS(nodeId));
+        const newNodes = neighborData.nodes.map(n => ({...n, id: n.node_id, label: n.label, group: n.label, properties: n.properties, original_label: n.label }));
+        const newEdges = neighborData.relationships.map(r => ({...r, id: r.relationship_id, from: r.source_node_id, to: r.target_node_id, label: r.type, properties: r.properties}));
+
+        nodesDataSet.update(newNodes);
+        edgesDataSet.update(newEdges);
+        showUserStatus(graphActionStatus, `Added ${newNodes.length} neighbors for node ${nodeId}.`, "success");
+    } catch (error) {
+        showUserStatus(graphActionStatus, `Failed to expand neighbors: ${error.message}`, "error");
+    } finally {
+        graphLoadingOverlay.classList.add("hidden");
+    }
+});
+
 
 function applyCurrentLayout() {
     if (!network) return;
@@ -643,8 +796,49 @@ function applyCurrentLayout() {
     }, 100);
 }
 
+// --- RAG Chat Logic ---
+chatForm?.addEventListener("submit", handleChatSubmit);
+
+function addChatMessage(message, sender, isThinking = false) {
+    const messageDiv = document.createElement("div");
+    messageDiv.className = `chat-message ${sender === 'user' ? 'chat-user' : 'chat-ai'}`;
+    
+    if (isThinking) {
+        messageDiv.innerHTML = `<i class="fas fa-spinner fa-spin"></i>`;
+        messageDiv.id = "thinking-indicator";
+    } else if (sender === 'ai') {
+        messageDiv.innerHTML = markdownConverter.makeHtml(message);
+    } else {
+        messageDiv.textContent = message;
+    }
+    
+    chatMessages.appendChild(messageDiv);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+async function handleChatSubmit(event) {
+    event.preventDefault();
+    const query = chatInput.value.trim();
+    if (!query) return;
+
+    addChatMessage(query, 'user');
+    chatInput.value = '';
+    addChatMessage('', 'ai', true); // Show thinking indicator
+
+    try {
+        const response = await apiRequest(API_ENDPOINT_CHAT, 'POST', { query });
+        document.getElementById("thinking-indicator")?.remove(); // Remove thinking indicator
+        addChatMessage(response.answer, 'ai');
+    } catch (error) {
+        document.getElementById("thinking-indicator")?.remove();
+        addChatMessage(`Error: ${error.message}`, 'ai');
+    }
+}
+
+
 // --- Initialization ---
 document.addEventListener('DOMContentLoaded', () => {
     loadAppSettings();
+    setupWebSocket();
     fetchGraphData();
 });

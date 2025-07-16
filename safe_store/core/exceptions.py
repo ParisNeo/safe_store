@@ -68,3 +68,6 @@ class DocumentNotFoundError(GraphError):
     """Errors occurring during the processing of text or file."""
     pass
 
+class GraphEntityFusionError(GraphProcessingError):
+    """Errors related to the entity fusion process, including LLM decisions."""
+    pass
