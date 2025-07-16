@@ -256,7 +256,6 @@
 
 
     <!-- MODALS -->
-    <!-- All modals remain the same as previous step -->
     <!-- Upload Modal -->
     <div id="upload-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg transform transition-all" role="dialog" aria-modal="true">
@@ -284,7 +283,42 @@
             <div id="upload-overall-status" class="mt-3 text-sm min-h-[20px]"></div>
         </div>
     </div>
+    
+    <!-- ADD/EDIT MODALS -->
+    <!-- Add Node Modal (NEW) -->
+    <div id="node-add-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md" role="dialog">
+            <h3 class="text-xl font-semibold mb-4 dark:text-white">Add New Node</h3>
+            <form id="node-add-form" class="space-y-4">
+                <div>
+                    <label for="modal-add-node-label" class="block text-sm font-medium dark:text-gray-300">Node Label</label>
+                    <input type="text" id="modal-add-node-label" required class="mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md" placeholder="e.g., Person, Company">
+                </div>
+                <div class="flex justify-end space-x-3 pt-2">
+                    <button type="button" id="cancel-node-add-btn" class="px-4 py-2 text-sm dark:bg-gray-600 dark:hover:bg-gray-500 rounded-md">Cancel</button>
+                    <button type="submit" id="save-node-add-btn" class="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-md">Add Node</button>
+                </div>
+            </form>
+        </div>
+    </div>
 
+    <!-- Add Edge Modal (NEW) -->
+    <div id="edge-add-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md" role="dialog">
+            <h3 class="text-xl font-semibold mb-4 dark:text-white">Add New Edge</h3>
+            <form id="edge-add-form" class="space-y-4">
+                <div>
+                    <label for="modal-add-edge-label" class="block text-sm font-medium dark:text-gray-300">Edge Label (optional)</label>
+                    <input type="text" id="modal-add-edge-label" class="mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md" placeholder="e.g., WORKS_AT, PUBLISHED_IN">
+                </div>
+                <div class="flex justify-end space-x-3 pt-2">
+                    <button type="button" id="cancel-edge-add-btn" class="px-4 py-2 text-sm dark:bg-gray-600 dark:hover:bg-gray-500 rounded-md">Cancel</button>
+                    <button type="submit" id="save-edge-add-btn" class="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-md">Add Edge</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    
     <!-- Node/Edge Edit Modals -->
     <div id="node-edit-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg" role="dialog">
