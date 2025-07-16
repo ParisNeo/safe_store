@@ -13,7 +13,8 @@ pm.ensure_packages([
     "fastapi",
     "python-multipart",
     "toml",
-    "pydantic" # Added for request/response models
+    "pydantic",
+    "python-socketio" # Added for explicitness
 ])
 # Ajoute le répertoire parent (safe_store/safe_store/) au chemin de recherche de Python
 # Cela permet à Python de trouver config_manager.py
@@ -23,10 +24,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config_manager import get_config, get_log_level_from_str, save_config, DATABASES_ROOT
 from lollms_client import LollmsClient
 import uvicorn
-from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Body, Path as FastApiPath, Query, status, Form, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request, Body, Path as FastApiPath, Query, status, Form, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse 
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field # For request/response models
+import socketio
 
 import safe_store # Assuming safe_store is in PYTHONPATH or installed
 from safe_store import GraphStore, SafeStore, LogLevel as SafeStoreLogLevel # Renamed to avoid conflict
@@ -88,43 +90,17 @@ If the context is not sufficient, say that you don't have enough information.
 # Global instances
 app = FastAPI(title="SafeStore Graph WebUI")
 
+# --- Socket.IO Server Setup ---
+sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins="*")
+socket_app = socketio.ASGIApp(sio, socketio_path='sio')
+app.mount('/sio', socket_app)
+
 current_dir = Path(__file__).parent
 app.mount("/static_assets", StaticFiles(directory=current_dir / "static_assets"), name="static_assets")
 
 ss_instance: Optional[SafeStore] = None
 gs_instance: Optional[GraphStore] = None
 lc_client: Optional[LollmsClient] = None
-
-# --- WebSocket Connection Manager ---
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: Dict[str, WebSocket] = {}
-
-    async def connect(self, client_id: str, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections[client_id] = websocket
-        ASCIIColors.info(f"WebSocket client connected: {client_id}")
-
-    def disconnect(self, client_id: str):
-        if client_id in self.active_connections:
-            del self.active_connections[client_id]
-            ASCIIColors.info(f"WebSocket client disconnected: {client_id}")
-
-    async def send_progress(self, client_id: str, progress: float, message: str, task_id: str):
-        if client_id in self.active_connections:
-            try:
-                await self.active_connections[client_id].send_json({
-                    "task_id": task_id,
-                    "progress": progress,
-                    "message": message
-                })
-            except WebSocketDisconnect:
-                self.disconnect(client_id)
-            except Exception as e:
-                ASCIIColors.error(f"Error sending progress to client {client_id}: {e}")
-                self.disconnect(client_id)
-
-manager = ConnectionManager()
 
 # --- Pydantic Models for API ---
 class NodeModel(BaseModel):
@@ -283,26 +259,33 @@ async def shutdown_event():
         try: ss_instance.close(); ASCIIColors.info("SafeStore closed.")
         except Exception as e: ASCIIColors.error(f"Error closing SafeStore: {e}")
 
-# --- WebSocket Endpoint ---
-@app.websocket("/ws/progress/{client_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: str):
-    await manager.connect(client_id, websocket)
+# --- Socket.IO Handlers ---
+@sio.event
+async def connect(sid, environ):
+    ASCIIColors.info(f"Socket.IO client connected: {sid}")
+
+@sio.event
+async def disconnect(sid):
+    ASCIIColors.info(f"Socket.IO client disconnected: {sid}")
+
+# --- Progress Update Emitter ---
+async def send_progress_update(sid: str, progress: float, message: str, task_id: str):
     try:
-        while True:
-            await websocket.receive_text() # Keep connection alive
-    except WebSocketDisconnect:
-        manager.disconnect(client_id)
+        await sio.emit('progress_update', {
+            "task_id": task_id,
+            "progress": progress,
+            "message": message
+        }, to=sid)
+    except Exception as e:
+        ASCIIColors.error(f"Error sending progress to client {sid}: {e}")
 
 # --- Background Task Wrappers ---
-def run_build_graph_task_wrapper(doc_id: int, guidance: Optional[str], client_id: str, task_id: str):
+def run_build_graph_task_wrapper(doc_id: int, guidance: Optional[str], sid: str, task_id: str):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
-    async def progress_callback(progress, message):
-        await manager.send_progress(client_id, progress, message, task_id)
-        
     def sync_callback(progress, message):
-        loop.run_until_complete(progress_callback(progress, message))
+        loop.run_until_complete(send_progress_update(sid, progress, message, task_id))
 
     try:
         with gs_instance:
@@ -314,16 +297,12 @@ def run_build_graph_task_wrapper(doc_id: int, guidance: Optional[str], client_id
     finally:
         loop.close()
 
-
-def run_fuse_entities_task_wrapper(client_id: str, task_id: str):
+def run_fuse_entities_task_wrapper(sid: str, task_id: str):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
-    async def progress_callback(progress, message):
-        await manager.send_progress(client_id, progress, message, task_id)
-        
     def sync_callback(progress, message):
-        loop.run_until_complete(progress_callback(progress, message))
+        loop.run_until_complete(send_progress_update(sid, progress, message, task_id))
 
     try:
         with gs_instance:
@@ -351,7 +330,7 @@ async def upload_file_and_process(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...), 
     guidance: str = Form(""),
-    client_id: str = Form(...)
+    sid: str = Form(...) # Changed from client_id to sid
 ):
     global ss_instance, gs_instance, ACTIVE_DOC_DIR
     if not ss_instance: raise HTTPException(status_code=503, detail="SafeStore not initialized.")
@@ -392,7 +371,7 @@ async def upload_file_and_process(
             doc_id_found = found_doc['doc_id']
             ASCIIColors.info(f"Document '{unique_doc_filename}' (ID: {doc_id_found}) confirmed in SafeStore.")
 
-        background_tasks.add_task(run_build_graph_task_wrapper, doc_id_found, guidance, client_id, task_id)
+        background_tasks.add_task(run_build_graph_task_wrapper, doc_id_found, guidance, sid, task_id)
         
         return JSONResponse(status_code=202, content={"message": f"File '{file.filename}' accepted and processing started in background.", "task_id": task_id})
     except (DocumentNotFoundError, HTTPException) as e:
@@ -421,15 +400,18 @@ async def get_graph_data_endpoint():
         raise HTTPException(status_code=500, detail=f"Error fetching graph data: {str(e)}")
 
 @app.post("/graph/fuse/")
-async def fuse_entities_endpoint(background_tasks: BackgroundTasks, client_id: str = Body(..., embed=True)):
+async def fuse_entities_endpoint(background_tasks: BackgroundTasks, sid_body: Dict[str, str] = Body(..., alias="sid_body")):
     global gs_instance
+    sid = sid_body.get("sid")
     if not gs_instance:
         raise HTTPException(status_code=503, detail="GraphStore not initialized.")
     if not lc_client:
         raise HTTPException(status_code=503, detail="LLM Client not initialized, which is required for fusion.")
+    if not sid:
+        raise HTTPException(status_code=400, detail="Socket.IO session ID (sid) is required.")
         
     task_id = f"fuse_{uuid.uuid4()}"
-    background_tasks.add_task(run_fuse_entities_task_wrapper, client_id, task_id)
+    background_tasks.add_task(run_fuse_entities_task_wrapper, sid, task_id)
     return JSONResponse(status_code=202, content={"message": "Entity fusion process started in background.", "task_id": task_id})
 
 

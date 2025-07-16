@@ -68,6 +68,7 @@ webui = [
     "python-multipart>=0.0.6",
     "toml>=0.10.2",
     "pydantic>=2.0",
+    "python-socketio>=5.10.0", # Added socketio
 ]
 
 
