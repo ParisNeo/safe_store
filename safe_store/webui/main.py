@@ -136,6 +136,9 @@ class EdgeUpdateModel(BaseModel):
     label: Optional[str] = None
     properties: Optional[Dict[str, Any]] = None
 
+class FuseRequest(BaseModel):
+    sid: str
+
 class DatabaseConfigModel(BaseModel):
     name: str
     db_file: str
@@ -146,9 +149,14 @@ class DatabaseCreationRequest(BaseModel):
 class PathRequest(BaseModel):
     start_node_id: int
     end_node_id: int
+    directed: bool = True
 
 class ChatRequest(BaseModel):
     query: str
+
+class UploadResponseTask(BaseModel):
+    filename: str
+    task_id: str
 
 # --- LLM Executor Callback ---
 def llm_executor(prompt_to_llm: str) -> str:
@@ -269,10 +277,11 @@ async def disconnect(sid):
     ASCIIColors.info(f"Socket.IO client disconnected: {sid}")
 
 # --- Progress Update Emitter ---
-async def send_progress_update(sid: str, progress: float, message: str, task_id: str):
+async def send_progress_update(sid: str, progress: float, message: str, task_id: str, filename: str):
     try:
         await sio.emit('progress_update', {
             "task_id": task_id,
+            "filename": filename,
             "progress": progress,
             "message": message
         }, to=sid)
@@ -280,18 +289,18 @@ async def send_progress_update(sid: str, progress: float, message: str, task_id:
         ASCIIColors.error(f"Error sending progress to client {sid}: {e}")
 
 # --- Background Task Wrappers ---
-def run_build_graph_task_wrapper(doc_id: int, guidance: Optional[str], sid: str, task_id: str):
+def run_build_graph_task_wrapper(doc_id: int, filename: str, guidance: Optional[str], sid: str, task_id: str):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
     def sync_callback(progress, message):
-        loop.run_until_complete(send_progress_update(sid, progress, message, task_id))
+        loop.run_until_complete(send_progress_update(sid, progress, message, task_id, filename))
 
     try:
         with gs_instance:
             gs_instance.build_graph_for_document(doc_id, guidance=guidance, progress_callback=sync_callback)
     except Exception as e:
-        ASCIIColors.error(f"Error in background task 'build_graph_for_document' for doc {doc_id}: {e}")
+        ASCIIColors.error(f"Error in background task 'build_graph_for_document' for doc {doc_id} ('{filename}'): {e}")
         trace_exception(e)
         sync_callback(1.0, f"An error occurred: {str(e)}")
     finally:
@@ -302,7 +311,8 @@ def run_fuse_entities_task_wrapper(sid: str, task_id: str):
     asyncio.set_event_loop(loop)
 
     def sync_callback(progress, message):
-        loop.run_until_complete(send_progress_update(sid, progress, message, task_id))
+        # Fuse task doesn't have a specific filename, so we can pass a generic one
+        loop.run_until_complete(send_progress_update(sid, progress, message, task_id, "Entity Fusion"))
 
     try:
         with gs_instance:
@@ -325,66 +335,68 @@ async def read_root():
     return FileResponse(index_html_path)
 
 
-@app.post("/upload-file/")
-async def upload_file_and_process(
+@app.post("/upload-file/", response_model=List[UploadResponseTask])
+async def upload_files_and_process(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...), 
+    files: List[UploadFile] = File(...),
     guidance: str = Form(""),
-    sid: str = Form(...) # Changed from client_id to sid
+    sid: str = Form(...)
 ):
     global ss_instance, gs_instance, ACTIVE_DOC_DIR
     if not ss_instance: raise HTTPException(status_code=503, detail="SafeStore not initialized.")
-    if not gs_instance: raise HTTPException(status_code=503, detail="GraphStore not initialized. LLM may be unavailable.")
-    if not lc_client: raise HTTPException(status_code=503, detail="LLM Client not initialized. Graph building requires LLM.")
+    if not gs_instance: raise HTTPException(status_code=503, detail="GraphStore not initialized.")
     if not ACTIVE_DOC_DIR: raise HTTPException(status_code=503, detail="Active document directory not set.")
 
-    task_id = f"upload_{uuid.uuid4()}"
-    target_path_for_safestore_processing = None
-
-    try:
-        safe_filename = Path(file.filename).name 
-        unique_doc_filename = f"{uuid.uuid4()}_{safe_filename}"
-        target_path_for_safestore_processing = ACTIVE_DOC_DIR / unique_doc_filename
-        
-        with open(target_path_for_safestore_processing, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
-        ASCIIColors.info(f"File '{file.filename}' saved to SafeStore processing directory '{target_path_for_safestore_processing}'")
-
-        with ss_instance:
-            ss_instance.add_document(
-                file_path=target_path_for_safestore_processing, 
-                vectorizer_name=SS_DEFAULT_VECTORIZER,
-                chunk_size=SS_CHUNK_SIZE,
-                chunk_overlap=SS_CHUNK_OVERLAP
-            )
-            ASCIIColors.info(f"Document '{target_path_for_safestore_processing.name}' submitted to SafeStore for processing.")
-
-            docs = ss_instance.list_documents()
-            found_doc = next((doc for doc in reversed(docs) if Path(doc['file_path']).name == unique_doc_filename), None)
+    response_tasks = []
+    
+    for file in files:
+        target_path_for_safestore_processing = None
+        try:
+            safe_filename = Path(file.filename).name
+            unique_doc_filename = f"{uuid.uuid4()}_{safe_filename}"
+            target_path_for_safestore_processing = ACTIVE_DOC_DIR / unique_doc_filename
             
-            if not found_doc and docs:
-                 found_doc = docs[-1]
+            # Save the file
+            with open(target_path_for_safestore_processing, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
+            ASCIIColors.info(f"File '{safe_filename}' saved to '{target_path_for_safestore_processing}'")
 
-            if not found_doc:
-                raise DocumentNotFoundError(f"Failed to find document '{unique_doc_filename}' in SafeStore after adding.")
+            # Add to SafeStore
+            with ss_instance:
+                ss_instance.add_document(
+                    file_path=target_path_for_safestore_processing,
+                    vectorizer_name=SS_DEFAULT_VECTORIZER,
+                    chunk_size=SS_CHUNK_SIZE,
+                    chunk_overlap=SS_CHUNK_OVERLAP
+                )
+                
+                # Retrieve the doc_id for the just-added document
+                docs = ss_instance.list_documents()
+                found_doc = next((doc for doc in reversed(docs) if Path(doc['file_path']).name == unique_doc_filename), None)
+                if not found_doc:
+                    raise DocumentNotFoundError(f"Failed to find document '{unique_doc_filename}' in SafeStore after adding.")
+                doc_id_found = found_doc['doc_id']
+                ASCIIColors.info(f"Document '{safe_filename}' (ID: {doc_id_found}) confirmed in SafeStore.")
 
-            doc_id_found = found_doc['doc_id']
-            ASCIIColors.info(f"Document '{unique_doc_filename}' (ID: {doc_id_found}) confirmed in SafeStore.")
+            # Schedule the background task for graph processing
+            task_id = f"graph_build_{uuid.uuid4()}"
+            background_tasks.add_task(run_build_graph_task_wrapper, doc_id_found, safe_filename, guidance, sid, task_id)
+            response_tasks.append({"filename": safe_filename, "task_id": task_id})
 
-        background_tasks.add_task(run_build_graph_task_wrapper, doc_id_found, guidance, sid, task_id)
-        
-        return JSONResponse(status_code=202, content={"message": f"File '{file.filename}' accepted and processing started in background.", "task_id": task_id})
-    except (DocumentNotFoundError, HTTPException) as e:
-        if target_path_for_safestore_processing and target_path_for_safestore_processing.exists():
-            target_path_for_safestore_processing.unlink(missing_ok=True)
-        raise e
-    except Exception as e:
-        ASCIIColors.error(f"Error processing file {file.filename}: {e}"); trace_exception(e)
-        if 'target_path_for_safestore_processing' in locals() and target_path_for_safestore_processing.exists():
-            target_path_for_safestore_processing.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"Error processing file: {str(e)}")
-    finally:
-        if file: await file.close()
+        except Exception as e:
+            ASCIIColors.error(f"Error processing file {file.filename}: {e}"); trace_exception(e)
+            if target_path_for_safestore_processing and target_path_for_safestore_processing.exists():
+                target_path_for_safestore_processing.unlink(missing_ok=True)
+            # We skip this file and continue with others, but might want to report error back.
+            # For now, it just won't be in the response list.
+        finally:
+            await file.close()
+            
+    if not response_tasks:
+        raise HTTPException(status_code=500, detail="No files could be processed.")
+
+    return response_tasks
+
 
 @app.get("/graph-data/")
 async def get_graph_data_endpoint(): 
@@ -400,9 +412,9 @@ async def get_graph_data_endpoint():
         raise HTTPException(status_code=500, detail=f"Error fetching graph data: {str(e)}")
 
 @app.post("/graph/fuse/")
-async def fuse_entities_endpoint(background_tasks: BackgroundTasks, sid_body: Dict[str, str] = Body(..., alias="sid_body")):
+async def fuse_entities_endpoint(background_tasks: BackgroundTasks, request: FuseRequest):
     global gs_instance
-    sid = sid_body.get("sid")
+    sid = request.sid
     if not gs_instance:
         raise HTTPException(status_code=503, detail="GraphStore not initialized.")
     if not lc_client:
@@ -487,7 +499,12 @@ async def find_path_endpoint(path_request: PathRequest):
         raise HTTPException(status_code=503, detail="GraphStore not initialized.")
     try:
         with gs_instance:
-            path = gs_instance.find_shortest_path(path_request.start_node_id, path_request.end_node_id)
+            # Pass the directed flag to the GraphStore method
+            path = gs_instance.find_shortest_path(
+                start_node_id=path_request.start_node_id, 
+                end_node_id=path_request.end_node_id,
+                directed=path_request.directed
+            )
             if path is None:
                 raise HTTPException(status_code=404, detail="No path found between the specified nodes.")
             return path

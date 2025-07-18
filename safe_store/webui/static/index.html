@@ -1,417 +1,254 @@
 <!DOCTYPE html>
-<html lang="en" class=""> <!-- Ensure this class is dynamically managed by JS for dark mode -->
+<html lang="en" class="">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SafeStore Graph RAG Explorer</title>
-    <!-- Tailwind CSS via CDN -->
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-    <!-- Font Awesome for Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Vis.js Network CSS -->
     <link href="https://visjs.github.io/vis-network/standalone/umd/vis-network.min.css" rel="stylesheet" type="text/css" />
-    
-    <style>
-        body {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            @apply bg-gray-50 text-gray-900 transition-colors duration-300; /* Light mode default */
-        }
-        html.dark body {
-            @apply bg-gray-900 text-gray-100; /* Dark mode styles */
-        }
-        #graph-container { height: 100%; }
-        .modal-backdrop-custom { @apply fixed inset-0 bg-black bg-opacity-60 z-40; }
-
-        /* Custom File Input Styling */
-        .custom-file-input-container {
-            @apply flex flex-col items-center justify-center p-6 border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg cursor-pointer hover:border-blue-500 dark:hover:border-blue-400 bg-gray-50 dark:bg-gray-700 hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors;
-        }
-        .custom-file-input-container i { @apply text-3xl text-gray-400 dark:text-gray-500 mb-2; }
-        .custom-file-input-container p { @apply text-sm text-gray-600 dark:text-gray-300; }
-        .custom-file-input-container input[type="file"] { @apply hidden; }
-
-        /* Toggle switch styles */
-        input.toggle-checkbox-sm { @apply appearance-none w-10 h-5 bg-gray-300 dark:bg-gray-600 rounded-full shadow-inner cursor-pointer transition-colors relative; }
-        input.toggle-checkbox-sm:checked { @apply bg-blue-500 dark:bg-blue-400; }
-        input.toggle-checkbox-sm::after { content: ''; @apply absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform; }
-        input.toggle-checkbox-sm:checked::after { @apply transform translate-x-full; left:auto; right:0.5rem; transform: translateX(calc(100% - 0.25rem));}
-        input.toggle-checkbox-sm:checked::after { transform: translateX(100%); left: calc(100% - 1rem - 0.125rem); }
-
-        ::-webkit-scrollbar { width: 8px; height: 8px; }
-        ::-webkit-scrollbar-track { @apply bg-gray-200 dark:bg-gray-700; }
-        ::-webkit-scrollbar-thumb { @apply bg-gray-400 dark:bg-gray-500 rounded-full; }
-        ::-webkit-scrollbar-thumb:hover { @apply bg-gray-500 dark:bg-gray-400; }
-
-        .progress-bar-container { @apply w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2.5 overflow-hidden; }
-        .progress-bar { @apply bg-blue-600 h-2.5 rounded-full transition-all duration-300 ease-linear; }
-
-        /* Chat UI Styles */
-        .chat-message { @apply p-3 rounded-lg max-w-lg; }
-        .chat-user { @apply bg-blue-500 text-white self-end; }
-        .chat-ai { @apply bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-gray-200 self-start; }
-        .chat-ai p { @apply my-1; } /* Spacing for markdown paragraphs */
-        .chat-ai ul { @apply list-disc list-inside pl-2 my-1; }
-        .chat-ai ol { @apply list-decimal list-inside pl-2 my-1; }
-        .chat-ai pre { @apply bg-gray-800 text-white p-2 rounded-md my-2 text-sm; }
-        .chat-ai code { @apply font-mono text-sm; }
-
-    </style>
+    <link rel="stylesheet" href="/static_assets/style.css">
 </head>
-<body class="flex flex-col h-screen">
+<body class="bg-body-bg text-text-primary flex h-screen overflow-hidden p-2">
+    
+    <!-- Decorative Background Elements -->
+    <div class="background-orb-1"></div>
+    <div class="background-orb-2"></div>
 
-    <!-- Navbar -->
-    <nav class="bg-white dark:bg-gray-800 shadow-md sticky top-0 z-30 flex-shrink-0">
-        <div class="container mx-auto px-4">
-            <div class="flex items-center justify-between h-16">
-                <div class="flex items-center">
-                    <i class="fas fa-project-diagram text-blue-600 dark:text-blue-400 text-2xl mr-3"></i>
-                    <span class="font-semibold text-xl text-gray-800 dark:text-white">Graph RAG Explorer</span>
-                </div>
-                <div class="flex items-center space-x-2 sm:space-x-3">
-                    <button id="upload-document-btn" title="Upload Document" class="p-2 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
-                        <i class="fas fa-plus text-lg"></i>
-                    </button>
-                    <button id="databases-btn" title="Manage Databases" class="p-2 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
-                        <i class="fas fa-database text-lg"></i>
-                    </button>
-                    <button id="theme-toggle-btn" title="Toggle Dark/Light Mode" class="p-2 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
-                        <i class="fas fa-sun text-lg" id="theme-icon-sun"></i>
-                        <i class="fas fa-moon text-lg hidden" id="theme-icon-moon"></i>
-                    </button>
-                    <button id="settings-btn" title="Appearance Settings" class="p-2 rounded-full text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700">
-                        <i class="fas fa-cog text-lg"></i>
-                    </button>
+    <!-- Collapsible Sidebar -->
+    <aside id="sidebar" class="glass-effect flex flex-col transition-all duration-300 ease-in-out h-full rounded-xl z-20 w-96">
+        <!-- Sidebar Header -->
+        <div class="flex items-center justify-between p-4 border-b border-border-color flex-shrink-0">
+            <div class="flex items-center">
+                <i class="fas fa-project-diagram text-accent-primary text-2xl mr-3"></i>
+                <span class="font-semibold text-xl">Graph Explorer</span>
+            </div>
+            <button id="sidebar-toggle-btn" class="p-2 rounded-full hover:bg-bg-hover">
+                <i class="fas fa-angle-double-left"></i>
+            </button>
+        </div>
+
+        <!-- Scrollable Content Area -->
+        <div class="flex-grow overflow-y-auto overflow-x-hidden p-4 space-y-2">
+            <!-- Accordion Section: Main Actions -->
+            <div class="accordion-item">
+                <button class="accordion-header">
+                    <span><i class="fas fa-bolt fa-fw mr-2"></i>Actions</span>
+                    <i class="fas fa-chevron-down accordion-icon"></i>
+                </button>
+                <div class="accordion-content">
+                    <div class="p-3">
+                        <div class="grid grid-cols-2 gap-2">
+                            <button id="upload-document-btn" class="control-button">
+                                <i class="fas fa-plus"></i>
+                                <span>Upload</span>
+                            </button>
+                            <button id="chat-btn" class="control-button">
+                                <i class="fas fa-comments"></i>
+                                <span>Chat</span>
+                            </button>
+                            <button id="databases-btn" class="control-button">
+                                <i class="fas fa-database"></i>
+                                <span>Databases</span>
+                            </button>
+                            <button id="settings-btn" class="control-button">
+                                <i class="fas fa-cog"></i>
+                                <span>Settings</span>
+                            </button>
+                            <button id="theme-toggle-btn" class="control-button col-span-2">
+                                <i id="theme-icon-sun" class="fas fa-sun"></i>
+                                <i id="theme-icon-moon" class="hidden fas fa-moon"></i>
+                                <span id="theme-text">Light</span>
+                            </button>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </div>
-    </nav>
 
-    <!-- Main Content Area -->
-    <div class="flex-grow flex flex-col overflow-hidden">
-        <div class="flex-grow flex flex-col md:flex-row overflow-auto p-3 sm:p-4 space-y-3 md:space-y-0 md:space-x-4">
-            <!-- Sidebar -->
-            <aside class="w-full md:w-80 lg:w-96 bg-white dark:bg-gray-800 shadow-lg rounded-lg p-4 flex flex-col space-y-4 overflow-y-auto flex-shrink-0">
-                <!-- Graph Controls Section -->
-                <div>
-                    <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-3 border-b pb-2 dark:border-gray-700 flex items-center">
-                        <i class="fas fa-sitemap mr-2 text-blue-500 dark:text-blue-400"></i>Graph Controls
-                    </h3>
-                    <div class="space-y-3">
-                        <!-- Search Section -->
+            <!-- Accordion Section: Graph Controls -->
+            <div class="accordion-item">
+                <button class="accordion-header">
+                    <span><i class="fas fa-sitemap fa-fw mr-2"></i>Graph Controls</span>
+                    <i class="fas fa-chevron-down accordion-icon"></i>
+                </button>
+                <div class="accordion-content">
+                    <div class="p-3 space-y-2">
                         <form id="graph-search-form">
-                            <label for="graph-search-input" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Search Graph</label>
                             <div class="relative">
-                                <input type="search" id="graph-search-input" placeholder="e.g., 'find all users'" class="w-full p-2 pr-10 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white input-prevent-graph-interaction">
-                                <button type="button" id="clear-search-btn" class="absolute inset-y-0 right-8 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 px-2 hidden">
-                                    <i class="fas fa-times"></i>
-                                </button>
-                                <button type="submit" id="graph-search-submit-btn" class="absolute inset-y-0 right-0 px-3 flex items-center bg-blue-500 hover:bg-blue-600 rounded-r-md text-white">
+                                <input type="search" id="graph-search-input" placeholder="Search nodes..." class="control-input pr-10">
+                                <button type="submit" class="absolute inset-y-0 right-0 px-3 flex items-center text-text-secondary hover:text-accent-primary">
                                     <i class="fas fa-search"></i>
                                 </button>
                             </div>
                         </form>
-                        <!-- Search Results Container -->
-                        <div id="search-results-container" class="pt-2 border-t dark:border-gray-700 hidden">
-                            <h4 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Search Results</h4>
-                            <div id="search-results-list" class="max-h-40 overflow-y-auto space-y-1 pr-2"></div>
+                        <div class="grid grid-cols-2 gap-2">
+                            <button id="toggle-physics-btn" class="control-button"><i class="fas fa-pause-circle"></i> <span id="physics-btn-text">Stop Physics</span></button>
+                            <button id="fit-graph-btn" class="control-button"><i class="fas fa-expand-arrows-alt"></i> Fit View</button>
+                            <button id="edit-mode-btn" class="control-button col-span-2"><i class="fas fa-pencil-alt"></i> <span id="edit-mode-btn-text">Enable Editing</span></button>
                         </div>
                     </div>
                 </div>
-    
-                <!-- Interaction Tools -->
-                <div>
-                    <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-3 border-b pb-2 dark:border-gray-700 flex items-center">
-                        <i class="fas fa-mouse-pointer mr-2 text-blue-500 dark:text-blue-400"></i>Interaction Tools
-                    </h3>
-                    <div class="space-y-3">
+            </div>
+
+            <!-- Accordion Section: Find Path -->
+            <div class="accordion-item">
+                <button class="accordion-header">
+                    <span><i class="fas fa-route fa-fw mr-2"></i>Find Path</span>
+                    <i class="fas fa-chevron-down accordion-icon"></i>
+                </button>
+                <div class="accordion-content">
+                    <div class="p-3">
                         <form id="find-path-form" class="space-y-2">
                             <div class="grid grid-cols-2 gap-2">
-                                <div>
-                                    <label for="start-node-input" class="block text-xs font-medium dark:text-gray-300">Start Node</label>
-                                    <input type="number" id="start-node-input" placeholder="ID" class="input-prevent-graph-interaction mt-1 w-full p-1.5 border rounded-md text-sm dark:bg-gray-700 dark:border-gray-600">
-                                </div>
-                                <div>
-                                    <label for="end-node-input" class="block text-xs font-medium dark:text-gray-300">End Node</label>
-                                    <input type="number" id="end-node-input" placeholder="ID" class="input-prevent-graph-interaction mt-1 w-full p-1.5 border rounded-md text-sm dark:bg-gray-700 dark:border-gray-600">
-                                </div>
+                                <input type="number" id="start-node-input" placeholder="Start ID" class="control-input">
+                                <input type="number" id="end-node-input" placeholder="End ID" class="control-input">
                             </div>
-                            <button type="submit" class="w-full text-sm bg-indigo-500 hover:bg-indigo-600 text-white py-2 px-3 rounded-md flex items-center justify-center">
-                                <i class="fas fa-route mr-2"></i> Find Shortest Path
-                            </button>
+                            <div class="flex items-center justify-between pt-1">
+                                <label for="directed-path-toggle" class="text-sm">Directed Path</label>
+                                <input type="checkbox" id="directed-path-toggle" class="toggle-checkbox-sm" checked/>
+                            </div>
+                            <button type="submit" class="control-button bg-indigo-500 hover:bg-indigo-600 text-white w-full">Find Shortest Path</button>
                         </form>
-                        <div class="flex items-center justify-between pt-2">
-                            <label for="edit-mode-toggle" class="text-sm font-medium text-gray-700 dark:text-gray-300">Enable Editing</label>
-                            <input type="checkbox" id="edit-mode-toggle" class="toggle-checkbox-sm"/>
-                        </div>
-                        <small class="text-xs text-gray-500 dark:text-gray-400 block -mt-2" id="edit-mode-hint">Allows direct graph manipulation.</small>
                     </div>
                 </div>
-                
-                <!-- Maintenance & Layout -->
-                <div>
-                    <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-3 border-b pb-2 dark:border-gray-700 flex items-center">
-                        <i class="fas fa-tools mr-2 text-blue-500 dark:text-blue-400"></i>Maintenance & Layout
-                    </h3>
-                    <div class="space-y-3">
-                        <div class="grid grid-cols-2 gap-2">
-                            <button id="toggle-physics-btn" class="w-full text-sm bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 py-2 px-3 rounded-md flex items-center justify-center">
-                                <i class="fas fa-pause-circle mr-2"></i> <span id="physics-btn-text">Stop Physics</span>
-                            </button>
-                            <button id="fit-graph-btn" class="w-full text-sm bg-gray-200 hover:bg-gray-300 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 py-2 px-3 rounded-md flex items-center justify-center">
-                                <i class="fas fa-expand-arrows-alt mr-2"></i> Fit View
-                            </button>
-                        </div>
-                         <div>
-                            <label for="layout-select" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Layout</label>
-                            <select id="layout-select" class="w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white">
-                                <option value="default" selected>Force-Directed</option>
-                                <option value="hierarchicalRepulsion">Hierarchical (Repel)</option>
-                                <option value="hierarchicalDirected">Hierarchical (LR)</option>
-                                <option value="barnesHut">BarnesHut Physics</option>
-                            </select>
-                            <button id="apply-layout-btn" class="mt-2 w-full text-sm bg-blue-500 hover:bg-blue-600 text-white py-2 px-3 rounded-md flex items-center justify-center">
-                                <i class="fas fa-sync-alt mr-2"></i> Apply Layout
-                            </button>
-                        </div>
-                        <div>
-                            <button id="fuse-entities-btn" class="mt-2 w-full text-sm bg-purple-600 hover:bg-purple-700 text-white py-2 px-3 rounded-md flex items-center justify-center">
-                                <i class="fas fa-wand-magic-sparkles mr-2"></i> Fuse Entities
-                            </button>
-                            <small class="text-xs text-gray-500 dark:text-gray-400 block text-center mt-1">Scan graph for duplicates and merge them.</small>
-                        </div>
-                    </div>
-                </div>
-    
-                <!-- Selection Details Section -->
-                <div class="flex-grow">
-                    <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-100 my-3 border-b pb-2 dark:border-gray-700 flex items-center">
-                        <i class="fas fa-info-circle mr-2 text-blue-500 dark:text-blue-400"></i>Selection Details
-                    </h3>
-                    <div id="selection-info-content" class="text-sm space-y-3">
-                        <div id="node-info-panel" style="display: none;" class="space-y-2 p-2 bg-gray-100 dark:bg-gray-700 rounded-md">
-                            <p><strong class="text-gray-600 dark:text-gray-300">ID:</strong> <span id="node-id-display" class="font-mono text-xs bg-gray-200 dark:bg-gray-600 p-1 rounded"></span></p>
-                            <p><strong class="text-gray-600 dark:text-gray-300">Label:</strong> <span id="node-label-display" class="text-gray-800 dark:text-gray-100"></span></p>
-                            <div>
-                                <strong class="text-gray-600 dark:text-gray-300">Properties:</strong>
-                                <pre id="node-properties-display" class="mt-1 text-xs bg-gray-800 dark:bg-black text-gray-200 dark:text-gray-300 p-2 rounded-md max-h-32 overflow-auto pretty-json"></pre>
-                            </div>
-                            <div class="grid grid-cols-2 gap-2 pt-2">
-                                 <button id="expand-neighbors-btn" class="w-full text-sm bg-blue-500 hover:bg-blue-600 text-white py-1.5 px-3 rounded-md flex items-center justify-center" disabled>
-                                    <i class="fas fa-project-diagram mr-2"></i> Expand
-                                </button>
-                                <button id="edit-selected-node-btn" class="w-full text-sm bg-green-500 hover:bg-green-600 text-white py-1.5 px-3 rounded-md flex items-center justify-center" disabled>
-                                    <i class="fas fa-edit mr-2"></i> Edit
-                                </button>
-                            </div>
-                        </div>
-                        <div id="edge-info-panel" style="display: none;" class="space-y-2 p-2 bg-gray-100 dark:bg-gray-700 rounded-md">
-                            <p><strong class="text-gray-600 dark:text-gray-300">ID:</strong> <span id="edge-id-display" class="font-mono text-xs bg-gray-200 dark:bg-gray-600 p-1 rounded"></span></p>
-                            <p><strong class="text-gray-600 dark:text-gray-300">Type:</strong> <span id="edge-type-display" class="text-gray-800 dark:text-gray-100"></span></p>
-                            <p><strong class="text-gray-600 dark:text-gray-300">From:</strong> <span id="edge-from-display" class="font-mono text-xs bg-gray-200 dark:bg-gray-600 p-1 rounded"></span></p>
-                            <p><strong class="text-gray-600 dark:text-gray-300">To:</strong> <span id="edge-to-display" class="font-mono text-xs bg-gray-200 dark:bg-gray-600 p-1 rounded"></span></p>
-                            <div>
-                                <strong class="text-gray-600 dark:text-gray-300">Properties:</strong>
-                                <pre id="edge-properties-display" class="mt-1 text-xs bg-gray-800 dark:bg-black text-gray-200 dark:text-gray-300 p-2 rounded-md max-h-32 overflow-auto pretty-json"></pre>
-                            </div>
-                             <button id="edit-selected-edge-btn" class="mt-2 w-full text-sm bg-green-500 hover:bg-green-600 text-white py-1.5 px-3 rounded-md flex items-center justify-center" disabled>
-                                <i class="fas fa-edit mr-2"></i> Edit Edge
-                            </button>
-                        </div>
-                        <p id="no-selection" class="text-gray-500 dark:text-gray-400 italic text-center p-4">Click on a node or edge to see details.</p>
-                    </div>
-                </div>
-    
-                <!-- Task Progress Section -->
-                <div id="task-progress-container" class="mt-auto pt-4 border-t dark:border-gray-700">
-                    <!-- Progress bars will be added here by JS -->
-                </div>
-                 <div id="graph-action-status" class="text-xs text-gray-600 dark:text-gray-400 min-h-[20px] mt-1 text-center"></div>
-    
-            </aside>
-    
-            <!-- Graph Visualization Area -->
-            <main id="graph-container-wrapper" class="flex-grow bg-white dark:bg-gray-800 shadow-lg rounded-lg relative">
-                <div id="graph-container"></div>
-                <!-- Loading overlay for graph -->
-                <div id="graph-loading-overlay" class="absolute inset-0 bg-white dark:bg-gray-800 bg-opacity-75 dark:bg-opacity-75 flex items-center justify-center z-10 hidden">
-                    <i class="fas fa-spinner fa-spin text-blue-500 dark:text-blue-400 text-4xl"></i>
-                </div>
-            </main>
-        </div>
-
-        <!-- Chat Panel -->
-        <div id="chat-panel" class="flex-shrink-0 h-1/3 md:h-1/4 p-4 bg-white dark:bg-gray-800 shadow-lg rounded-t-lg flex flex-col border-t-2 dark:border-gray-700">
-            <h3 class="text-lg font-semibold text-gray-800 dark:text-gray-100 mb-2 border-b pb-2 dark:border-gray-700 flex-shrink-0">RAG Chat</h3>
-            <div id="chat-messages" class="flex-grow overflow-y-auto p-2 space-y-4 flex flex-col">
-                <!-- Chat messages will be appended here -->
             </div>
-            <form id="chat-form" class="mt-2 flex items-center flex-shrink-0">
-                <input type="text" id="chat-input" placeholder="Ask a question about the graph..." class="flex-grow p-2 border border-gray-300 rounded-l-md focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-700 dark:border-gray-600 dark:text-white">
-                <button type="submit" id="chat-submit-btn" class="p-2 bg-blue-500 text-white rounded-r-md hover:bg-blue-600 disabled:opacity-50" disabled>
-                    <i class="fas fa-paper-plane"></i>
+            
+            <!-- Accordion Section: Maintenance -->
+            <div class="accordion-item">
+                <button class="accordion-header">
+                    <span><i class="fas fa-tools fa-fw mr-2"></i>Maintenance</span>
+                    <i class="fas fa-chevron-down accordion-icon"></i>
                 </button>
-            </form>
-        </div>
-    </div>
+                <div class="accordion-content">
+                    <div class="p-3">
+                        <button id="fuse-entities-btn" class="control-button bg-purple-600 hover:bg-purple-700 text-white w-full">
+                            <i class="fas fa-wand-magic-sparkles mr-2"></i> Fuse Entities
+                        </button>
+                        <small class="text-text-secondary block text-center mt-1">Scan & merge duplicate nodes.</small>
+                    </div>
+                </div>
+            </div>
 
+            <!-- Accordion Section: Selection Details -->
+            <div id="selection-accordion" class="accordion-item">
+                <button class="accordion-header">
+                    <span><i class="fas fa-info-circle fa-fw mr-2"></i>Selection Details</span>
+                    <i class="fas fa-chevron-down accordion-icon"></i>
+                </button>
+                <div class="accordion-content">
+                    <div class="p-3">
+                        <div id="selection-info-content" class="text-sm space-y-3">
+                            <div id="node-info-panel" style="display: none;">
+                                <p><strong>ID:</strong> <span id="node-id-display" class="font-mono text-xs bg-bg-tertiary p-1 rounded"></span></p>
+                                <p><strong>Label:</strong> <span id="node-label-display"></span></p>
+                                <div>
+                                    <strong>Properties:</strong>
+                                    <pre id="node-properties-display" class="property-display"></pre>
+                                </div>
+                                <div class="grid grid-cols-2 gap-2 pt-2">
+                                     <button id="expand-neighbors-btn" class="control-button" disabled><i class="fas fa-project-diagram"></i> Expand</button>
+                                     <button id="edit-selected-node-btn" class="control-button" disabled><i class="fas fa-edit"></i> Edit</button>
+                                     <button id="set-start-node-btn" class="control-button" disabled><i class="fas fa-flag-checkered"></i> Set Start</button>
+                                     <button id="set-end-node-btn" class="control-button" disabled><i class="fas fa-map-marker-alt"></i> Set End</button>
+                                </div>
+                            </div>
+                            <div id="edge-info-panel" style="display: none;">
+                                <p><strong>ID:</strong> <span id="edge-id-display" class="font-mono text-xs bg-bg-tertiary p-1 rounded"></span></p>
+                                <p><strong>Type:</strong> <span id="edge-type-display"></span></p>
+                                <div>
+                                    <strong>Properties:</strong>
+                                    <pre id="edge-properties-display" class="property-display"></pre>
+                                </div>
+                                <button id="edit-selected-edge-btn" class="mt-2 control-button w-full" disabled><i class="fas fa-edit"></i> Edit Edge</button>
+                            </div>
+                            <p id="no-selection" class="text-text-secondary italic text-center p-2">Click a node or edge.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div> <!-- End Scrollable Content Area -->
+
+        <!-- Task Progress Section -->
+         <div class="flex-shrink-0 p-4 border-t border-border-color space-y-2 max-h-40 overflow-y-auto">
+            <div id="task-progress-container" class="space-y-2">
+                <!-- Progress bars will be added here by JS -->
+            </div>
+            <div id="graph-action-status" class="text-xs text-text-secondary min-h-[20px] text-center"></div>
+         </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main id="main-content" class="flex-grow h-full relative pl-2">
+        <div id="graph-wrapper" class="glass-effect w-full h-full rounded-xl relative overflow-hidden">
+            <div id="graph-container" class="w-full h-full"></div>
+            <div id="graph-loading-overlay" class="absolute inset-0 bg-bg-primary bg-opacity-75 flex items-center justify-center z-10 hidden">
+                <i class="fas fa-spinner fa-spin text-accent-primary text-4xl"></i>
+            </div>
+        </div>
+    </main>
 
     <!-- MODALS -->
-    <!-- Upload Modal -->
-    <div id="upload-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg transform transition-all" role="dialog" aria-modal="true">
-            <div class="flex items-center justify-between mb-4">
-                <h3 class="text-xl font-semibold text-gray-900 dark:text-white">Upload Document(s)</h3>
-                <button id="close-upload-modal-btn" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><i class="fas fa-times text-xl"></i></button>
-            </div>
-            <form id="upload-form">
+    <div id="upload-modal" class="modal-backdrop hidden">
+        <div class="modal-content glass-effect">
+            <div class="modal-header"><h3>Upload Document(s)</h3><button id="close-upload-modal-btn" class="modal-close-btn"><i class="fas fa-times"></i></button></div>
+            <form id="upload-form" class="p-4">
                 <label for="file-input" class="custom-file-input-container mb-4">
                     <i class="fas fa-cloud-upload-alt"></i>
                     <p class="font-semibold">Click to browse or drag and drop</p>
-                    <p class="text-xs">Select one or more files</p>
                     <input type="file" id="file-input" name="files" multiple />
                 </label>
                 <div id="file-list-preview" class="mb-3 max-h-32 overflow-y-auto text-sm space-y-1"></div>
                 <div class="mb-4">
-                    <label for="extraction-guidance-input" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Property Extraction Guidance (Optional)</label>
-                    <textarea id="extraction-guidance-input" rows="3" class="w-full p-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 text-sm dark:bg-gray-700 dark:border-gray-600 dark:text-white" placeholder="e.g., 'Extract the author, publication date, and key findings. For people, extract their affiliation.'"></textarea>
+                    <label for="extraction-guidance-input" class="modal-label">Extraction Guidance (Optional)</label>
+                    <textarea id="extraction-guidance-input" rows="3" class="control-input w-full" placeholder="e.g., 'Extract the author and key findings.'"></textarea>
                 </div>
-                <button type="submit" id="upload-submit-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-4 rounded-md flex items-center justify-center" disabled>
+                <button type="submit" id="upload-submit-btn" class="w-full control-button bg-accent-primary hover:bg-accent-primary-hover text-white" disabled>
                     <i class="fas fa-arrow-up-from-bracket mr-2"></i>Upload Selected
                 </button>
             </form>
-            <div id="upload-progress-area" class="mt-3 space-y-1"></div>
-            <div id="upload-overall-status" class="mt-3 text-sm min-h-[20px]"></div>
+            <div id="upload-progress-area" class="p-4 pt-0 space-y-1"></div>
+            <div id="upload-overall-status" class="px-4 pb-2 text-sm min-h-[20px]"></div>
         </div>
     </div>
     
-    <!-- ADD/EDIT MODALS -->
-    <!-- Add Node Modal (NEW) -->
-    <div id="node-add-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md" role="dialog">
-            <h3 class="text-xl font-semibold mb-4 dark:text-white">Add New Node</h3>
-            <form id="node-add-form" class="space-y-4">
-                <div>
-                    <label for="modal-add-node-label" class="block text-sm font-medium dark:text-gray-300">Node Label</label>
-                    <input type="text" id="modal-add-node-label" required class="mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md" placeholder="e.g., Person, Company">
+    <div id="chat-modal" class="modal-backdrop hidden">
+        <div class="modal-content glass-effect max-w-3xl w-full h-[80vh]">
+            <div class="modal-header"><h3>RAG Chat</h3><button id="close-chat-modal-btn" class="modal-close-btn"><i class="fas fa-times"></i></button></div>
+            <div class="p-4 flex flex-col h-full">
+                <div id="chat-messages" class="flex-grow overflow-y-auto p-1 space-y-4 flex flex-col mb-2">
+                    <!-- Chat messages will be appended here -->
                 </div>
-                <div class="flex justify-end space-x-3 pt-2">
-                    <button type="button" id="cancel-node-add-btn" class="px-4 py-2 text-sm dark:bg-gray-600 dark:hover:bg-gray-500 rounded-md">Cancel</button>
-                    <button type="submit" id="save-node-add-btn" class="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-md">Add Node</button>
-                </div>
-            </form>
-        </div>
-    </div>
-
-    <!-- Add Edge Modal (NEW) -->
-    <div id="edge-add-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md" role="dialog">
-            <h3 class="text-xl font-semibold mb-4 dark:text-white">Add New Edge</h3>
-            <form id="edge-add-form" class="space-y-4">
-                <div>
-                    <label for="modal-add-edge-label" class="block text-sm font-medium dark:text-gray-300">Edge Label (optional)</label>
-                    <input type="text" id="modal-add-edge-label" class="mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md" placeholder="e.g., WORKS_AT, PUBLISHED_IN">
-                </div>
-                <div class="flex justify-end space-x-3 pt-2">
-                    <button type="button" id="cancel-edge-add-btn" class="px-4 py-2 text-sm dark:bg-gray-600 dark:hover:bg-gray-500 rounded-md">Cancel</button>
-                    <button type="submit" id="save-edge-add-btn" class="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-md">Add Edge</button>
-                </div>
-            </form>
-        </div>
-    </div>
-    
-    <!-- Node/Edge Edit Modals -->
-    <div id="node-edit-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg" role="dialog">
-            <div class="flex items-center justify-between mb-4"><h3 class="text-xl font-semibold dark:text-white">Edit Node</h3><button id="close-node-edit-modal-btn" class="dark:text-gray-300"><i class="fas fa-times"></i></button></div>
-            <form id="node-edit-form" class="space-y-4">
-                <input type="hidden" id="modal-node-id">
-                <div><label for="modal-node-label" class="block text-sm font-medium dark:text-gray-300">Label</label><input type="text" id="modal-node-label" required class="input-prevent-graph-interaction mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md"></div>
-                <div><label for="modal-node-properties" class="block text-sm font-medium dark:text-gray-300">Properties (JSON)</label><textarea id="modal-node-properties" rows="5" class="input-prevent-graph-interaction mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md font-mono text-xs"></textarea><small class="text-xs dark:text-gray-400">Valid JSON object.</small></div>
-                <div class="flex justify-end space-x-3 pt-2"><button type="button" id="cancel-node-edit-btn" class="px-4 py-2 text-sm dark:bg-gray-600 dark:hover:bg-gray-500 rounded-md">Cancel</button><button type="button" id="save-node-changes-btn" class="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-md">Save</button></div>
-            </form>
-        </div>
-    </div>
-    <div id="edge-edit-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg" role="dialog">
-            <div class="flex items-center justify-between mb-4"><h3 class="text-xl font-semibold dark:text-white">Edit Edge</h3><button id="close-edge-edit-modal-btn" class="dark:text-gray-300"><i class="fas fa-times"></i></button></div>
-            <form id="edge-edit-form" class="space-y-4">
-                <input type="hidden" id="modal-edge-id">
-                <div><label for="modal-edge-label" class="block text-sm font-medium dark:text-gray-300">Label/Type</label><input type="text" id="modal-edge-label" class="input-prevent-graph-interaction mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md"></div>
-                <div><label for="modal-edge-properties" class="block text-sm font-medium dark:text-gray-300">Properties (JSON)</label><textarea id="modal-edge-properties" rows="5" class="input-prevent-graph-interaction mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md font-mono text-xs"></textarea><small class="text-xs dark:text-gray-400">Valid JSON object.</small></div>
-                <div class="flex justify-end space-x-3 pt-2"><button type="button" id="cancel-edge-edit-btn" class="px-4 py-2 text-sm dark:bg-gray-600 dark:hover:bg-gray-500 rounded-md">Cancel</button><button type="button" id="save-edge-changes-btn" class="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-md">Save</button></div>
-            </form>
-        </div>
-    </div>
-
-    <!-- Appearance Settings Modal -->
-    <div id="settings-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md transform transition-all" role="dialog">
-            <div class="flex items-center justify-between mb-6">
-                <h3 class="text-xl font-semibold text-gray-900 dark:text-white">Appearance Settings</h3>
-                <button id="close-settings-modal-btn" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><i class="fas fa-times text-xl"></i></button>
-            </div>
-            <div class="space-y-6">
-                <div class="flex items-center justify-between py-2">
-                    <label for="modal-theme-toggle" class="text-sm text-gray-700 dark:text-gray-300">Dark Mode</label>
-                    <input type="checkbox" id="modal-theme-toggle" class="toggle-checkbox-sm"/>
-                </div>
-                <div class="flex items-center justify-between py-2">
-                    <label for="setting-physics-on-load" class="text-sm text-gray-700 dark:text-gray-300">Enable physics on load</label>
-                    <input type="checkbox" id="setting-physics-on-load" class="toggle-checkbox-sm"/>
-                </div>
-            </div>
-            <div class="mt-8 flex justify-end">
-                 <button id="save-settings-btn" class="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md">Apply & Close</button>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Database Management Modal -->
-    <div id="databases-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-2xl transform transition-all" role="dialog">
-            <div class="flex items-center justify-between mb-6 border-b dark:border-gray-700 pb-4">
-                <h3 class="text-xl font-semibold text-gray-900 dark:text-white">Database Management</h3>
-                <button id="close-databases-modal-btn" class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"><i class="fas fa-times text-xl"></i></button>
-            </div>
-            <div class="space-y-4">
-                <div id="database-list-container" class="max-h-96 overflow-y-auto space-y-3 pr-2">
-                    <p class="text-sm italic dark:text-gray-400">Loading databases...</p> 
-                </div>
-                <div class="pt-4 border-t dark:border-gray-700">
-                    <button id="create-new-db-btn" class="text-sm bg-green-500 hover:bg-green-600 text-white py-2 px-4 rounded-md flex items-center justify-center">
-                        <i class="fas fa-plus-circle mr-2"></i> Create New Database
+                <form id="chat-form" class="mt-auto flex items-center flex-shrink-0">
+                    <input type="text" id="chat-input" placeholder="Ask a question..." class="control-input flex-grow rounded-r-none">
+                    <button type="submit" id="chat-submit-btn" class="p-2 bg-accent-primary text-white rounded-r-md hover:bg-accent-primary-hover disabled:opacity-50" disabled>
+                        <i class="fas fa-paper-plane"></i>
                     </button>
-                </div>
+                </form>
             </div>
         </div>
     </div>
-    
-    <!-- Create Database Modal -->
-    <div id="create-db-modal" class="fixed inset-0 flex items-center justify-center p-4 modal-backdrop-custom hidden">
-        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md" role="dialog">
-            <div class="flex items-center justify-between mb-4"><h3 class="text-xl font-semibold dark:text-white">Create New Database</h3><button id="close-create-db-modal-btn" class="dark:text-gray-300"><i class="fas fa-times"></i></button></div>
-            <form id="create-db-form" class="space-y-4">
-                <div>
-                    <label for="create-db-name-input" class="block text-sm font-medium dark:text-gray-300">Database Name</label>
-                    <input type="text" id="create-db-name-input" required class="mt-1 w-full dark:bg-gray-700 dark:border-gray-600 dark:text-white p-2 border rounded-md" placeholder="e.g., project_alpha">
-                    <small class="dark:text-gray-400 text-xs">A unique name. Use only letters, numbers, hyphens, and underscores.</small>
-                </div>
-                <div id="create-db-error" class="text-xs text-red-500 min-h-[16px]"></div>
-                <div class="flex justify-end space-x-3 pt-2">
-                    <button type="button" id="cancel-create-db-btn" class="px-4 py-2 text-sm dark:bg-gray-600 dark:hover:bg-gray-500 rounded-md">Cancel</button>
-                    <button type="submit" id="save-create-db-btn" class="px-4 py-2 text-sm text-white bg-blue-600 hover:bg-blue-700 rounded-md">Create Database</button>
-                </div>
-            </form>
-        </div>
+
+    <div id="node-add-modal" class="modal-backdrop hidden"><div class="modal-content glass-effect"><div class="modal-header"><h3>Add New Node</h3></div><form id="node-add-form" class="space-y-4 p-4"><input type="text" id="modal-add-node-label" required class="control-input w-full" placeholder="e.g., Person"><div class="flex justify-end space-x-3 pt-2"><button type="button" id="cancel-node-add-btn" class="control-button">Cancel</button><button type="submit" id="save-node-add-btn" class="control-button text-white bg-accent-primary">Add</button></div></form></div></div>
+    <div id="edge-add-modal" class="modal-backdrop hidden"><div class="modal-content glass-effect"><div class="modal-header"><h3>Add New Edge</h3></div><form id="edge-add-form" class="space-y-4 p-4"><input type="text" id="modal-add-edge-label" class="control-input w-full" placeholder="e.g., WORKS_AT"><div class="flex justify-end space-x-3 pt-2"><button type="button" id="cancel-edge-add-btn" class="control-button">Cancel</button><button type="submit" class="control-button text-white bg-accent-primary">Add</button></div></form></div></div>
+    <div id="node-edit-modal" class="modal-backdrop hidden"><div class="modal-content glass-effect"><div class="modal-header"><h3>Edit Node</h3><button id="close-node-edit-modal-btn" class="modal-close-btn"><i class="fas fa-times"></i></button></div><form id="node-edit-form" class="space-y-4 p-4"><input type="hidden" id="modal-node-id"><div><label class="modal-label">Label</label><input type="text" id="modal-node-label" required class="control-input w-full"></div><div><label class="modal-label">Properties (JSON)</label><textarea id="modal-node-properties" rows="5" class="control-input w-full font-mono text-xs"></textarea></div><div class="flex justify-end space-x-3"><button type="button" id="cancel-node-edit-btn" class="control-button">Cancel</button><button type="button" id="save-node-changes-btn" class="control-button text-white bg-accent-primary">Save</button></div></form></div></div>
+    <div id="edge-edit-modal" class="modal-backdrop hidden"><div class="modal-content glass-effect"><div class="modal-header"><h3>Edit Edge</h3><button id="close-edge-edit-modal-btn" class="modal-close-btn"><i class="fas fa-times"></i></button></div><form id="edge-edit-form" class="space-y-4 p-4"><input type="hidden" id="modal-edge-id"><div><label class="modal-label">Label/Type</label><input type="text" id="modal-edge-label" class="control-input w-full"></div><div><label class="modal-label">Properties (JSON)</label><textarea id="modal-edge-properties" rows="5" class="control-input w-full font-mono text-xs"></textarea></div><div class="flex justify-end space-x-3"><button type="button" id="cancel-edge-edit-btn" class="control-button">Cancel</button><button type="button" id="save-edge-changes-btn" class="control-button text-white bg-accent-primary">Save</button></div></form></div></div>
+
+    <div id="settings-modal" class="modal-backdrop hidden"><div class="modal-content glass-effect"><div class="modal-header"><h3>Settings</h3><button id="close-settings-modal-btn" class="modal-close-btn"><i class="fas fa-times"></i></button></div><div class="p-4 space-y-4"><div class="flex items-center justify-between"><label class="text-sm">Dark Mode</label><input type="checkbox" id="modal-theme-toggle" class="toggle-checkbox-sm"/></div><div class="flex items-center justify-between"><label class="text-sm">Physics on Load</label><input type="checkbox" id="setting-physics-on-load" class="toggle-checkbox-sm"/></div></div><div class="p-4 flex justify-end"><button id="save-settings-btn" class="control-button bg-accent-primary text-white">Apply & Close</button></div></div></div>
+    <div id="databases-modal" class="modal-backdrop hidden"><div class="modal-content glass-effect max-w-2xl"><div class="modal-header"><h3>Database Management</h3><button id="close-databases-modal-btn" class="modal-close-btn"><i class="fas fa-times"></i></button></div><div class="p-4 space-y-4"><div id="database-list-container" class="max-h-96 overflow-y-auto space-y-3 pr-2"></div><div class="pt-4 border-t border-border-color"><button id="create-new-db-btn" class="control-button text-white bg-green-500 hover:bg-green-600"><i class="fas fa-plus-circle mr-2"></i>Create New Database</button></div></div></div></div>
+    <div id="create-db-modal" class="modal-backdrop hidden"><div class="modal-content glass-effect"><div class="modal-header"><h3>Create New Database</h3><button id="close-create-db-modal-btn" class="modal-close-btn"><i class="fas fa-times"></i></button></div><form id="create-db-form" class="p-4 space-y-4"><div><label class="modal-label">Database Name</label><input type="text" id="create-db-name-input" required class="control-input w-full" placeholder="e.g., project_alpha"><small class="text-text-secondary">Letters, numbers, hyphens, underscores only.</small></div><div id="create-db-error" class="text-xs text-red-500 min-h-[16px]"></div><div class="flex justify-end space-x-3"><button type="button" id="cancel-create-db-btn" class="control-button">Cancel</button><button type="submit" class="control-button text-white bg-accent-primary">Create</button></div></form></div></div>
+
+    <!-- Right-click Context Menu -->
+    <div id="node-context-menu" class="context-menu glass-effect hidden">
+        <ul>
+            <li id="context-set-start"><i class="fas fa-flag-checkered fa-fw mr-2"></i>Set as Start Node</li>
+            <li id="context-set-end"><i class="fas fa-map-marker-alt fa-fw mr-2"></i>Set as End Node</li>
+        </ul>
     </div>
 
-    <!-- Vis.js Network JS -->
+    <!-- Vis.js, Showdown, Socket.IO and Custom JS -->
     <script type="text/javascript" src="https://visjs.github.io/vis-network/standalone/umd/vis-network.min.js"></script>
-    <!-- Showdown.js for Markdown Rendering -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/showdown/2.1.0/showdown.min.js"></script>
-    <!-- Socket.IO Client -->
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-    <!-- Custom JavaScript -->
     <script src="/static_assets/script.js"></script>
 </body>
 </html>

@@ -1061,34 +1061,37 @@ def merge_nodes_db(conn: sqlite3.Connection, source_node_id: int, target_node_id
         ASCIIColors.error(msg, exc_info=True)
         # The calling function should handle rollback.
         raise GraphDBError(msg) from e
-def find_shortest_path_db(conn: sqlite3.Connection, start_node_id: int, end_node_id: int) -> Optional[Dict[str, List[Any]]]:
+def find_shortest_path_db(conn: sqlite3.Connection, start_node_id: int, end_node_id: int, directed: bool = True) -> Optional[Dict[str, List[Any]]]:
     """
-    Finds the shortest path between two nodes using a bidirectional BFS approach simulated with recursive CTEs.
+    Finds the shortest path between two nodes using a BFS approach simulated with recursive CTEs.
+    Handles both directed and undirected path searches.
     Returns the path as a list of nodes and a list of relationships.
     """
     if start_node_id == end_node_id:
         node = get_node_details_db(conn, start_node_id)
         return {"nodes": [node] if node else [], "relationships": []}
 
-    # This recursive CTE performs a breadth-first search.
-    # It stores the path as a JSON array of visited node IDs.
-    sql = """
+    # The base query uses a placeholder for the edges to search over.
+    sql_base = """
     WITH RECURSIVE
+      -- Define all possible steps (edges) for the search
+      search_edges(s, t, rel_id) AS ({edges_cte}),
+      -- Recursive path finder
       path_finder(current_node_id, target_node_id, path_nodes_json, path_rels_json) AS (
         SELECT
           ?, ?, json_array(?), json_array()
         UNION
         SELECT
-          r.target_node_id,
+          e.t,
           p.target_node_id,
-          json_insert(p.path_nodes_json, '$[#]', r.target_node_id),
-          json_insert(p.path_rels_json, '$[#]', r.relationship_id)
+          json_insert(p.path_nodes_json, '$[#]', e.t),
+          json_insert(p.path_rels_json, '$[#]', e.rel_id)
         FROM
-          graph_relationships r,
+          search_edges e,
           path_finder p
         WHERE
-          r.source_node_id = p.current_node_id
-          AND instr(p.path_nodes_json, json_quote(r.target_node_id)) = 0
+          e.s = p.current_node_id
+          AND instr(p.path_nodes_json, json_quote(e.t)) = 0 -- Avoid cycles in the path
       )
     SELECT path_nodes_json, path_rels_json
     FROM path_finder
@@ -1096,6 +1099,20 @@ def find_shortest_path_db(conn: sqlite3.Connection, start_node_id: int, end_node
     ORDER BY json_array_length(path_nodes_json) ASC
     LIMIT 1;
     """
+    
+    if directed:
+        # For directed search, only use the original edge direction
+        edges_cte = "SELECT source_node_id, target_node_id, relationship_id FROM graph_relationships"
+    else:
+        # For undirected search, consider both directions of each relationship
+        edges_cte = """
+        SELECT source_node_id, target_node_id, relationship_id FROM graph_relationships
+        UNION -- UNION removes duplicates (e.g., if a relationship exists in both directions)
+        SELECT target_node_id, source_node_id, relationship_id FROM graph_relationships
+        """
+    
+    sql = sql_base.format(edges_cte=edges_cte)
+
     cursor = conn.cursor()
     try:
         cursor.execute(sql, (start_node_id, end_node_id, start_node_id))
@@ -1117,4 +1134,4 @@ def find_shortest_path_db(conn: sqlite3.Connection, start_node_id: int, end_node
             "relationships": [r for r in path_relationships if r]
         }
     except sqlite3.Error as e:
-        raise GraphDBError(f"DB error finding shortest path between {start_node_id} and {end_node_id}: {e}") from e
+        raise GraphDBError(f"DB error finding shortest path between {start_node_id} and {end_node_id} (directed={directed}): {e}") from e

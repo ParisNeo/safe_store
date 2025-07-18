@@ -23,146 +23,18 @@ from ..utils.json_parsing import robust_json_parser
 LLMExecutorCallback = Callable[[str], str] 
 ProgressCallback = Callable[[float, str], None]
 
-
+def load_prompt(file_name):
+    path=Path(__file__).parent/"prompts"/f"{file_name}.md"
+    return path.read_text()
 class GraphStore:
     GRAPH_FEATURES_ENABLED_KEY = "graph_features_enabled"
 
     # --- Default Prompts ---
-    DEFAULT_GRAPH_EXTRACTION_PROMPT_TEMPLATE = """
-Extract entities (nodes) and their relationships from the following text.
-Format the output strictly as a JSON object.
-**The entire JSON output MUST be enclosed in a single markdown code block starting with ```json and ending with ```.**
+    DEFAULT_GRAPH_EXTRACTION_PROMPT_TEMPLATE = load_prompt("graph_extraction_prompt")
 
----
-**Extraction Guidance:**
-{user_guidance}
----
+    DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE = load_prompt("query_parsing_prompt")
 
-JSON Structure Example:
-```json
-{{
-    "nodes": [
-        {{"label": "Person", "properties": {{"name": "John Doe", "title": "Engineer"}}}},
-        {{"label": "Company", "properties": {{"name": "Acme Corp", "industry": "Tech"}}}}
-    ],
-    "relationships": [
-        {{"source_node_label": "Person", "source_node_identifying_value": "John Doe",
-            "target_node_label": "Company", "target_node_identifying_value": "Acme Corp",
-            "type": "WORKS_AT", "properties": {{"role": "Engineer"}}}}
-    ]
-}}
-```
-
-For each node:
-- "label": A general type (e.g., "Person", "Company", "Product", "Location", "Organization", "ResearchPaper", "University", "Journal").
-- "properties": Dictionary of relevant attributes. Pay close attention to the **Extraction Guidance**. Ensure properties like "name", "title", or other unique identifiers are included if available.
-
-For each relationship:
-- "source_node_label": Label of the source node.
-- "source_node_identifying_value": The value of a primary identifying property from the source node (e.g., if source node is `{{ "label": "Person", "properties": {{"name": "John Doe"}}}}`, this value would be "John Doe". Use the most prominent identifier like name or title).
-- "target_node_label": Label of the target node.
-- "target_node_identifying_value": Similar to "source_node_identifying_value" for the target node.
-- "type": Relationship type in UPPER_SNAKE_CASE (e.g., "WORKS_AT", "CEO_OF", "PUBLISHED_IN").
-- "properties": Optional dictionary for relationship attributes. Make sure the entries are in form "property":"detail"
-
-Text to process:
----
-{chunk_text}
----
-
-Extracted JSON (wrapped in ```json ... ```):
-"""
-
-    DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE = """
-Given a "New Entity" extracted from a document and a list of "Candidate Existing Entities" from a knowledge graph, determine if the New Entity should be merged with one of the existing entities.
-
-**New Entity:**
-- Label: {new_entity_label}
-- Properties: {new_entity_properties}
-
-**Candidate Existing Entities:**
-{candidate_entities_str}
-
-**Task:**
-Analyze the entities and decide if the "New Entity" represents the same real-world concept as one of the candidates.
-
-**Output Format:**
-Respond with a JSON object in a markdown code block.
-- If a merge is appropriate, identify the `node_id` of the best candidate to merge with.
-- If no candidate is a suitable match, decide to create a new entity.
-
-**JSON Response Structure:**
-```json
-{{
-  "decision": "MERGE" | "CREATE_NEW",
-  "reason": "Your detailed reasoning for the decision.",
-  "merge_target_id": <node_id_of_candidate_to_merge_with_if_decision_is_MERGE> | null
-}}
-```
-
-**Example 1 (Merge):**
-New Entity: { "label": "Person", "properties": { "name": "Dr. Smith", "affiliation": "MIT" } }
-Candidates: [ { "node_id": 101, "properties": { "name": "Dr. J. Smith", "title": "Professor" } } ]
-Response:
-```json
-{{
-  "decision": "MERGE",
-  "reason": "The new entity 'Dr. Smith' from MIT very likely refers to the existing entity 'Dr. J. Smith', who is a professor. The names are a close match.",
-  "merge_target_id": 101
-}}
-```
-
-**Example 2 (Create New):**
-New Entity: { "label": "Company", "properties": { "name": "Innovate Inc." } }
-Candidates: [ { "node_id": 205, "properties": { "name": "Innovate Corp", "location": "New York" } } ]
-Response:
-```json
-{{
-  "decision": "CREATE_NEW",
-  "reason": "'Innovate Inc.' and 'Innovate Corp' could be different companies despite the similar names. Without more context, it's safer to create a new entity.",
-  "merge_target_id": null
-}}
-```
-Your decision:
-"""
-
-    DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE = """Parse the following query to identify main entities ("seed_nodes").
-Format the output STRICTLY as a JSON object.
-**The entire JSON output MUST be enclosed in a single markdown code block starting with ```json and ending with ```.**
-
-JSON structure:
-```json
-{{
-    "seed_nodes": [
-        {{"label": "EntityType", "identifying_property_key": "property_name", "identifying_property_value": "property_value"}}
-    ],
-    "target_relationships": [ {{"type": "REL_TYPE", "direction": "outgoing|incoming|any"}} ],
-    "target_node_labels": ["Label1", "Label2"],
-    "max_depth": 1
-}}```
-- "seed_nodes": List of main entities from the query.
-    - "label": The type of the entity.
-    - "identifying_property_key": The name of the property that identifies the entity (e.g., "name", "title").
-    - "identifying_property_value": The value of that identifying property.
-- "target_relationships" (Optional): Desired relationship types and directions.
-- "target_node_labels" (Optional): Desired types of neighbor nodes.
-- "max_depth" (Optional, default 1): Traversal depth.
-
-Example Query: "Who is Evelyn Reed and what companies is she associated with?"
-Example JSON (wrapped in ```json ... ```):
-```json
-{{
-    "seed_nodes": [ {{"label": "Person", "identifying_property_key": "name", "identifying_property_value": "Evelyn Reed"}} ],
-    "target_relationships": [ {{"type": "WORKS_AT", "direction": "any"}}, {{"type": "CEO_OF", "direction": "any"}} ],
-    "target_node_labels": ["Company", "Organization"],
-    "max_depth": 1
-}}
-```
-
-If no clear entities, return `{{ "seed_nodes": [] }}`.
-
-Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ... ```):
-"""
+    DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE = load_prompt("entity_fusion_prompt")
 
 
     def __init__(
@@ -212,10 +84,11 @@ Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ..
         )
         if not candidate_entities_str:
             candidate_entities_str = "None"
-            
+        label = source_node.get('label')
+        properties = json.dumps(source_node.get('properties', {}))
         return self.entity_fusion_prompt_template.format(
-            new_entity_label=source_node.get('label'),
-            new_entity_properties=json.dumps(source_node.get('properties', {})),
+            new_entity_label=label,
+            new_entity_properties=properties,
             candidate_entities_str=candidate_entities_str
         )
 
@@ -692,13 +565,15 @@ Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ..
                 ASCIIColors.error(f"GraphStore: Unexpected error getting neighbors for node ID {node_id}: {e_unexp}", exc_info=True)
                 raise GraphError(f"Unexpected error getting neighbors: {e_unexp}") from e_unexp
 
-    def find_shortest_path(self, start_node_id: int, end_node_id: int) -> Optional[Dict[str, List[Any]]]:
+    def find_shortest_path(self, start_node_id: int, end_node_id: int, directed: bool = True) -> Optional[Dict[str, List[Any]]]:
         """
         Finds the shortest path between two nodes in the graph.
 
         Args:
             start_node_id: The ID of the starting node.
             end_node_id: The ID of the ending node.
+            directed (bool): If True (default), considers edge directions.
+                             If False, treats the graph as undirected.
 
         Returns:
             A dictionary containing the lists of nodes and relationships that
@@ -710,7 +585,8 @@ Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ..
             assert self.conn is not None
 
             try:
-                path_data = db.find_shortest_path_db(self.conn, start_node_id, end_node_id)
+                # Pass the directed flag to the DB layer
+                path_data = db.find_shortest_path_db(self.conn, start_node_id, end_node_id, directed=directed)
                 return path_data
             except GraphDBError as e:
                 ASCIIColors.error(f"GraphStore: Error finding shortest path between {start_node_id} and {end_node_id}: {e}")
@@ -718,7 +594,6 @@ Query: --- {natural_language_query} --- Parsed JSON Query (wrapped in ```json ..
             except Exception as e_unexp:
                 ASCIIColors.error(f"GraphStore: Unexpected error finding shortest path: {e_unexp}", exc_info=True)
                 raise GraphError(f"Unexpected error finding shortest path: {e_unexp}") from e_unexp
-
 
     # --- Main Query Method (Existing) ---
     def query_graph(self, natural_language_query: str, output_mode: str = "chunks_summary", llm_parsed_query_override: Optional[Dict[str, Any]] = None) -> Any:
