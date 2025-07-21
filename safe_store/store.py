@@ -72,7 +72,8 @@ class SafeStore:
         metadata: Optional[Dict[str, Any]] = None,
         log_level: LogLevel = LogLevel.INFO,
         lock_timeout: int = DEFAULT_LOCK_TIMEOUT,
-        encryption_key: Optional[str] = None
+        encryption_key: Optional[str] = None,
+        cache_folder: Optional[str] = None
     ):
         """
         Initializes the safe_store instance.
@@ -185,7 +186,7 @@ class SafeStore:
         self.conn: Optional[sqlite3.Connection] = None
         self._is_closed: bool = True
 
-        self.vectorizer_manager = VectorizationManager()
+        self.vectorizer_manager = VectorizationManager(cache_folder=cache_folder)
         self._file_hasher = hashlib.sha256
 
         try:
@@ -1568,14 +1569,18 @@ class SafeStore:
             try:
                 cursor.execute("SELECT m.method_id, m.method_name FROM vectorization_methods m WHERE m.method_name = ?", (_vectorizer_name,))
                 all_vectors_data = cursor.fetchall()
-                if len(all_vectors_data)==0:
+                if not all_vectors_data or len(all_vectors_data)==0:
                     ASCIIColors.warning(f"The database was not vectorized using the vectorizer you are specifying ({_vectorizer_name}).")            
-                if use_available_vectorization_if_vectorizer_not_present:
-                    cursor.execute("SELECT m.method_name FROM vectorization_methods m", ())
-                    all_vectors_data = cursor.fetchone()
-                    if all_vectors_data is not None and len(all_vectors_data)>0:
-                        _vectorizer_name = all_vectors_data[0]
-                        ASCIIColors.warning(f"Setting vectorizer to: ({_vectorizer_name}).")
+                    if use_available_vectorization_if_vectorizer_not_present:
+                        cursor.execute("SELECT m.method_name FROM vectorization_methods m", ())
+                        all_vectors_data = cursor.fetchone()
+                        if not all_vectors_data or len(all_vectors_data)>0:
+                            _vectorizer_name = all_vectors_data[0]
+                            ASCIIColors.warning(f"Setting vectorizer to: ({_vectorizer_name}).")
+                        else: #
+                            ASCIIColors.warning(f"No vectorizer found in the database")
+                            return 
+                        
                 elif add_vectorizer_if_vectorizer_not_present: # takes a long time
                     self.add_vectorization(_vectorizer_name)
 
