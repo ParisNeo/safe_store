@@ -47,7 +47,10 @@ class OpenAIVectorizer(BaseVectorizer):
         client (openai.OpenAI): The OpenAI client instance.
     """
 
-    def __init__(self, model_identifier_string: str, params: Optional[Dict[str, Any]] = None):
+    def __init__(self,
+                 model_identifier_string: str,
+                 params: Optional[Dict[str, Any]] = None,
+                 **kwargs):
         """
         Initializes the OpenAIVectorizer.
 
