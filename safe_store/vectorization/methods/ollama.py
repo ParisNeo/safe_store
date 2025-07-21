@@ -43,7 +43,10 @@ class OllamaVectorizer(BaseVectorizer):
         client (ollama.Client): The Ollama client instance.
     """
 
-    def __init__(self, model_identifier_string: str, params: Optional[Dict[str, Any]] = None):
+    def __init__(self,
+                 model_identifier_string: str,
+                 params: Optional[Dict[str, Any]] = None,
+                 **kwargs):
         """
         Initializes the OllamaVectorizer.
 
