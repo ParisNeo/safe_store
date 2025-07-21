@@ -37,7 +37,10 @@ class TfidfVectorizerWrapper(BaseVectorizer):
         initial_params (Dict[str, Any]): Parameters used during initialization.
     """
 
-    def __init__(self, model_identifier_string:Optional[str]="", params: Optional[Dict[str, Any]] = None):
+    def __init__(self,
+                 model_identifier_string:Optional[str]="",
+                 params: Optional[Dict[str, Any]] = None,
+                 **kwargs):
         """
         Initializes the TfidfVectorizerWrapper.
 
