@@ -30,7 +30,7 @@ class STVectorizer(BaseVectorizer):
 
     DEFAULT_MODEL: str = "all-MiniLM-L6-v2"
 
-    def __init__(self, model_identifier_string: Optional[str] = None, params: Optional[Dict[str, Any]] = None):
+    def __init__(self, model_identifier_string: Optional[str] = None, params: Optional[Dict[str, Any]] = None, cache_folder: Optional[str] = None, **kwargs):
         """
         Initializes the SentenceTransformerVectorizer.
 
@@ -58,7 +58,7 @@ class STVectorizer(BaseVectorizer):
         ASCIIColors.info(f"Loading Sentence Transformer model: {self.model_name}")
         try:
             # Instantiate the model
-            self.model: SentenceTransformer = SentenceTransformer(self.model_name)
+            self.model: SentenceTransformer = SentenceTransformer(self.model_name, cache_folder=cache_folder)
 
             # Get dimension and dtype AFTER successful loading
             self._dim: int = self.model.get_sentence_embedding_dimension()
