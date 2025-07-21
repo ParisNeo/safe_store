@@ -4,6 +4,7 @@ import json
 from typing import Tuple, Optional, Dict, Any, List
 import numpy as np
 import importlib
+from pathlib import Path
 import sys 
 
 from ..core import db
@@ -22,8 +23,11 @@ class VectorizationManager:
     Dynamically loads vectorizer implementations from the 'methods' subdirectory.
     """
 
-    def __init__(self):
+    def __init__(self, cache_folder:Optional[str] = None):
         # Cache format: name -> (instance, method_id, params_from_db_at_load)
+        
+        self.cache_folder = Path(cache_folder)
+        self.cache_folder.mkdir(parents=True, exist_ok=True)
         self._cache: Dict[str, Tuple[BaseVectorizer, int, Optional[Dict[str, Any]]]] = {}
 
     @staticmethod
@@ -128,7 +132,7 @@ class VectorizationManager:
             if not issubclass(VectorizerClass, BaseVectorizer):
                 raise ConfigurationError(f"Class '{module.class_name}' from '{module_name}' does not inherit from BaseVectorizer.")
 
-            vectorizer_instance = VectorizerClass(model_identifier_string=model_identifier_string)
+            vectorizer_instance = VectorizerClass(model_identifier_string=model_identifier_string, cache_folder=self.cache_folder)
 
             if params_from_db: # Existing method in DB
                 if hasattr(vectorizer_instance, "configure_from_db_params"):
