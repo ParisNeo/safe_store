@@ -60,7 +60,10 @@ class CohereVectorizer(BaseVectorizer):
     DEFAULT_INPUT_TYPE = "search_document"
     DEFAULT_TRUNCATE = "END" # Alternatives: "NONE", "START"
 
-    def __init__(self, model_identifier_string: str, params: Optional[Dict[str, Any]] = None):
+    def __init__(self,
+                 model_identifier_string: str,
+                 params: Optional[Dict[str, Any]] = None,
+                 **kwargs):
         """
         Initializes the CohereVectorizer.
 
