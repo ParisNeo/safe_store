@@ -1560,7 +1560,8 @@ class SafeStore:
         """Internal implementation of query logic."""
         assert self.conn is not None
         _vectorizer_name = vectorizer_name or self.DEFAULT_VECTORIZER
-
+        if not top_k:
+            top_k = 3
         ASCIIColors.info(f"Received query. Vectorizer: '{_vectorizer_name}', Metric: '{similarity_metric}', top_k={top_k}, min_similarity_percent={min_similarity_percent}%.")
         
         try:
