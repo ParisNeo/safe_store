@@ -25,9 +25,11 @@ class VectorizationManager:
 
     def __init__(self, cache_folder:Optional[str] = None):
         # Cache format: name -> (instance, method_id, params_from_db_at_load)
-        
-        self.cache_folder = Path(cache_folder)
-        self.cache_folder.mkdir(parents=True, exist_ok=True)
+        if cache_folder:
+            self.cache_folder = Path(cache_folder)
+            self.cache_folder.mkdir(parents=True, exist_ok=True)
+        else:
+            self.cache_folder = None
         self._cache: Dict[str, Tuple[BaseVectorizer, int, Optional[Dict[str, Any]]]] = {}
 
     @staticmethod
