@@ -105,12 +105,14 @@ class OpenAIVectorizer(BaseVectorizer):
         else:
             ASCIIColors.info(f"API key not in model_identifier_string. OpenAI client will use OPENAI_API_KEY env var if set.")
 
-
+        self.base_url: Optional[str] = None
+        if len(parts) > 2 and parts[2].strip():
+            self.base_url = parts[2].strip()
         ASCIIColors.info(f"Initializing OpenAI client. Model: {self.model_name}")
         try:
             # Instantiate the OpenAI client
             # If self.api_key is None, OpenAI client will look for OPENAI_API_KEY env var.
-            self.client: openai.OpenAI = openai.OpenAI(api_key=self.api_key)
+            self.client: openai.OpenAI = openai.OpenAI(api_key=self.api_key,base_url=self.base_url)
 
             # Test connection and get embedding dimension by sending a dummy prompt
             ASCIIColors.debug(f"Testing OpenAI model '{self.model_name}' and retrieving dimension...")
