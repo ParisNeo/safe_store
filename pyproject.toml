@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "safe-store"
 # Bump version for this release
-version = "2.5.7"
+version = "2.6.0"
 description = "Simple, concurrent SQLite-based vector store optimized for local RAG pipelines, with optional encryption."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -124,9 +124,6 @@ target-version = ['py38']
 path = "safe_store/__init__.py"
 
 [tool.hatch.build]
-# This section ensures that non-python files inside your package are included.
-# It's crucial for including the webui's static assets and config files.
-# Assumes you have moved the `webui` folder into `safe_store`.
 include = [
-  "webui",
+  "safe_store"
 ]
