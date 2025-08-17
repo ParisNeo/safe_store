@@ -28,12 +28,12 @@ def initialize_lollms_client() -> bool:
     if LC_CLIENT is None:
         ASCIIColors.info(f"Initializing LollmsClient: Binding='{BINDING_NAME}', Host='{HOST_ADDRESS}', Model='{MODEL_NAME}'")
         lc_params: Dict[str, Any] = {
-            "binding_name": BINDING_NAME, "host_address": HOST_ADDRESS, "model_name": MODEL_NAME,
+            "llm_binding_name": BINDING_NAME, "llm_binding_config":{"host_address": HOST_ADDRESS, "model_name": MODEL_NAME},
         }
-        if lc_params.get("host_address") is None and BINDING_NAME in ["openai"]: del lc_params["host_address"]
+        if lc_params.get("llm_binding_config",{"host_address":None}).get("host_address") is None and BINDING_NAME in ["openai"]: del lc_params["llm_binding_config"]["host_address"]
         try:
             LC_CLIENT = LollmsClient(**lc_params)
-            if not hasattr(LC_CLIENT, 'binding') or LC_CLIENT.binding is None :
+            if not hasattr(LC_CLIENT, 'binding') or LC_CLIENT.llm is None :
                  ASCIIColors.error(f"LollmsClient binding '{BINDING_NAME}' could not be loaded."); LC_CLIENT = None; return False
             ASCIIColors.success("LollmsClient initialized (ping skipped for speed).")
             return True
