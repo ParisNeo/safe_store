@@ -23,7 +23,7 @@ def robust_json_parser(json_string: str) -> dict:
     try:
         return json.loads(json_string)
     except json.JSONDecodeError as ex:
-        trace_exception(ex)
+        err = ex
 
     # STEP 2: Extract likely JSON substring
     json_match = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', json_string)
@@ -106,4 +106,5 @@ def robust_json_parser(json_string: str) -> dict:
         ASCIIColors.yellow(json_string)
         ASCIIColors.magenta("\n--- Final Cleaned String Attempted ---")
         ASCIIColors.red(cleaned_string)
+        trace_exception(err)
         raise ValueError(f"Failed to parse JSON. Final error: {e}") from e

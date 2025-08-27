@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+python-multipart
+lollms_client>=1.3.0
+safe_store>=2.7.0
+pipmaster

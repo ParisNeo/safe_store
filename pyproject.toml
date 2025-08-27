@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "safe-store"
 # Bump version for this release
-version = "2.6.0"
+version = "2.7.0"
 description = "Simple, concurrent SQLite-based vector store optimized for local RAG pipelines, with optional encryption."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -54,35 +54,24 @@ parsing = [
 sentence-transformers = ["sentence-transformers>=2.2.0"]
 tfidf = ["scikit-learn>=1.0"]
 # Future vectorizers can be added here:
-# openai = ["openai>=1.0"]
-# ollama = ["ollama"]
+openai = ["openai>=1.0"]
+ollama = ["ollama"]
 
 # --- Encryption Library ---
 encryption = ["cryptography>=40.0"] # Added Encryption
-
-# --- WebUI Dependencies ---
-webui = [
-    "lollms-client>=0.23.0", # Ensure a recent version
-    "uvicorn>=0.23.0",
-    "fastapi>=0.100.0",
-    "python-multipart>=0.0.6",
-    "toml>=0.10.2",
-    "pydantic>=2.0",
-    "python-socketio>=5.10.0", # Added socketio
-]
-
 
 # --- Combined Extras ---
 all-vectorizers = [
     "safe-store[sentence-transformers]",
     "safe-store[tfidf]",
+    "safe-store[ollama]",
+    "safe-store[openai]",
 ]
 # Combined extra for everything (parsing, all vectorizers, encryption, webui)
 all = [
     "safe-store[parsing]",
     "safe-store[all-vectorizers]",
     "safe-store[encryption]",
-    "safe-store[webui]", # Added WebUI to 'all'
 ]
 # Extra for development dependencies (testing, linting, building, docs)
 dev = [
@@ -103,11 +92,6 @@ dev = [
     "wheel",
     "twine", # For checking/uploading packages
 ]
-
-[project.scripts]
-# This makes the `safestore-webui` command available after installation.
-# It requires the `webui` folder to be moved inside the `safe_store` package.
-safestore-webui = "safe_store.webui.main:launch_webui"
 
 [project.urls]
 Homepage = "https://github.com/ParisNeo/safe_store"

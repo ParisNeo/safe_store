@@ -1,0 +1,560 @@
+<!-- [FINAL & COMPLETE with all fixes] index.html -->
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SafeStore Graph Explorer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <script>
+        tailwind.config = { darkMode: 'class' }
+    </script>
+    <style>
+        #graph-container { height: calc(100vh - 4rem); }
+        .vis-network { outline: none; }
+        .modal { display: none; }
+        .modal.active { display: flex; }
+        #context-menu ul { list-style: none; padding: 0; margin: 0; }
+        #context-menu li { padding: 8px 12px; cursor: pointer; }
+        #context-menu li:hover { background-color: #f0f0f0; }
+        .dark #context-menu li:hover { background-color: #4a5568; }
+        .notification { transition: opacity 0.5s, transform 0.5s; }
+        .icon-btn {
+            @apply p-2 rounded-full bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600 hover:text-teal-500 dark:hover:text-teal-400 transition-colors duration-200;
+        }
+        .project-card-delete-btn {
+            @apply opacity-0 group-hover:opacity-100 transition-opacity duration-200;
+        }
+        .task-count-badge {
+            @apply absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full h-5 w-5 flex items-center justify-center;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 dark:bg-gray-900 text-gray-800 dark:text-gray-200 font-sans">
+    <div id="app" class="flex flex-col h-screen">
+        <!-- Header -->
+        <header class="bg-white dark:bg-gray-800/50 backdrop-blur-sm border-b border-gray-200 dark:border-gray-700 p-3 flex justify-between items-center z-20">
+            <div class="flex items-center gap-2">
+                 <svg class="w-8 h-8 text-teal-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-2 15-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9Z"></path><path d="M12.29 8.71 9.7 11.3a1 1 0 0 0 1.41 1.41l2.59-2.59a1 1 0 0 0-1.41-1.41Z"></path><path d="M14.71 8.71 10 13.41l1.41 1.41L16.12 10a1 1 0 1 0-1.41-1.29Z"></path></svg>
+                <h1 class="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-teal-500 to-cyan-500">SafeStore Graph</h1>
+            </div>
+            <div class="flex items-center gap-3">
+                <button id="btn-show-projects" class="icon-btn hidden" title="Projects">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+                </button>
+                <button id="btn-show-tasks" class="icon-btn relative" title="Task Manager">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
+                    <span id="task-count-badge" class="task-count-badge hidden">0</span>
+                </button>
+                <button id="btn-toggle-theme" class="icon-btn" title="Toggle Theme">
+                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path></svg>
+                </button>
+                <button id="btn-show-settings" class="icon-btn" title="Settings">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div id="project-controls" class="flex flex-grow overflow-hidden">
+            <!-- Projects View -->
+            <main id="projects-view" class="p-8 w-full">
+                <div class="max-w-7xl mx-auto">
+                    <h2 class="text-3xl font-bold mb-6 text-gray-700 dark:text-gray-300">My Projects</h2>
+                    <div id="projects-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                        <!-- Project cards will be injected here by JS -->
+                    </div>
+                </div>
+            </main>
+
+            <!-- Graph View -->
+            <main id="graph-view" class="hidden flex-grow flex">
+                <div class="w-1/4 bg-gray-100 dark:bg-gray-800 p-4 overflow-y-auto border-r border-gray-200 dark:border-gray-700">
+                    <h3 id="current-project-title" class="text-xl font-bold mb-4 text-teal-600 dark:text-teal-400"></h3>
+                    <div id="node-details-container" class="mb-6 hidden">
+                        <h4 class="font-semibold mb-2">Node Details</h4>
+                        <div id="node-details" class="p-2 bg-white dark:bg-gray-900 rounded-md text-sm whitespace-pre-wrap max-h-48 overflow-y-auto"></div>
+                    </div>
+                    <div class="mb-6">
+                        <h4 class="font-semibold mb-2">RAG Query</h4>
+                        <textarea id="query-input" rows="3" class="w-full bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none" placeholder="Ask a question about your documents..."></textarea>
+                        <button id="btn-run-query" class="w-full mt-2 bg-teal-600 hover:bg-teal-500 text-white p-2 rounded-md">Run Query</button>
+                        <div id="query-answer" class="mt-4 p-2 bg-white dark:bg-gray-900 rounded-md text-sm whitespace-pre-wrap h-48 overflow-y-auto"></div>
+                    </div>
+                    <div class="mb-6">
+                        <h4 class="font-semibold mb-2">Actions</h4>
+                        <button id="btn-add-node" class="w-full mb-2 bg-green-600 hover:bg-green-500 text-white p-2 rounded-md">Add Node</button>
+                        <label for="doc-upload" class="w-full text-center block mb-2 bg-indigo-600 hover:bg-indigo-500 text-white p-2 rounded-md cursor-pointer">Upload Document</label>
+                        <input type="file" id="doc-upload" class="hidden">
+                        <button id="btn-manage-documents" class="w-full mb-2 bg-gray-600 hover:bg-gray-500 text-white p-2 rounded-md">Manage Documents</button>
+                        <button id="btn-build-graph" class="w-full bg-blue-600 hover:bg-blue-500 text-white p-2 rounded-md">Build Graph</button>
+                        <button id="btn-rebuild-graph" class="w-full mt-2 bg-orange-600 hover:bg-orange-500 text-white p-2 rounded-md">Rebuild Graph</button>
+                    </div>
+                    <div>
+                        <h4 class="font-semibold mb-2">Ontology (JSON or Text)</h4>
+                        <textarea id="ontology-input" rows="10" class="w-full bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none text-xs"></textarea>
+                        <button id="btn-update-ontology" class="w-full mt-2 bg-purple-600 hover:bg-purple-500 text-white p-2 rounded-md">Update Ontology</button>
+                    </div>
+                </div>
+                
+                <div class="w-3/4 relative">
+                    <div id="graph-container" class="w-full h-full bg-white dark:bg-gray-900"></div>
+                    <div id="graph-spinner" class="absolute inset-0 bg-gray-900 bg-opacity-50 items-center justify-center hidden">
+                        <svg class="animate-spin h-10 w-10 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Notification Container -->
+    <div id="notification-container" class="fixed bottom-5 right-5 z-50 space-y-2"></div>
+    
+    <!-- Context Menu -->
+    <div id="context-menu" class="absolute bg-white dark:bg-gray-700 shadow-lg rounded-md py-1 z-30 hidden text-sm"></div>
+
+    <!-- Modals -->
+    <div id="project-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg">
+            <h2 class="text-2xl font-bold mb-4">Create New Project</h2>
+            <div class="mb-4">
+                <label for="project-modal-name" class="block mb-1 font-semibold">Project Name</label>
+                <input type="text" id="project-modal-name" placeholder="my-awesome-project" class="w-full bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none focus:ring-2 focus:ring-teal-500">
+            </div>
+            <div class="mb-6">
+                <label for="project-modal-description" class="block mb-1 font-semibold">Description</label>
+                <textarea id="project-modal-description" rows="3" placeholder="A brief description of the project..." class="w-full bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none focus:ring-2 focus:ring-teal-500"></textarea>
+            </div>
+            <div class="flex justify-end gap-4">
+                <button id="btn-cancel-project" class="bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 px-4 py-2 rounded-md">Cancel</button>
+                <button id="btn-save-project" class="bg-teal-600 hover:bg-teal-500 text-white px-4 py-2 rounded-md">Create Project</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="settings-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-2xl">
+            <h2 class="text-2xl font-bold mb-4">LLM Settings</h2>
+            <div id="settings-error-msg" class="hidden p-2 mb-4 bg-red-200 dark:bg-red-900/50 text-red-800 dark:text-red-300 rounded-md text-sm"></div>
+            <div class="mb-4"><label for="llm-binding-select" class="block mb-1">LLM Binding</label><select id="llm-binding-select" class="w-full bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none"></select></div>
+            <div id="llm-config-fields" class="space-y-2 mb-6 max-h-64 overflow-y-auto"></div>
+            <div class="flex justify-end gap-4">
+                <button id="btn-cancel-settings" class="bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 px-4 py-2 rounded-md">Cancel</button>
+                <button id="btn-save-settings" class="bg-teal-600 hover:bg-teal-500 text-white px-4 py-2 rounded-md">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="task-manager-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-3xl flex flex-col" style="height: 80vh;">
+            <div class="flex justify-between items-center mb-4"><h2 class="text-2xl font-bold">Task Manager</h2><button id="btn-close-tasks" class="text-2xl">&times;</button></div>
+            <div id="task-list" class="flex-grow overflow-y-auto"></div>
+        </div>
+    </div>
+
+    <div id="documents-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-4xl flex flex-col" style="height: 80vh;">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-2xl font-bold">Manage Documents</h2>
+                <button id="btn-close-documents" class="text-2xl">&times;</button>
+            </div>
+            <div class="flex-grow overflow-y-auto">
+                <table class="w-full text-sm text-left">
+                    <thead class="text-xs uppercase bg-gray-100 dark:bg-gray-700">
+                        <tr>
+                            <th scope="col" class="px-6 py-3">Filename</th>
+                            <th scope="col" class="px-6 py-3">Added Date</th>
+                            <th scope="col" class="px-6 py-3">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="document-list-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div id="node-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg">
+            <h2 id="node-modal-title" class="text-2xl font-bold mb-4">Node</h2>
+            <input type="hidden" id="node-modal-id">
+            <div class="mb-4">
+                <label for="node-modal-label" class="block mb-1">Label</label>
+                <div id="node-modal-label-container">
+                    <!-- JS will populate this with an input or a select -->
+                </div>
+            </div>
+            <div class="mb-6"><label for="node-modal-properties" class="block mb-1">Properties (JSON)</label><textarea id="node-modal-properties" rows="8" class="w-full bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none font-mono text-sm"></textarea></div>
+            <div class="flex justify-end gap-4">
+                <button id="btn-cancel-node" class="bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 px-4 py-2 rounded-md">Cancel</button>
+                <button id="btn-save-node" class="bg-teal-600 hover:bg-teal-500 text-white px-4 py-2 rounded-md">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="relationship-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-lg">
+            <h2 class="text-2xl font-bold mb-4">Add Relationship</h2>
+            <input type="hidden" id="rel-modal-source-id">
+            <div class="mb-4"><label class="block mb-1">From Node</label><input type="text" id="rel-modal-source-label" class="w-full bg-gray-300 dark:bg-gray-600 p-2 rounded-md" readonly></div>
+            <div class="mb-4 relative">
+                <label for="rel-modal-target-search" class="block mb-1">To Node</label>
+                <input type="text" id="rel-modal-target-search" placeholder="Search for a node by label or ID..." class="w-full bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none" autocomplete="off">
+                <input type="hidden" id="rel-modal-target-id">
+                <div id="rel-modal-target-list" class="absolute z-10 w-full bg-white dark:bg-gray-600 rounded-md shadow-lg max-h-48 overflow-y-auto mt-1 hidden"></div>
+            </div>
+            <div class="mb-4"><label for="rel-modal-type" class="block mb-1">Type</label><input type="text" id="rel-modal-type" class="w-full bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none"></div>
+            <div class="mb-6"><label for="rel-modal-properties" class="block mb-1">Properties (JSON)</label><textarea id="rel-modal-properties" rows="4" class="w-full bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none font-mono text-sm" placeholder="{}"></textarea></div>
+            <div class="flex justify-end gap-4">
+                <button id="btn-cancel-rel" class="bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 px-4 py-2 rounded-md">Cancel</button>
+                <button id="btn-save-rel" class="bg-teal-600 hover:bg-teal-500 text-white px-4 py-2 rounded-md">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="confirm-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-md">
+            <h2 id="confirm-title" class="text-xl font-bold mb-4">Confirm Action</h2>
+            <p id="confirm-message" class="mb-6">Are you sure?</p>
+            <div class="flex justify-end gap-4">
+                <button id="btn-cancel-confirm" class="bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 px-4 py-2 rounded-md">Cancel</button>
+                <button id="btn-do-confirm" class="bg-red-600 hover:bg-red-500 text-white px-4 py-2 rounded-md">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const API_URL = '/api';
+        const i18n = { en: { no_projects_found: "No projects found. Create one to get started!", show_logs: "Show Logs", save: "Save" } };
+        
+        const app = {
+            state: { currentProject: null, graph: null, bindings: [], ontology: {}, graphData: { nodes: [], edges: [] } },
+            
+            init() { 
+                this.attachEventListeners(); 
+                this.checkLLMStatus(); 
+                this.fetchProjects(); 
+                setInterval(() => this.updateTasksView(), 3000); 
+            },
+            
+            attachEventListeners() {
+                document.getElementById('btn-show-projects').addEventListener('click', () => this.showProjectsView());
+                document.getElementById('btn-toggle-theme').addEventListener('click', () => this.toggleTheme());
+                document.getElementById('btn-show-settings').addEventListener('click', () => this.showSettingsModal());
+                document.getElementById('btn-show-tasks').addEventListener('click', () => document.getElementById('task-manager-modal').classList.add('active'));
+                
+                document.getElementById('btn-save-project').addEventListener('click', () => this.createProject());
+                document.getElementById('btn-cancel-project').addEventListener('click', () => this.hideProjectModal());
+
+                document.getElementById('btn-run-query').addEventListener('click', () => this.runQuery());
+                document.getElementById('doc-upload').addEventListener('change', () => this.uploadDocument());
+                document.getElementById('btn-build-graph').addEventListener('click', () => this.buildGraph());
+                document.getElementById('btn-rebuild-graph').addEventListener('click', () => this.rebuildGraph());
+                document.getElementById('btn-update-ontology').addEventListener('click', () => this.updateOntology());
+                document.getElementById('btn-add-node').addEventListener('click', () => this.showNodeModal());
+                document.getElementById('btn-manage-documents').addEventListener('click', () => this.showDocumentsModal());
+                
+                document.getElementById('btn-close-tasks').addEventListener('click', () => document.getElementById('task-manager-modal').classList.remove('active'));
+                document.getElementById('btn-close-documents').addEventListener('click', () => document.getElementById('documents-modal').classList.remove('active'));
+                document.getElementById('btn-cancel-settings').addEventListener('click', () => this.hideSettingsModal());
+                document.getElementById('btn-save-settings').addEventListener('click', () => this.saveSettings());
+                document.getElementById('llm-binding-select').addEventListener('change', () => this.renderBindingConfig());
+                document.getElementById('btn-cancel-node').addEventListener('click', () => document.getElementById('node-modal').classList.remove('active'));
+                document.getElementById('btn-save-node').addEventListener('click', () => this.saveNode());
+                document.getElementById('btn-cancel-rel').addEventListener('click', () => document.getElementById('relationship-modal').classList.remove('active'));
+                document.getElementById('btn-save-rel').addEventListener('click', () => this.saveRelationship());
+                document.getElementById('btn-cancel-confirm').addEventListener('click', () => document.getElementById('confirm-modal').classList.remove('active'));
+                
+                document.addEventListener('click', (e) => {
+                    document.getElementById('context-menu').classList.add('hidden');
+                    const relList = document.getElementById('rel-modal-target-list');
+                    if (relList && !relList.contains(e.target) && e.target.id !== 'rel-modal-target-search') {
+                        relList.classList.add('hidden');
+                    }
+                });
+                document.getElementById('rel-modal-target-search').addEventListener('input', (e) => this.populateTargetNodeList(e.target.value));
+                document.getElementById('rel-modal-target-search').addEventListener('focus', () => document.getElementById('rel-modal-target-list').classList.remove('hidden'));
+            },
+
+            showNotification(message, type = 'info', duration = 4000) { const container = document.getElementById('notification-container'); const colors = { info: 'bg-blue-500', success: 'bg-green-500', error: 'bg-red-500' }; const div = document.createElement('div'); div.className = `notification text-white p-3 rounded-lg shadow-lg mb-2 transform translate-x-full opacity-0 ${colors[type]}`; div.innerText = message; container.appendChild(div); setTimeout(() => { div.classList.remove('translate-x-full', 'opacity-0'); }, 10); setTimeout(() => { div.classList.add('opacity-0'); div.addEventListener('transitionend', () => div.remove()); }, duration); },
+            showSpinner() { document.getElementById('graph-spinner').classList.replace('hidden', 'flex'); },
+            hideSpinner() { document.getElementById('graph-spinner').classList.replace('flex', 'hidden'); },
+            showProjectsView() { document.getElementById('projects-view').classList.remove('hidden'); document.getElementById('graph-view').classList.add('hidden'); document.getElementById('project-controls').classList.remove('hidden'); document.getElementById('btn-show-projects').classList.add('hidden'); if (this.state.graph) { this.state.graph.destroy(); this.state.graph = null; } },
+            showGraphView(projectName) { this.state.currentProject = projectName; document.getElementById('projects-view').classList.add('hidden'); document.getElementById('graph-view').classList.remove('hidden'); document.getElementById('btn-show-projects').classList.remove('hidden'); document.getElementById('current-project-title').innerText = projectName; this.fetchGraphData(); this.fetchOntology(); },
+            toggleTheme() { document.documentElement.classList.toggle('dark'); if (this.state.graph) this.renderGraph(this.state.graphData.nodes, this.state.graphData.edges); },
+            async checkLLMStatus() { const res = await fetch(`${API_URL}/llm/status`); const data = await res.json(); if (data.status === 'error') this.showSettingsModal(`LLM connection failed: ${data.message}. Please configure it.`); },
+            
+            async fetchProjects() {
+                const res = await fetch(`${API_URL}/projects`);
+                const projects = await res.json();
+                const grid = document.getElementById('projects-grid');
+                
+                const addProjectCardHTML = `
+                    <div id="btn-show-project-modal" class="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg flex items-center justify-center hover:bg-gray-100 dark:hover:bg-gray-700/50 cursor-pointer transition-colors h-full">
+                        <div class="text-center p-6">
+                            <svg class="w-12 h-12 text-gray-400 dark:text-gray-500 mx-auto" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path></svg>
+                            <span class="mt-2 block font-semibold text-gray-500 dark:text-gray-400">Add New Project</span>
+                        </div>
+                    </div>
+                `;
+
+                const projectCardsHTML = projects.map(p => `
+                    <div class="project-card group relative flex flex-col" data-project-name="${p.name}">
+                        <div class="flex-grow p-5">
+                            <div class="flex items-start gap-4">
+                                <div class="p-2 bg-teal-100 dark:bg-teal-900/50 rounded-lg">
+                                    <svg class="w-6 h-6 text-teal-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+                                </div>
+                                <div>
+                                    <h3 class="text-lg font-bold text-gray-800 dark:text-gray-200">${p.name}</h3>
+                                    <p class="text-sm text-gray-500 dark:text-gray-400 mt-1 h-10 overflow-hidden">${p.description || 'No description provided.'}</p>
+                                </div>
+                            </div>
+                        </div>
+                        <button class="project-card-delete-btn absolute top-2 right-2 p-2 rounded-full hover:bg-red-500/20 text-red-500" title="Delete Project">
+                            <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+                        </button>
+                    </div>
+                `).join('');
+                
+                grid.innerHTML = addProjectCardHTML + projectCardsHTML;
+                
+                document.getElementById('btn-show-project-modal').addEventListener('click', () => this.showProjectModal());
+
+                document.querySelectorAll('.project-card').forEach(card => {
+                    card.addEventListener('click', (e) => this.showGraphView(e.currentTarget.dataset.projectName));
+                    card.className = "bg-white dark:bg-gray-800/50 rounded-lg shadow-md hover:shadow-xl hover:ring-2 hover:ring-teal-500 transition-all duration-300 cursor-pointer overflow-hidden";
+                    const deleteBtn = card.querySelector('.project-card-delete-btn');
+                    deleteBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        const projectName = card.dataset.projectName;
+                        this.confirmAction('Delete Project', `Are you sure you want to permanently delete '${projectName}' and all its data? This cannot be undone.`, () => this.performDeleteProject(projectName));
+                    });
+                });
+            },
+            
+            showProjectModal() {
+                document.getElementById('project-modal-name').value = '';
+                document.getElementById('project-modal-description').value = '';
+                document.getElementById('project-modal').classList.add('active');
+            },
+            
+            hideProjectModal() {
+                document.getElementById('project-modal').classList.remove('active');
+            },
+            
+            async createProject() { 
+                const nameInput = document.getElementById('project-modal-name'); 
+                const descInput = document.getElementById('project-modal-description'); 
+                if (!nameInput.value.trim()) {
+                    this.showNotification('Project name cannot be empty.', 'error');
+                    return;
+                }
+                await fetch(`${API_URL}/projects`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name: nameInput.value, description: descInput.value }) }); 
+                this.hideProjectModal();
+                this.fetchProjects(); 
+            },
+
+            async performDeleteProject(projectName) {
+                const res = await fetch(`${API_URL}/projects/${projectName}`, { method: 'DELETE' });
+                if (res.ok) {
+                    this.showNotification(`Project '${projectName}' deleted successfully.`, 'success');
+                    this.fetchProjects();
+                } else {
+                    const err = await res.json();
+                    this.showNotification(`Error: ${err.detail}`, 'error');
+                }
+            },
+            
+            async fetchGraphData() { if (!this.state.currentProject) return; this.showSpinner(); try { const res = await fetch(`${API_URL}/projects/${this.state.currentProject}/graph`); const data = await res.json(); this.state.graphData = data; this.renderGraph(data.nodes, data.edges); } catch (e) { this.showNotification('Failed to load graph data.', 'error'); } finally { this.hideSpinner(); } },
+            
+            renderGraph(nodes, edges) {
+                const container = document.getElementById('graph-container');
+                const isDark = document.documentElement.classList.contains('dark');
+                
+                const colorPalette = ['#e6194B', '#3cb44b', '#ffe119', '#4363d8', '#f58231', '#911eb4', '#42d4f4', '#f032e6', '#bfef45', '#fabed4', '#469990', '#dcbeff', '#9A6324', '#fffac8', '#800000', '#aaffc3', '#808000', '#ffd8b1', '#000075', '#a9a9a9'];
+                const labelToColorMap = {};
+                let colorIndex = 0;
+                
+                nodes.forEach(node => {
+                    if (!labelToColorMap[node.label]) {
+                        labelToColorMap[node.label] = colorPalette[colorIndex % colorPalette.length];
+                        colorIndex++;
+                    }
+                    node.color = {
+                        background: labelToColorMap[node.label],
+                        border: isDark ? '#111827' : '#FFFFFF',
+                        highlight: { background: '#FFFFFF', border: labelToColorMap[node.label] },
+                        hover: { background: '#FFFFFF', border: labelToColorMap[node.label] }
+                    };
+                });
+                
+                const data = { nodes: new vis.DataSet(nodes), edges: new vis.DataSet(edges) };
+                
+                const options = {
+                    nodes: {
+                        font: { color: isDark ? '#E5E7EB' : '#1F2937' },
+                        borderWidth: 2
+                    },
+                    edges: {
+                        color: {
+                            color: isDark ? '#4B5563' : '#D1D5DB',
+                            highlight: '#3b82f6',
+                            hover: '#3b82f6'
+                        },
+                        arrows: 'to'
+                    },
+                    physics: {
+                        stabilization: false,
+                        barnesHut: { gravitationalConstant: -15000 }
+                    }
+                };
+                
+                if (this.state.graph) this.state.graph.destroy();
+                this.state.graph = new vis.Network(container, data, options);
+                this.state.graph.on('click', p => p.nodes.length > 0 ? this.showNodeDetails(p.nodes[0]) : this.clearNodeDetails());
+                this.state.graph.on('oncontext', p => this.handleGraphContextMenu(p));
+            },
+            
+            showNodeDetails(nodeId) { const container = document.getElementById('node-details-container'); const detailsDiv = document.getElementById('node-details'); const node = this.state.graph.body.data.nodes.get(nodeId); if (node) { detailsDiv.innerHTML = `<p class="font-bold text-teal-500">${node.label}</p><pre class="text-xs">${JSON.stringify(node.properties || {}, null, 2)}</pre>`; container.classList.remove('hidden'); } },
+            clearNodeDetails() { document.getElementById('node-details-container').classList.add('hidden'); document.getElementById('node-details').innerHTML = ''; },
+
+            handleGraphContextMenu(params) {
+                params.event.preventDefault(); const menu = document.getElementById('context-menu'); const nodeId = this.state.graph.getNodeAt(params.pointer.DOM); const edgeId = this.state.graph.getEdgeAt(params.pointer.DOM); let menuItems = '';
+                if (nodeId) { menuItems = `<li data-action="edit-node" data-id="${nodeId}">Edit Node</li><li data-action="add-rel" data-id="${nodeId}">Add Relationship From</li><li data-action="delete-node" data-id="${nodeId}" class="text-red-500">Delete Node</li>`; } 
+                else if (edgeId) { menuItems = `<li data-action="delete-rel" data-id="${edgeId}" class="text-red-500">Delete Relationship</li>`; } 
+                else { menuItems = `<li data-action="add-node">Add Node</li>`; }
+                menu.innerHTML = `<ul>${menuItems}</ul>`; menu.style.top = `${params.event.pageY}px`; menu.style.left = `${params.event.pageX}px`; menu.classList.remove('hidden');
+                menu.querySelectorAll('li').forEach(item => {
+                    item.addEventListener('click', (e) => {
+                        e.stopPropagation(); const { action, id } = e.target.dataset; menu.classList.add('hidden');
+                        if (action === 'add-node') this.showNodeModal();
+                        if (action === 'edit-node') this.showNodeModal(Number(id));
+                        if (action === 'delete-node') this.confirmAction('Delete Node', `Are you sure you want to delete this node and its relationships?`, () => this.performDelete('node', Number(id)));
+                        if (action === 'add-rel') this.showRelationshipModal(Number(id));
+                        if (action === 'delete-rel') this.confirmAction('Delete Relationship', `Are you sure you want to delete this relationship?`, () => this.performDelete('relationship', Number(id)));
+                    });
+                });
+            },
+
+            async uploadDocument() { const input = document.getElementById('doc-upload'); if (!input.files.length) return; const formData = new FormData(); formData.append('file', input.files[0]); const res = await fetch(`${API_URL}/projects/${this.state.currentProject}/documents`, { method: 'POST', body: formData }); const data = await res.json(); res.ok ? this.showNotification(`Indexing started for ${input.files[0].name}.`, 'success') : this.showNotification(`Error: ${data.detail}`, 'error'); input.value = ''; },
+            async buildGraph() { this.showNotification("Starting graph build task. Check Task Manager.", 'info'); await fetch(`${API_URL}/projects/${this.state.currentProject}/build-graph`, { method: 'POST' }); },
+            rebuildGraph() { this.confirmAction('Rebuild Graph', 'This will delete the entire current graph and rebuild it from all documents. This can take a while. Are you sure?', () => { this.showNotification("Starting graph rebuild task. Check Task Manager.", 'info'); fetch(`${API_URL}/projects/${this.state.currentProject}/rebuild-graph`, { method: 'POST' }); }); },
+            async fetchOntology() { const res = await fetch(`${API_URL}/projects/${this.state.currentProject}/ontology`); this.state.ontology = await res.json(); const ontologyInput = document.getElementById('ontology-input'); if (typeof this.state.ontology === 'object' && Object.keys(this.state.ontology).length > 0) { ontologyInput.value = JSON.stringify(this.state.ontology, null, 2); } else if (typeof this.state.ontology === 'string') { ontologyInput.value = this.state.ontology; } else { ontologyInput.value = ''; } },
+            
+            async updateOntology() {
+                const input = document.getElementById('ontology-input');
+                const textValue = input.value.trim();
+                let ontologyPayload;
+                if (!textValue) {
+                    ontologyPayload = {};
+                } else {
+                    try { ontologyPayload = JSON.parse(textValue); } catch (e) { ontologyPayload = textValue; }
+                }
+                try {
+                    await fetch(`${API_URL}/projects/${this.state.currentProject}/ontology`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ ontology: ontologyPayload }) }); 
+                    this.showNotification("Ontology updated. Re-run 'Build Graph' to apply.", 'success'); 
+                    this.state.ontology = ontologyPayload; 
+                } catch (apiError) { this.showNotification(`API error: ${apiError.message}`, 'error'); }
+            },
+            
+            async runQuery() { const input = document.getElementById('query-input'); const answerDiv = document.getElementById('query-answer'); if (!input.value) return; answerDiv.innerText = "Processing..."; const res = await fetch(`${API_URL}/projects/${this.state.currentProject}/query`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ question: input.value }) }); const result = await res.json(); answerDiv.innerText = res.ok ? result.answer : `Error: ${result.detail}`; if (res.ok && result.context?.graph?.nodes) { this.state.graph.selectNodes(result.context.graph.nodes.map(n => n.node_id)); } },
+            
+            showNodeModal(nodeId = null) {
+                const title = document.getElementById('node-modal-title'); const idInput = document.getElementById('node-modal-id'); const labelContainer = document.getElementById('node-modal-label-container'); const propsInput = document.getElementById('node-modal-properties');
+                if (nodeId) {
+                    const node = this.state.graph.body.data.nodes.get(nodeId);
+                    title.innerText = 'Edit Node';
+                    idInput.value = nodeId;
+                    labelContainer.innerHTML = `<input type="text" id="node-modal-label" class="w-full bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none" value="${node.label || ''}">`;
+                    propsInput.value = JSON.stringify(node.properties || {}, null, 2);
+                } else {
+                    title.innerText = 'Add Node';
+                    idInput.value = '';
+                    propsInput.value = '{}';
+                    const ontologyNodes = (typeof this.state.ontology === 'object' && this.state.ontology.nodes) ? this.state.ontology.nodes : null;
+                    if (ontologyNodes && Object.keys(ontologyNodes).length > 0) {
+                        let selectHTML = `<select id="node-modal-label" class="w-full bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none"><option value="" disabled selected>Select a Node Type...</option>`;
+                        for (const label of Object.keys(ontologyNodes)) { selectHTML += `<option value="${label}">${label}</option>`; }
+                        selectHTML += `</select>`;
+                        labelContainer.innerHTML = selectHTML;
+                        labelContainer.querySelector('#node-modal-label').addEventListener('change', (e) => {
+                            const selectedLabel = e.target.value;
+                            const nodeDef = ontologyNodes[selectedLabel];
+                            if (nodeDef && nodeDef.properties) {
+                                const propsTemplate = {};
+                                for (const [propName, propDesc] of Object.entries(nodeDef.properties)) { propsTemplate[propName] = propDesc || ""; }
+                                propsInput.value = JSON.stringify(propsTemplate, null, 2);
+                            } else { propsInput.value = '{}'; }
+                        });
+                    } else {
+                        labelContainer.innerHTML = `<input type="text" id="node-modal-label" placeholder="Enter node label" class="w-full bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none">`;
+                    }
+                }
+                document.getElementById('node-modal').classList.add('active');
+            },
+            async saveNode() {
+                const id = document.getElementById('node-modal-id').value; const label = document.getElementById('node-modal-label').value; let properties;
+                if (!label) { this.showNotification('Node label cannot be empty.', 'error'); return; }
+                try { properties = JSON.parse(document.getElementById('node-modal-properties').value); } catch (e) { this.showNotification('Properties are not valid JSON.', 'error'); return; }
+                const url = id ? `${API_URL}/projects/${this.state.currentProject}/graph/nodes/${id}` : `${API_URL}/projects/${this.state.currentProject}/graph/nodes`; const method = id ? 'PUT' : 'POST';
+                const res = await fetch(url, { method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ label, properties }) }); const nodeData = await res.json();
+                if (res.ok) { this.state.graph.body.data.nodes.update(nodeData); this.state.graphData.nodes = this.state.graph.body.data.nodes.get(); document.getElementById('node-modal').classList.remove('active'); this.showNotification(`Node ${id ? 'updated' : 'created'}.`, 'success'); } 
+                else { this.showNotification(`Error: ${nodeData.detail}`, 'error'); }
+            },
+            showRelationshipModal(sourceNodeId) { const sourceNode = this.state.graph.body.data.nodes.get(sourceNodeId); document.getElementById('rel-modal-source-id').value = sourceNodeId; document.getElementById('rel-modal-source-label').value = `${sourceNode.label} (ID: ${sourceNode.id})`; document.getElementById('rel-modal-target-id').value = ''; document.getElementById('rel-modal-target-search').value = ''; document.getElementById('rel-modal-type').value = ''; document.getElementById('rel-modal-properties').value = '{}'; document.getElementById('relationship-modal').classList.add('active'); this.populateTargetNodeList(); document.getElementById('rel-modal-target-list').classList.remove('hidden'); },
+            populateTargetNodeList(searchTerm = '') { const listDiv = document.getElementById('rel-modal-target-list'); const nodes = this.state.graphData.nodes || []; const term = searchTerm.toLowerCase(); const filteredNodes = term ? nodes.filter(n => (n.label && n.label.toLowerCase().includes(term)) || (n.id.toString().includes(term))) : nodes; listDiv.innerHTML = filteredNodes.map(n => `<div class="p-2 hover:bg-gray-200 dark:hover:bg-gray-500 cursor-pointer" data-node-id="${n.id}" data-node-label="${n.label} (ID: ${n.id})">${n.label} <span class="text-xs text-gray-500 dark:text-gray-400">(ID: ${n.id})</span></div>`).join(''); listDiv.querySelectorAll('div[data-node-id]').forEach(item => { item.addEventListener('click', () => { document.getElementById('rel-modal-target-id').value = item.dataset.nodeId; document.getElementById('rel-modal-target-search').value = item.dataset.nodeLabel; listDiv.classList.add('hidden'); }); }); },
+            async saveRelationship() { const source_node_id = Number(document.getElementById('rel-modal-source-id').value); const target_node_id = Number(document.getElementById('rel-modal-target-id').value); const rel_type = document.getElementById('rel-modal-type').value; let properties; try { properties = JSON.parse(document.getElementById('rel-modal-properties').value || '{}'); } catch (e) { this.showNotification('Properties are not valid JSON.', 'error'); return; } if (!target_node_id || !rel_type) { this.showNotification('Target Node and Type are required.', 'error'); return; } const url = `${API_URL}/projects/${this.state.currentProject}/graph/relationships`; const res = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ source_node_id, target_node_id, rel_type, properties }) }); const relData = await res.json(); if (res.ok) { this.state.graph.body.data.edges.add(relData); document.getElementById('relationship-modal').classList.remove('active'); this.showNotification('Relationship created.', 'success'); } else { this.showNotification(`Error: ${relData.detail}`, 'error'); } },
+            confirmAction(title, message, onConfirm) { const modal = document.getElementById('confirm-modal'); document.getElementById('confirm-title').innerText = title; document.getElementById('confirm-message').innerText = message; const confirmBtn = document.getElementById('btn-do-confirm'); const cancelBtn = document.getElementById('btn-cancel-confirm'); const handler = () => { onConfirm(); modal.classList.remove('active'); cleanup(); }; const cleanup = () => { confirmBtn.removeEventListener('click', handler); cancelBtn.removeEventListener('click', cleanup); }; confirmBtn.addEventListener('click', handler, { once: true }); cancelBtn.addEventListener('click', cleanup, { once: true }); modal.classList.add('active'); },
+            async performDelete(type, id) { const url = `${API_URL}/projects/${this.state.currentProject}/graph/${type}s/${id}`; const res = await fetch(url, { method: 'DELETE' }); if (res.ok) { if (type === 'node') { this.state.graph.body.data.nodes.remove(id); this.state.graphData.nodes = this.state.graph.body.data.nodes.get(); } else { this.state.graph.body.data.edges.remove(id); } this.showNotification(`${type} deleted.`, 'success'); } else { const err = await res.json(); this.showNotification(`Error: ${err.detail}`, 'error'); } },
+            async showDocumentsModal() {
+                const tbody = document.getElementById('document-list-tbody'); tbody.innerHTML = '<tr><td colspan="3" class="text-center p-4">Loading...</td></tr>';
+                document.getElementById('documents-modal').classList.add('active');
+                try {
+                    const res = await fetch(`${API_URL}/projects/${this.state.currentProject}/documents`); if (!res.ok) throw new Error('Failed to fetch documents.'); const documents = await res.json();
+                    if (documents.length === 0) { tbody.innerHTML = '<tr><td colspan="3" class="text-center p-4">No documents found.</td></tr>'; return; }
+                    tbody.innerHTML = documents.map(doc => `<tr class="border-b dark:border-gray-700"><td class="px-6 py-4 font-medium">${doc.filename}</td><td class="px-6 py-4">${new Date(doc.added_timestamp).toLocaleString()}</td><td class="px-6 py-4"><button class="text-red-500 hover:text-red-700 btn-delete-doc" data-doc-id="${doc.doc_id}" data-doc-name="${doc.filename}">Delete</button></td></tr>`).join('');
+                    tbody.querySelectorAll('.btn-delete-doc').forEach(btn => {
+                        btn.addEventListener('click', (e) => { const { docId, docName } = e.currentTarget.dataset; this.confirmAction(`Delete Document`, `Delete "${docName}" and all its data? This will also remove associated elements from the graph. This cannot be undone.`, () => this.performDeleteDocument(Number(docId))); });
+                    });
+                } catch (e) { tbody.innerHTML = `<tr><td colspan="3" class="text-center p-4 text-red-500">Error: ${e.message}</td></tr>`; }
+            },
+            async performDeleteDocument(docId) { try { const res = await fetch(`${API_URL}/projects/${this.state.currentProject}/documents/${docId}`, { method: 'DELETE' }); if (!res.ok) { const err = await res.json(); throw new Error(err.detail || 'Server error'); } this.showNotification('Document deleted. Refreshing graph...', 'success'); this.showDocumentsModal(); this.fetchGraphData(); } catch (e) { this.showNotification(`Error deleting document: ${e.message}`, 'error'); } },
+            async showSettingsModal(errorMessage = null) { const errorDiv = document.getElementById('settings-error-msg'); if (errorMessage) { errorDiv.innerText = errorMessage; errorDiv.classList.remove('hidden'); } else { errorDiv.classList.add('hidden'); } const select = document.getElementById('llm-binding-select'); select.innerHTML = ''; const [bindingsRes, currentSettingsRes] = await Promise.all([ fetch(`${API_URL}/settings/llm-bindings`), fetch(`${API_URL}/settings`) ]); this.state.bindings = await bindingsRes.json(); const currentSettings = await currentSettingsRes.json(); this.state.bindings.forEach(b => { const option = document.createElement('option'); option.value = b.name; option.innerText = b.name; if (b.name === currentSettings.binding_name) option.selected = true; select.appendChild(option); }); this.renderBindingConfig(currentSettings.config); document.getElementById('settings-modal').classList.add('active'); },
+            hideSettingsModal() { document.getElementById('settings-modal').classList.remove('active'); },
+            renderBindingConfig(currentConfig = {}) { const select = document.getElementById('llm-binding-select'); const fieldsDiv = document.getElementById('llm-config-fields'); const binding = this.state.bindings.find(b => b.name === select.value); fieldsDiv.innerHTML = ''; if (!binding) return; binding.parameters.forEach(p => { const value = currentConfig[p.name] !== undefined ? currentConfig[p.name] : (p.default || ''); const type = p.type === 'int' ? 'number' : (p.type === 'bool' ? 'checkbox' : 'text'); const checked = (p.type === 'bool' && String(value).toLowerCase() === 'true') ? 'checked' : ''; fieldsDiv.innerHTML += `<div class="flex flex-col"><label class="mb-1 text-sm">${p.name}</label><input type="${type}" id="setting-${p.name}" ${checked} value="${type !== 'checkbox' ? value : ''}" placeholder="${p.description || ''}" class="bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none"></div>`; }); },
+            async saveSettings() { const saveButton = document.getElementById('btn-save-settings'); const errorDiv = document.getElementById('settings-error-msg'); saveButton.disabled = true; saveButton.innerText = "Saving..."; errorDiv.classList.add('hidden'); const binding_name = document.getElementById('llm-binding-select').value; const binding = this.state.bindings.find(b => b.name === binding_name); const config = {}; if (binding) { binding.parameters.forEach(p => { const input = document.getElementById(`setting-${p.name}`); if(input) config[p.name] = input.type === 'checkbox' ? input.checked : input.value; }); } try { const res = await fetch(`${API_URL}/settings`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ binding_name, config }) }); const data = await res.json(); if (!res.ok) throw new Error(data.detail); this.hideSettingsModal(); this.showNotification("Settings saved successfully!", 'success'); } catch (e) { errorDiv.innerText = `Error: ${e.message}`; errorDiv.classList.remove('hidden'); } finally { saveButton.disabled = false; saveButton.innerText = i18n.en.save; } },
+            async updateTasksView() {
+                try {
+                    const res = await fetch(`${API_URL}/tasks`); const tasks = await res.json();
+                    const listDiv = document.getElementById('task-list');
+                    if(listDiv) {
+                        listDiv.innerHTML = tasks.sort((a,b) => b.start_time - a.start_time).map(task => {
+                            const bgColor = task.status === 'complete' ? 'bg-green-500' : (task.status === 'failed' ? 'bg-red-500' : 'bg-blue-500');
+                            const logs = task.logs.map(log => `<p class="text-xs truncate">${log}</p>`).join('');
+                            return `<div class="mb-2 p-3 rounded-md bg-white dark:bg-gray-700 shadow"><p class="font-semibold text-sm truncate" title="${task.name}">${task.name}</p><p class="text-xs capitalize">Status: <span class="font-bold">${task.status}</span></p><div class="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2.5 my-1"><div class="${bgColor} h-2.5 rounded-full" style="width: ${task.progress}%"></div></div><details class="text-gray-600 dark:text-gray-400"><summary class="cursor-pointer text-xs">${i18n.en.show_logs}</summary><div class="mt-1 p-1 bg-gray-100 dark:bg-gray-800 rounded max-h-32 overflow-y-auto">${logs}</div></details></div>`;
+                        }).join('');
+                    }
+
+                    const activeTasks = tasks.filter(t => t.status === 'pending' || t.status === 'running');
+                    const badge = document.getElementById('task-count-badge');
+                    if (badge) {
+                        if (activeTasks.length > 0) {
+                            badge.textContent = activeTasks.length;
+                            badge.classList.remove('hidden');
+                        } else {
+                            badge.classList.add('hidden');
+                        }
+                    }
+                } catch (e) { /* Fails silently */ }
+            }
+        };
+        app.init();
+    });
+    </script>
+</body>
+</html>

@@ -1,17 +1,17 @@
-# safe_store/core/db.py
+# [FINAL & COMPLETE] safe_store/core/db.py
 import sqlite3
 import numpy as np
 from pathlib import Path
-from typing import Optional, Any, Tuple, List, Dict, Union # Added Union
+from typing import Optional, Any, Tuple, List, Dict, Union
 import json
 from ascii_colors import ASCIIColors
-from .exceptions import DatabaseError, GraphDBError # Added GraphDBError
+from .exceptions import DatabaseError, GraphDBError
 
 # --- Type Hinting ---
 SQLQuery = str
-SQLParams = Union[Tuple[Any, ...], Dict[str, Any]] # For parameters
+SQLParams = Union[Tuple[Any, ...], Dict[str, Any]]
 
-# --- Adapters remain the same ---
+# --- Adapters for NumPy arrays ---
 def adapt_array(arr: np.ndarray) -> sqlite3.Binary:
     """Converts a NumPy array to SQLite Binary data."""
     return sqlite3.Binary(arr.tobytes())
@@ -19,23 +19,10 @@ def adapt_array(arr: np.ndarray) -> sqlite3.Binary:
 sqlite3.register_adapter(np.ndarray, adapt_array)
 
 def reconstruct_vector(blob: bytes, dtype_str: str) -> np.ndarray:
-    """
-    Safely reconstructs a NumPy array from SQLite blob data and dtype string.
-
-    Args:
-        blob: The byte data retrieved from the database.
-        dtype_str: The string representation of the NumPy dtype (e.g., 'float32').
-
-    Returns:
-        The reconstructed NumPy array.
-
-    Raises:
-        DatabaseError: If the dtype string is invalid or reconstruction fails.
-    """
+    """Safely reconstructs a NumPy array from SQLite blob data and dtype string."""
     try:
-        # Basic check for potentially unsafe dtype strings (though np.dtype handles most)
         if any(char in dtype_str for char in ';()[]{}'):
-             raise ValueError(f"Invalid characters found in dtype string: '{dtype_str}'")
+            raise ValueError(f"Invalid characters found in dtype string: '{dtype_str}'")
         dtype = np.dtype(dtype_str)
         return np.frombuffer(blob, dtype=dtype)
     except (TypeError, ValueError) as e:
@@ -43,1095 +30,414 @@ def reconstruct_vector(blob: bytes, dtype_str: str) -> np.ndarray:
         ASCIIColors.error(msg)
         raise DatabaseError(msg) from e
 
+# --- Core DB Functions ---
 def connect_db(db_path: Union[str, Path]) -> sqlite3.Connection:
-    """
-    Establishes a connection to the SQLite database.
-
-    Enables WAL mode for better concurrency for file-based databases.
-    Creates parent directories if needed for file-based databases.
-
-    Args:
-        db_path: The path to the SQLite database file or ":memory:" for an in-memory database.
-
-    Returns:
-        An active sqlite3.Connection object.
-
-    Raises:
-        DatabaseError: If the connection fails.
-    """
+    """Establishes a connection to the SQLite database, enabling WAL mode and foreign keys."""
     db_path_str = str(db_path)
-
     try:
         if db_path_str.lower() == ":memory:":
-            conn = sqlite3.connect(
-                ":memory:",
-                detect_types=sqlite3.PARSE_DECLTYPES,
-                check_same_thread=False # Important for multi-threaded access if SafeStore uses it
-            )
-            # WAL mode is not applicable for :memory: databases.
-            # It might even error or be ignored.
-            # conn.execute("PRAGMA journal_mode=WAL;") # Skip for :memory:
-            conn.execute("PRAGMA foreign_keys = ON;")
-            ASCIIColors.debug("Connected to in-memory SQLite database")
+            conn = sqlite3.connect(":memory:", detect_types=sqlite3.PARSE_DECLTYPES, check_same_thread=False)
         else:
             db_path_obj = Path(db_path_str).resolve()
-            # Create parent directories only if it's a file path
             db_path_obj.parent.mkdir(parents=True, exist_ok=True)
-            conn = sqlite3.connect(
-                str(db_path_obj),
-                detect_types=sqlite3.PARSE_DECLTYPES,
-                check_same_thread=False
-            )
+            conn = sqlite3.connect(str(db_path_obj), detect_types=sqlite3.PARSE_DECLTYPES, check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL;")
-            conn.execute("PRAGMA foreign_keys = ON;")
-            ASCIIColors.debug(f"Connected to database: {db_path_obj} (WAL enabled)")
         
+        conn.execute("PRAGMA foreign_keys = ON;")
+        ASCIIColors.debug(f"Connected to database: {db_path_str} (WAL enabled, Foreign Keys ON)")
         return conn
-    except sqlite3.Error as e:
-        # For :memory:, db_path_obj might not be defined, so use db_path_str
-        error_location = db_path_str if db_path_str.lower() == ":memory:" else str(Path(db_path_str).resolve())
-        msg = f"Database connection error to {error_location}: {e}"
-        ASCIIColors.error(msg, exc_info=True)
+    except (sqlite3.Error, OSError) as e:
+        msg = f"Database connection error to {db_path_str}: {e}"
         raise DatabaseError(msg) from e
-    except OSError as e: # For issues like mkdir failing due to permissions
-        db_path_obj = Path(db_path_str).resolve()
-        msg = f"OS error during database setup for {db_path_obj}: {e}"
-        ASCIIColors.error(msg, exc_info=True)
-        raise DatabaseError(msg) from e
-    
-    
+
 def initialize_schema(conn: sqlite3.Connection) -> None:
-    """
-    Initializes the database schema if tables don't exist.
-
-    Creates tables for documents, vectorization methods, chunks, vectors,
-    and graph-related data (nodes, relationships, links, metadata).
-
-    Args:
-        conn: An active sqlite3.Connection object.
-
-    Raises:
-        DatabaseError: If schema initialization fails.
-    """
+    """Initializes the database schema including all tables for documents, vectors, and the knowledge graph."""
     cursor = conn.cursor()
     try:
-        # Documents Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS documents (
-            doc_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_path TEXT UNIQUE NOT NULL,
-            file_hash TEXT,
-            full_text TEXT,
-            metadata TEXT,
-            added_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
-        );
-        """)
+            doc_id INTEGER PRIMARY KEY AUTOINCREMENT, file_path TEXT UNIQUE NOT NULL, file_hash TEXT,
+            full_text TEXT, metadata TEXT, added_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+        );""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_doc_file_path ON documents (file_path);")
-
-        # Vectorization Methods Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS vectorization_methods (
-            method_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            method_name TEXT UNIQUE NOT NULL,
-            method_type TEXT NOT NULL,
-            vector_dim INTEGER NOT NULL,
-            vector_dtype TEXT NOT NULL,
-            params TEXT
-        );
-        """)
+            method_id INTEGER PRIMARY KEY AUTOINCREMENT, method_name TEXT UNIQUE NOT NULL, method_type TEXT NOT NULL,
+            vector_dim INTEGER NOT NULL, vector_dtype TEXT NOT NULL, params TEXT
+        );""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_method_name ON vectorization_methods (method_name);")
-
-        # Chunks Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS chunks (
-            chunk_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            doc_id INTEGER NOT NULL,
-            chunk_text TEXT NOT NULL,
-            start_pos INTEGER NOT NULL,
-            end_pos INTEGER NOT NULL,
-            chunk_seq INTEGER NOT NULL,
-            tags TEXT,
-            is_encrypted INTEGER DEFAULT 0 NOT NULL,
-            encryption_metadata BLOB,
-            graph_processed_at DATETIME, -- New column for tracking graph processing
+            chunk_id INTEGER PRIMARY KEY AUTOINCREMENT, doc_id INTEGER NOT NULL, chunk_text BLOB NOT NULL,
+            start_pos INTEGER NOT NULL, end_pos INTEGER NOT NULL, chunk_seq INTEGER NOT NULL, tags TEXT,
+            is_encrypted INTEGER DEFAULT 0 NOT NULL, encryption_metadata BLOB, graph_processed_at DATETIME,
             FOREIGN KEY (doc_id) REFERENCES documents (doc_id) ON DELETE CASCADE
-        );
-        """)
+        );""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunk_doc_id ON chunks (doc_id);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunk_graph_processed_at ON chunks (graph_processed_at);") # Index for faster unprocessed chunk lookup
-
-
-        # Vectors Table
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunk_graph_processed_at ON chunks (graph_processed_at);")
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS vectors (
-            vector_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chunk_id INTEGER NOT NULL,
-            method_id INTEGER NOT NULL,
-            vector_data BLOB NOT NULL,
-            FOREIGN KEY (chunk_id) REFERENCES chunks (chunk_id) ON DELETE CASCADE,
+            vector_id INTEGER PRIMARY KEY AUTOINCREMENT, chunk_id INTEGER NOT NULL, method_id INTEGER NOT NULL,
+            vector_data BLOB NOT NULL, FOREIGN KEY (chunk_id) REFERENCES chunks (chunk_id) ON DELETE CASCADE,
             FOREIGN KEY (method_id) REFERENCES vectorization_methods (method_id) ON DELETE CASCADE,
             UNIQUE (chunk_id, method_id)
-        );
-        """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_vector_chunk_method ON vectors (chunk_id, method_id);")
+        );""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_vector_method_id ON vectors (method_id);")
-
-        # --- Graph Schema ---
-        # Store Metadata Table
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS store_metadata (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        );
-        """)
-
-        # Graph Nodes Table
+        
+        cursor.execute("CREATE TABLE IF NOT EXISTS store_metadata (key TEXT PRIMARY KEY, value TEXT);")
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS graph_nodes (
-            node_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            node_label TEXT NOT NULL,
-            node_properties TEXT, 
-            unique_signature TEXT UNIQUE 
-        );
-        """)
+            node_id INTEGER PRIMARY KEY AUTOINCREMENT, node_label TEXT NOT NULL, node_properties TEXT,
+            unique_signature TEXT UNIQUE, node_vector BLOB
+        );""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_graph_node_label ON graph_nodes (node_label);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_graph_node_signature ON graph_nodes (unique_signature);")
-
-
-        # Graph Relationships Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS graph_relationships (
-            relationship_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            source_node_id INTEGER NOT NULL,
-            target_node_id INTEGER NOT NULL,
-            relationship_type TEXT NOT NULL,
-            relationship_properties TEXT, 
+            relationship_id INTEGER PRIMARY KEY AUTOINCREMENT, source_node_id INTEGER NOT NULL,
+            target_node_id INTEGER NOT NULL, relationship_type TEXT NOT NULL, relationship_properties TEXT,
             FOREIGN KEY (source_node_id) REFERENCES graph_nodes (node_id) ON DELETE CASCADE,
             FOREIGN KEY (target_node_id) REFERENCES graph_nodes (node_id) ON DELETE CASCADE
-        );
-        """)
+        );""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_graph_rel_source_type ON graph_relationships (source_node_id, relationship_type);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_graph_rel_target_type ON graph_relationships (target_node_id, relationship_type);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_graph_rel_type ON graph_relationships (relationship_type);")
-
-
-        # Node-Chunk Links Table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS node_chunk_links (
-            node_id INTEGER NOT NULL,
-            chunk_id INTEGER NOT NULL,
+            node_id INTEGER NOT NULL, chunk_id INTEGER NOT NULL,
             FOREIGN KEY (node_id) REFERENCES graph_nodes (node_id) ON DELETE CASCADE,
             FOREIGN KEY (chunk_id) REFERENCES chunks (chunk_id) ON DELETE CASCADE,
             PRIMARY KEY (node_id, chunk_id)
-        );
-        """)
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ncl_node_id ON node_chunk_links (node_id);")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ncl_chunk_id ON node_chunk_links (chunk_id);")
-
+        );""")
 
         conn.commit()
-        ASCIIColors.debug("Database schema (including graph tables and 'chunks.graph_processed_at') initialized or verified.")
+        ASCIIColors.debug("Database schema verified/initialized successfully.")
     except sqlite3.Error as e:
-        msg = f"Schema initialization error: {e}"
-        ASCIIColors.error(msg, exc_info=True)
         conn.rollback()
-        raise DatabaseError(msg) from e
+        raise DatabaseError(f"Schema initialization error: {e}") from e
 
-# --- CRUD Operations (existing ones remain, new graph ones below) ---
-
-def add_document_record(
-    conn: sqlite3.Connection,
-    file_path: str,
-    full_text: str,
-    file_hash: Optional[str] = None,
-    metadata: Optional[str] = None
-) -> int:
-    sql: SQLQuery = """
-    INSERT INTO documents (file_path, file_hash, full_text, metadata)
-    VALUES (?, ?, ?, ?)
-    """
+# --- Original SafeStore CRUD Functions ---
+def add_document_record(conn: sqlite3.Connection, file_path: str, full_text: str, file_hash: Optional[str] = None, metadata: Optional[str] = None) -> int:
+    sql = "INSERT INTO documents (file_path, file_hash, full_text, metadata) VALUES (?, ?, ?, ?)"
     cursor = conn.cursor()
     try:
         cursor.execute(sql, (file_path, file_hash, full_text, metadata))
         doc_id = cursor.lastrowid
-        if doc_id is None:
-             raise DatabaseError(f"Failed to get lastrowid after inserting document '{file_path}'.")
-        ASCIIColors.debug(f"Prepared insertion for document record '{Path(file_path).name}', doc_id={doc_id}")
+        if doc_id is None: raise DatabaseError(f"Failed to get lastrowid for document '{file_path}'.")
         return doc_id
     except sqlite3.IntegrityError as e:
-        conn.rollback()
         existing_id = get_document_id_by_path(conn, file_path)
-        if existing_id is not None:
-            ASCIIColors.debug(f"Retrieved existing doc_id {existing_id} for path '{file_path}'.")
-            return existing_id
-        else:
-            msg = f"IntegrityError adding '{file_path}', but could not retrieve existing ID. DB state might be inconsistent."
-            ASCIIColors.critical(msg)
-            raise DatabaseError(msg) from e
+        if existing_id is not None: return existing_id
+        raise DatabaseError(f"IntegrityError for '{file_path}', but could not retrieve existing ID.") from e
     except sqlite3.Error as e:
-        msg = f"Error preparing document insertion for '{file_path}': {e}"
-        ASCIIColors.error(msg, exc_info=True)
-        raise DatabaseError(msg) from e
-
+        raise DatabaseError(f"Error inserting document '{file_path}': {e}") from e
 
 def get_document_id_by_path(conn: sqlite3.Connection, file_path: str) -> Optional[int]:
-    sql: SQLQuery = "SELECT doc_id FROM documents WHERE file_path = ?"
     cursor = conn.cursor()
     try:
-        cursor.execute(sql, (file_path,))
+        cursor.execute("SELECT doc_id FROM documents WHERE file_path = ?", (file_path,))
         result = cursor.fetchone()
         return result[0] if result else None
     except sqlite3.Error as e:
-        ASCIIColors.error(f"Error fetching document ID for '{file_path}': {e}", exc_info=True)
-        return None
+        raise DatabaseError(f"Error fetching doc_id for '{file_path}': {e}") from e
 
-def add_or_get_vectorization_method(
-    conn: sqlite3.Connection,
-    name: str,
-    type: str,
-    dim: int,
-    dtype: str,
-    params: Optional[str] = None
-) -> int:
-    sql_select: SQLQuery = "SELECT method_id FROM vectorization_methods WHERE method_name = ?"
-    sql_insert: SQLQuery = """
-    INSERT INTO vectorization_methods (method_name, method_type, vector_dim, vector_dtype, params)
-    VALUES (?, ?, ?, ?, ?)
-    """
+def add_or_get_vectorization_method(conn: sqlite3.Connection, name: str, type: str, dim: int, dtype: str, params: Optional[str] = None) -> int:
     cursor = conn.cursor()
     try:
-        cursor.execute(sql_select, (name,))
+        cursor.execute("SELECT method_id FROM vectorization_methods WHERE method_name = ?", (name,))
         result = cursor.fetchone()
-        if result:
-            method_id = result[0]
-            ASCIIColors.debug(f"Vectorization method '{name}' already exists with ID {method_id}.")
-            return method_id
-        else:
-            params_to_store = params if params is not None else '{}'
-            cursor.execute(sql_insert, (name, type, dim, dtype, params_to_store))
-            method_id = cursor.lastrowid
-            if method_id is None: raise DatabaseError(f"Failed to get lastrowid after inserting vectorization method '{name}'.")
-            ASCIIColors.debug(f"Prepared insertion for vectorization method '{name}', method_id={method_id}.")
-            return method_id
+        if result: return result[0]
+        cursor.execute("INSERT INTO vectorization_methods (method_name, method_type, vector_dim, vector_dtype, params) VALUES (?, ?, ?, ?, ?)",
+                       (name, type, dim, dtype, params or '{}'))
+        method_id = cursor.lastrowid
+        if method_id is None: raise DatabaseError(f"Failed to get lastrowid for vectorizer '{name}'.")
+        return method_id
     except sqlite3.Error as e:
-        msg = f"Error adding/getting vectorization method '{name}': {e}"
-        ASCIIColors.error(msg, exc_info=True)
-        raise DatabaseError(msg) from e
+        raise DatabaseError(f"Error adding/getting vectorizer '{name}': {e}") from e
 
-def add_chunk_record(
-    conn: sqlite3.Connection,
-    doc_id: int,
-    text: str,
-    start: int,
-    end: int,
-    seq: int,
-    tags: Optional[str] = None,
-    is_encrypted: bool = False,
-    encryption_metadata: Optional[bytes] = None
-) -> int:
-    sql: SQLQuery = """
-    INSERT INTO chunks (doc_id, chunk_text, start_pos, end_pos, chunk_seq, tags, is_encrypted, encryption_metadata)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """
+def add_chunk_record(conn: sqlite3.Connection, doc_id: int, text: Union[str, bytes], start: int, end: int, seq: int, tags: Optional[str] = None, is_encrypted: bool = False, encryption_metadata: Optional[bytes] = None) -> int:
+    sql = "INSERT INTO chunks (doc_id, chunk_text, start_pos, end_pos, chunk_seq, tags, is_encrypted, encryption_metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     cursor = conn.cursor()
     try:
-        encrypted_flag = 1 if is_encrypted else 0
-        cursor.execute(sql, (doc_id, text, start, end, seq, tags, encrypted_flag, encryption_metadata))
+        cursor.execute(sql, (doc_id, text, start, end, seq, tags, 1 if is_encrypted else 0, encryption_metadata))
         chunk_id = cursor.lastrowid
-        if chunk_id is None:
-            raise DatabaseError(f"Failed to get lastrowid after inserting chunk (doc={doc_id}, seq={seq}).")
+        if chunk_id is None: raise DatabaseError(f"Failed to get lastrowid for chunk (doc={doc_id}, seq={seq}).")
         return chunk_id
     except sqlite3.Error as e:
-        msg = f"Error preparing chunk insertion (doc={doc_id}, seq={seq}): {e}"
-        ASCIIColors.error(msg, exc_info=True)
-        raise DatabaseError(msg) from e
+        raise DatabaseError(f"Error inserting chunk (doc={doc_id}, seq={seq}): {e}") from e
 
-def add_vector_record(
-    conn: sqlite3.Connection,
-    chunk_id: int,
-    method_id: int,
-    vector: np.ndarray
-) -> None:
-    sql: SQLQuery = """
-    INSERT INTO vectors (chunk_id, method_id, vector_data)
-    VALUES (?, ?, ?)
-    ON CONFLICT(chunk_id, method_id) DO NOTHING;
-    """
-    cursor = conn.cursor()
+def add_vector_record(conn: sqlite3.Connection, chunk_id: int, method_id: int, vector: np.ndarray) -> None:
+    sql = "INSERT OR IGNORE INTO vectors (chunk_id, method_id, vector_data) VALUES (?, ?, ?)"
     try:
-        cursor.execute(sql, (chunk_id, method_id, vector))
+        conn.execute(sql, (chunk_id, method_id, vector))
     except sqlite3.Error as e:
-        msg = f"Error preparing vector insertion (chunk={chunk_id}, method={method_id}): {e}"
-        ASCIIColors.error(msg, exc_info=True)
-        raise DatabaseError(msg) from e
+        raise DatabaseError(f"Error inserting vector (chunk={chunk_id}, method={method_id}): {e}") from e
 
-# --- New Graph DB Functions ---
-
+# --- Metadata Functions ---
 def set_store_metadata(conn: sqlite3.Connection, key: str, value: str) -> None:
-    """Sets a key-value pair in the store_metadata table."""
-    sql: SQLQuery = "INSERT OR REPLACE INTO store_metadata (key, value) VALUES (?, ?)"
-    cursor = conn.cursor()
     try:
-        cursor.execute(sql, (key, value))
-        # No commit here, assume caller handles transaction
-        ASCIIColors.debug(f"Prepared set/update for store_metadata: {key} = {value}")
+        conn.execute("INSERT OR REPLACE INTO store_metadata (key, value) VALUES (?, ?)", (key, value))
     except sqlite3.Error as e:
-        msg = f"Error setting store metadata '{key}': {e}"
-        ASCIIColors.error(msg, exc_info=True)
-        raise DatabaseError(msg) from e
+        raise DatabaseError(f"Error setting store metadata '{key}': {e}") from e
 
 def get_store_metadata(conn: sqlite3.Connection, key: str) -> Optional[str]:
-    """Gets a value from the store_metadata table by key."""
-    sql: SQLQuery = "SELECT value FROM store_metadata WHERE key = ?"
-    cursor = conn.cursor()
     try:
-        cursor.execute(sql, (key,))
+        cursor = conn.execute("SELECT value FROM store_metadata WHERE key = ?", (key,))
         result = cursor.fetchone()
         return result[0] if result else None
     except sqlite3.Error as e:
-        msg = f"Error getting store metadata for key '{key}': {e}"
-        ASCIIColors.error(msg, exc_info=True)
-        raise DatabaseError(msg) from e
+        raise DatabaseError(f"Error getting store metadata for key '{key}': {e}") from e
 
-def add_graph_node(
-    conn: sqlite3.Connection,
-    label: str,
-    properties_json: Optional[str] = None,
-    unique_signature: Optional[str] = None
-) -> int:
-    """
-    Adds a graph node if it doesn't exist (based on unique_signature), or returns existing node_id.
-    If unique_signature is None, it always inserts a new node.
-
-    Args:
-        conn: Active database connection.
-        label: Label for the node (e.g., "Person", "Location").
-        properties_json: JSON string of node properties.
-        unique_signature: An optional unique string to identify this node.
-
-    Returns:
-        The node_id of the added or existing node.
-
-    Raises:
-        GraphDBError: If database interaction fails.
-    """
-    cursor = conn.cursor()
-    if unique_signature:
-        existing_node_id = get_graph_node_by_signature(conn, unique_signature)
-        if existing_node_id is not None:
-            ASCIIColors.debug(f"Node with signature '{unique_signature}' already exists (ID: {existing_node_id}).")
-            return existing_node_id
-
-    sql_insert: SQLQuery = """
-    INSERT INTO graph_nodes (node_label, node_properties, unique_signature)
-    VALUES (?, ?, ?)
-    """
-    try:
-        cursor.execute(sql_insert, (label, properties_json, unique_signature))
-        node_id = cursor.lastrowid
-        if node_id is None:
-            raise GraphDBError(f"Failed to get lastrowid after inserting graph node (label='{label}', signature='{unique_signature}').")
-        ASCIIColors.debug(f"Prepared insertion for graph node '{label}' (Sig: {unique_signature}), node_id={node_id}")
-        return node_id
-    except sqlite3.IntegrityError as e: # Should be caught by get_graph_node_by_signature if signature is NOT NULL and UNIQUE
-        conn.rollback() # Rollback the failed insert
-        if unique_signature: # This implies a race condition if the earlier check passed
-            ASCIIColors.warning(f"Race condition? IntegrityError for node signature '{unique_signature}'. Re-fetching.")
-            existing_node_id = get_graph_node_by_signature(conn, unique_signature)
-            if existing_node_id is not None: return existing_node_id
-        msg = f"IntegrityError adding graph node (label='{label}', signature='{unique_signature}'): {e}"
-        ASCIIColors.error(msg)
-        raise GraphDBError(msg) from e
-    except sqlite3.Error as e:
-        msg = f"Error preparing graph node insertion (label='{label}', signature='{unique_signature}'): {e}"
-        ASCIIColors.error(msg, exc_info=True)
-        raise GraphDBError(msg) from e
-
-def get_graph_node_by_signature(conn: sqlite3.Connection, signature: str) -> Optional[int]:
-    """Retrieves a graph node_id by its unique_signature."""
-    sql: SQLQuery = "SELECT node_id FROM graph_nodes WHERE unique_signature = ?"
+# --- Graph Node Functions ---
+def add_or_update_graph_node(conn: sqlite3.Connection, label: str, properties: Dict[str, Any], unique_signature: str) -> int:
     cursor = conn.cursor()
     try:
-        cursor.execute(sql, (signature,))
-        result = cursor.fetchone()
-        return result[0] if result else None
-    except sqlite3.Error as e:
-        ASCIIColors.error(f"Error fetching graph node by signature '{signature}': {e}", exc_info=True)
-        # Let caller handle None, or raise GraphDBError if preferred
-        return None
-
-
-def add_graph_relationship(
-    conn: sqlite3.Connection,
-    source_node_id: int,
-    target_node_id: int,
-    type: str,
-    properties_json: Optional[str] = None
-) -> int:
-    """
-    Adds a relationship between two nodes.
-
-    Args:
-        conn: Active database connection.
-        source_node_id: ID of the source node.
-        target_node_id: ID of the target node.
-        type: Type of the relationship (e.g., "WORKS_AT").
-        properties_json: JSON string of relationship properties.
-
-    Returns:
-        The relationship_id of the added relationship.
-
-    Raises:
-        GraphDBError: If database interaction fails.
-    """
-    sql_insert: SQLQuery = """
-    INSERT INTO graph_relationships (source_node_id, target_node_id, relationship_type, relationship_properties)
-    VALUES (?, ?, ?, ?)
-    """
-    cursor = conn.cursor()
-    try:
-        cursor.execute(sql_insert, (source_node_id, target_node_id, type, properties_json))
-        rel_id = cursor.lastrowid
-        if rel_id is None:
-            raise GraphDBError(f"Failed to get lastrowid after inserting graph relationship (source={source_node_id}, target={target_node_id}, type='{type}').")
-        ASCIIColors.debug(f"Prepared insertion for graph relationship '{type}' (Source:{source_node_id} -> Target:{target_node_id}), rel_id={rel_id}")
-        return rel_id
-    except sqlite3.Error as e:
-        msg = f"Error preparing graph relationship insertion (source={source_node_id}, target={target_node_id}, type='{type}'): {e}"
-        ASCIIColors.error(msg, exc_info=True)
-        raise GraphDBError(msg) from e
-
-def link_node_to_chunk(conn: sqlite3.Connection, node_id: int, chunk_id: int) -> None:
-    """
-    Links a graph node to a text chunk. Ignores if the link already exists.
-
-    Args:
-        conn: Active database connection.
-        node_id: ID of the graph node.
-        chunk_id: ID of the text chunk.
-
-    Raises:
-        GraphDBError: If database interaction fails.
-    """
-    sql: SQLQuery = """
-    INSERT OR IGNORE INTO node_chunk_links (node_id, chunk_id)
-    VALUES (?, ?)
-    """
-    cursor = conn.cursor()
-    try:
-        cursor.execute(sql, (node_id, chunk_id))
-        # ASCIIColors.debug(f"Prepared link for node {node_id} to chunk {chunk_id}") # Can be verbose
-    except sqlite3.Error as e:
-        msg = f"Error linking node {node_id} to chunk {chunk_id}: {e}"
-        ASCIIColors.error(msg, exc_info=True)
-        raise GraphDBError(msg) from e
-
-def mark_chunks_graph_processed(conn: sqlite3.Connection, chunk_ids: List[int]) -> None:
-    """Marks a list of chunks as graph processed by setting graph_processed_at."""
-    if not chunk_ids:
-        return
-    sql: SQLQuery = "UPDATE chunks SET graph_processed_at = CURRENT_TIMESTAMP WHERE chunk_id IN ({})".format(
-        ",".join("?" * len(chunk_ids))
-    )
-    cursor = conn.cursor()
-    try:
-        cursor.execute(sql, tuple(chunk_ids))
-        ASCIIColors.debug(f"Marked {cursor.rowcount} chunks as graph processed.")
-    except sqlite3.Error as e:
-        msg = f"Error marking chunks as graph processed: {e}"
-        ASCIIColors.error(msg, exc_info=True)
-        raise GraphDBError(msg) from e
-    
-
-def add_or_update_graph_node(
-    conn: sqlite3.Connection,
-    label: str,
-    properties: Dict[str, Any], # Pass properties as dict
-    unique_signature: Optional[str] = None,
-    property_merge_strategy: str = "merge_overwrite_new" # e.g., new values for same keys win
-) -> int:
-    """
-    Adds a graph node if it doesn't exist (based on unique_signature),
-    or updates its properties if it does exist.
-
-    Returns:
-        The node_id of the added or existing/updated node.
-    """
-    cursor = conn.cursor()
-    node_id: Optional[int] = None
-
-    if unique_signature:
         cursor.execute("SELECT node_id, node_properties FROM graph_nodes WHERE unique_signature = ?", (unique_signature,))
         row = cursor.fetchone()
         if row:
-            node_id = row[0]
-            existing_properties_json = row[1]
-            existing_properties = json.loads(existing_properties_json) if existing_properties_json else {}
-            
-            if property_merge_strategy == "merge_overwrite_new":
-                merged_properties = {**existing_properties, **properties}
-            elif property_merge_strategy == "merge_prefer_existing":
-                merged_properties = {**properties, **existing_properties}
-            elif property_merge_strategy == "overwrite_all": # New properties completely replace
-                merged_properties = properties
-            else: # Default to merge_overwrite_new
-                merged_properties = {**existing_properties, **properties}
-
-            new_properties_json = json.dumps(merged_properties)
-            if new_properties_json != existing_properties_json: # Only update if there's a change
-                try:
-                    cursor.execute("UPDATE graph_nodes SET node_properties = ? WHERE node_id = ?", 
-                                   (new_properties_json, node_id))
-                    ASCIIColors.debug(f"Updated properties for existing node ID {node_id} (Sig: {unique_signature}).")
-                except sqlite3.Error as e:
-                    msg = f"Error updating properties for node ID {node_id}: {e}"
-                    ASCIIColors.error(msg)
-                    raise GraphDBError(msg) from e
-            else:
-                ASCIIColors.debug(f"Node ID {node_id} (Sig: {unique_signature}) found, properties unchanged.")
+            node_id, existing_props_json = row
+            existing_props = json.loads(existing_props_json) if existing_props_json else {}
+            merged_props = {**existing_props, **properties}
+            if json.dumps(merged_props) != existing_props_json:
+                cursor.execute("UPDATE graph_nodes SET node_properties = ? WHERE node_id = ?", (json.dumps(merged_props), node_id))
             return node_id
-
-    # If node_id is still None, it means it's a new node or no signature was provided
-    properties_json_to_insert = json.dumps(properties)
-    sql_insert: SQLQuery = """
-    INSERT INTO graph_nodes (node_label, node_properties, unique_signature)
-    VALUES (?, ?, ?)
-    """
-    try:
-        cursor.execute(sql_insert, (label, properties_json_to_insert, unique_signature))
-        node_id = cursor.lastrowid
-        if node_id is None:
-            raise GraphDBError(f"Failed to get lastrowid after inserting graph node (label='{label}', signature='{unique_signature}').")
-        ASCIIColors.debug(f"Inserted new graph node '{label}' (Sig: {unique_signature}), node_id={node_id}")
-        return node_id
-    except sqlite3.IntegrityError as e: 
-        # This case should ideally only be hit if unique_signature is None and some other constraint fails,
-        # or if there was a race condition not caught by the initial select.
-        conn.rollback() 
-        if unique_signature: 
-            ASCIIColors.warning(f"Race condition or unexpected IntegrityError for node signature '{unique_signature}'. Re-fetching.")
-            # Re-fetch to be safe, though the earlier select should have caught it.
-            cursor.execute("SELECT node_id FROM graph_nodes WHERE unique_signature = ?", (unique_signature,))
-            refetched_row = cursor.fetchone()
-            if refetched_row: return refetched_row[0]
-        msg = f"IntegrityError adding/updating graph node (label='{label}', signature='{unique_signature}'): {e}"
-        ASCIIColors.error(msg)
-        raise GraphDBError(msg) from e
+        else:
+            props_json = json.dumps(properties)
+            cursor.execute("INSERT INTO graph_nodes (node_label, node_properties, unique_signature) VALUES (?, ?, ?)", (label, props_json, unique_signature))
+            new_id = cursor.lastrowid
+            if new_id is None: raise GraphDBError("Failed to get lastrowid for new node.")
+            return new_id
     except sqlite3.Error as e:
-        msg = f"Error inserting/updating graph node (label='{label}', signature='{unique_signature}'): {e}"
-        ASCIIColors.error(msg, exc_info=True)
-        raise GraphDBError(msg) from e
-    
-# --- New Graph Query DB Functions (Phase 3) ---
+        raise GraphDBError(f"Error adding/updating graph node with signature '{unique_signature}': {e}") from e
 
-def get_graph_node_by_label_and_property(
-    conn: sqlite3.Connection,
-    label: str,
-    prop_key: str,
-    prop_value: Any
-) -> List[Dict[str, Any]]:
-    """
-    Finds graph nodes by label and a specific property key-value pair.
-    Uses json_extract for querying JSON properties. Returns a list of matching nodes.
-    Note: SQLite's json_extract returns JSON values as strings, numbers, or null.
-          Comparisons should be mindful of types if prop_value is not a string.
-          For simplicity, this example assumes prop_value will be matched as text if it's not numeric.
-    """
-    # Ensure prop_key is safe for SQL injection if it were directly in query string (it's not here)
-    # For json_extract, the path `$.prop_key` is safe.
-    sql: SQLQuery = f"""
-    SELECT node_id, node_label, node_properties, unique_signature
-    FROM graph_nodes
-    WHERE node_label = ? AND json_extract(node_properties, '$.{prop_key}') = ?;
-    """
-    # If prop_value is numeric, SQLite's json_extract might compare it as a number.
-    # If it's a string, it should be compared as a string.
-    # json_extract typically returns text for string values in JSON.
-    params = (label, str(prop_value)) # Cast prop_value to string for robust comparison with json_extract text output
-    
-    cursor = conn.cursor()
-    nodes_found: List[Dict[str, Any]] = []
+def get_graph_node_by_signature(conn: sqlite3.Connection, signature: str) -> Optional[int]:
     try:
-        cursor.execute(sql, params)
-        for row in cursor.fetchall():
-            properties = json.loads(row[2]) if row[2] else {}
-            nodes_found.append({
-                "node_id": row[0],
-                "label": row[1],
-                "properties": properties,
-                "unique_signature": row[3]
-            })
-        return nodes_found
+        cursor = conn.execute("SELECT node_id FROM graph_nodes WHERE unique_signature = ?", (signature,))
+        result = cursor.fetchone()
+        return result[0] if result else None
     except sqlite3.Error as e:
-        msg = f"DB error finding node by label '{label}' and prop '{prop_key}={prop_value}': {e}"
-        ASCIIColors.error(msg)
-        raise GraphDBError(msg) from e
-    except json.JSONDecodeError as e:
-        msg = f"JSON decode error for properties while finding node by label '{label}' and prop '{prop_key}={prop_value}': {e}"
-        ASCIIColors.error(msg)
-        raise GraphDBError(msg) from e
+        raise GraphDBError(f"Error fetching node by signature '{signature}': {e}") from e
 
-
-def find_similar_nodes_by_property(
-    conn: sqlite3.Connection,
-    label: str,
-    prop_key: str,
-    prop_value: str,
-    limit: int = 5
-) -> List[Dict[str, Any]]:
-    """
-    Finds graph nodes with the same label and a similar-sounding property value.
-    Uses `LIKE` for basic fuzzy matching on the property value within the JSON.
-    This is a basic implementation; more advanced text similarity might require FTS5 or custom functions.
-    """
-    sql = f"""
-    SELECT node_id, node_label, node_properties, unique_signature
-    FROM graph_nodes
-    WHERE node_label = ? AND json_extract(node_properties, '$.{prop_key}') LIKE ?
-    LIMIT ?;
-    """
-    # Create a LIKE pattern, e.g., '%value%'
-    like_pattern = f"%{prop_value}%"
-    params = (label, like_pattern, limit)
-    
-    cursor = conn.cursor()
-    nodes_found = []
-    try:
-        cursor.execute(sql, params)
-        for row in cursor.fetchall():
-            properties = json.loads(row[2]) if row[2] else {}
-            # Secondary check to ensure the property actually exists, as LIKE on NULL is NULL (not true)
-            if prop_key in properties:
-                nodes_found.append({
-                    "node_id": row[0],
-                    "label": row[1],
-                    "properties": properties,
-                    "unique_signature": row[3]
-                })
-        return nodes_found
-    except sqlite3.Error as e:
-        msg = f"DB error finding similar nodes for label '{label}' and prop '{prop_key}' LIKE '{prop_value}': {e}"
-        ASCIIColors.error(msg)
-        raise GraphDBError(msg) from e
-
-
-def get_node_details_db(conn: sqlite3.Connection, node_id: int) -> Optional[Dict[str, Any]]:
-    """Fetches details (label, properties, signature) for a single node by its ID."""
-    sql: SQLQuery = "SELECT node_label, node_properties, unique_signature FROM graph_nodes WHERE node_id = ?"
-    cursor = conn.cursor()
-    try:
-        cursor.execute(sql, (node_id,))
-        row = cursor.fetchone()
-        if row:
-            properties = json.loads(row[1]) if row[1] else {}
-            return {
-                "node_id": node_id,
-                "label": row[0],
-                "properties": properties,
-                "unique_signature": row[2]
-            }
-        return None
-    except sqlite3.Error as e:
-        raise GraphDBError(f"DB error fetching details for node_id {node_id}: {e}") from e
-    except json.JSONDecodeError as e:
-        raise GraphDBError(f"JSON decode error for properties of node_id {node_id}: {e}") from e
-
-def get_nodes_details_db(conn: sqlite3.Connection, node_ids: List[int]) -> List[Dict[str, Any]]:
-    """Fetches details for multiple nodes by their IDs."""
-    if not node_ids:
-        return []
-    placeholders = ",".join("?" * len(node_ids))
-    sql: SQLQuery = f"SELECT node_id, node_label, node_properties, unique_signature FROM graph_nodes WHERE node_id IN ({placeholders})"
-    cursor = conn.cursor()
+def find_similar_nodes_by_property(conn, label, prop_key, prop_value, limit=5) -> List[Dict[str, Any]]:
+    safe_prop_key = ''.join(c for c in prop_key if c.isalnum() or c in '_')
+    if safe_prop_key != prop_key: raise GraphDBError(f"Invalid characters in property key: {prop_key}")
+    sql = f"SELECT node_id, node_properties FROM graph_nodes WHERE node_label = ? AND json_extract(node_properties, '$.{safe_prop_key}') LIKE ? LIMIT ?"
     nodes = []
     try:
-        cursor.execute(sql, tuple(node_ids))
+        cursor = conn.execute(sql, (label, f"%{prop_value}%", limit))
         for row in cursor.fetchall():
-            properties = json.loads(row[2]) if row[2] else {}
-            nodes.append({
-                "node_id": row[0],
-                "label": row[1],
-                "properties": properties,
-                "unique_signature": row[3]
-            })
+            nodes.append({"node_id": row[0], "properties": json.loads(row[1]) if row[1] else {}})
         return nodes
     except sqlite3.Error as e:
-        raise GraphDBError(f"DB error fetching details for multiple nodes: {e}") from e
+        raise GraphDBError(f"DB error finding similar nodes for prop '{prop_key}': {e}") from e
 
-
-def get_relationship_details_db(conn: sqlite3.Connection, relationship_id: int) -> Optional[Dict[str, Any]]:
-    """Fetches details for a single relationship by its ID."""
-    sql: SQLQuery = """
-    SELECT source_node_id, target_node_id, relationship_type, relationship_properties
-    FROM graph_relationships WHERE relationship_id = ?
-    """
-    cursor = conn.cursor()
+def find_node_by_label_and_property_value(conn: sqlite3.Connection, label: str, value: str, limit: int = 1) -> List[Dict[str, Any]]:
+    like_pattern = f"%{value}%"
+    sql = "SELECT node_id, node_label, node_properties, unique_signature FROM graph_nodes WHERE node_label = ? AND (json_extract(node_properties, '$.name') LIKE ? OR json_extract(node_properties, '$.title') LIKE ?) LIMIT ?;"
+    nodes_found = []
     try:
-        cursor.execute(sql, (relationship_id,))
+        cursor = conn.execute(sql, (label, like_pattern, like_pattern, limit))
+        for row in cursor.fetchall():
+            nodes_found.append({"node_id": row[0], "label": row[1], "properties": json.loads(row[2]) if row[2] else {}, "unique_signature": row[3]})
+        return nodes_found
+    except sqlite3.Error as e:
+        raise GraphDBError(f"DB error finding node by multi-property value LIKE '{value}': {e}") from e
+
+def get_node_details_db(conn: sqlite3.Connection, node_id: int) -> Optional[Dict[str, Any]]:
+    try:
+        cursor = conn.execute("SELECT node_id, node_label, node_properties, unique_signature FROM graph_nodes WHERE node_id = ?", (node_id,))
         row = cursor.fetchone()
         if row:
-            properties = json.loads(row[3]) if row[3] else {}
-            return {
-                "relationship_id": relationship_id,
-                "source_node_id": row[0],
-                "target_node_id": row[1],
-                "type": row[2],
-                "properties": properties
-            }
+            return {"node_id": row[0], "label": row[1], "properties": json.loads(row[2]) if row[2] else {}, "unique_signature": row[3]}
         return None
     except sqlite3.Error as e:
-        raise GraphDBError(f"DB error fetching details for relationship_id {relationship_id}: {e}") from e
-    except json.JSONDecodeError as e:
-        raise GraphDBError(f"JSON decode error for properties of relationship_id {relationship_id}: {e}") from e
+        raise GraphDBError(f"DB error getting details for node {node_id}: {e}") from e
 
-def get_relationships_for_node_db(
-    conn: sqlite3.Connection,
-    node_id: int,
-    relationship_type: Optional[str] = None,
-    direction: str = "any", # "outgoing", "incoming", "any"
-    limit: int = 50
-) -> List[Dict[str, Any]]:
-    """
-    Fetches relationships connected to a given node.
-    Returns a list of relationship detail dictionaries.
-    """
-    conditions = []
-    params: List[Any] = []
+def get_nodes_by_label_db(conn: sqlite3.Connection, label: str, limit: int = 100) -> List[Dict[str, Any]]:
+    nodes_found = []
+    try:
+        cursor = conn.execute("SELECT node_id, node_label, node_properties, unique_signature FROM graph_nodes WHERE node_label = ? LIMIT ?", (label, limit))
+        for row in cursor.fetchall():
+            nodes_found.append({"node_id": row[0], "label": row[1], "properties": json.loads(row[2]) if row[2] else {}, "unique_signature": row[3]})
+        return nodes_found
+    except sqlite3.Error as e:
+        raise GraphDBError(f"DB error getting nodes by label '{label}': {e}") from e
 
-    if direction == "outgoing":
-        conditions.append("r.source_node_id = ?")
-        params.append(node_id)
-    elif direction == "incoming":
-        conditions.append("r.target_node_id = ?")
-        params.append(node_id)
-    elif direction == "any":
+def update_graph_node_label_db(conn: sqlite3.Connection, node_id: int, new_label: str):
+    try:
+        conn.execute("UPDATE graph_nodes SET node_label = ? WHERE node_id = ?", (new_label, node_id))
+    except sqlite3.Error as e:
+        raise GraphDBError(f"DB error updating label for node {node_id}: {e}") from e
+
+def update_graph_node_properties_db(conn: sqlite3.Connection, node_id: int, new_properties: Dict, merge_strategy: str) -> bool:
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT node_properties FROM graph_nodes WHERE node_id = ?", (node_id,))
+        row = cursor.fetchone()
+        if not row: return False
+        
+        existing_props = json.loads(row[0]) if row[0] else {}
+        if merge_strategy == "overwrite_all": merged_props = new_properties
+        else: merged_props = {**existing_props, **new_properties}
+        
+        props_json = json.dumps(merged_props)
+        cursor.execute("UPDATE graph_nodes SET node_properties = ? WHERE node_id = ?", (props_json, node_id))
+        return cursor.rowcount > 0
+    except (sqlite3.Error, json.JSONDecodeError) as e:
+        raise GraphDBError(f"DB error updating properties for node {node_id}: {e}") from e
+
+def delete_graph_node_and_relationships_db(conn: sqlite3.Connection, node_id: int) -> int:
+    try:
+        cursor = conn.execute("DELETE FROM graph_nodes WHERE node_id = ?", (node_id,))
+        return cursor.rowcount
+    except sqlite3.Error as e:
+        raise GraphDBError(f"DB error deleting node {node_id}: {e}") from e
+
+# --- Graph Relationship Functions ---
+def add_graph_relationship(conn: sqlite3.Connection, source_node_id: int, target_node_id: int, rel_type: str, properties_json: str) -> int:
+    try:
+        cursor = conn.execute("INSERT INTO graph_relationships (source_node_id, target_node_id, relationship_type, relationship_properties) VALUES (?, ?, ?, ?)",
+                              (source_node_id, target_node_id, rel_type, properties_json))
+        new_id = cursor.lastrowid
+        if new_id is None: raise GraphDBError("Failed to get lastrowid for new relationship.")
+        return new_id
+    except sqlite3.Error as e:
+        raise GraphDBError(f"Error adding relationship '{rel_type}': {e}") from e
+
+def get_relationships_for_node_db(conn, node_id, relationship_type, direction, limit) -> List[Dict[str, Any]]:
+    conditions, params = [], []
+    if direction == "any":
         conditions.append("(r.source_node_id = ? OR r.target_node_id = ?)")
         params.extend([node_id, node_id])
-    else:
-        raise ValueError("Invalid direction. Must be 'outgoing', 'incoming', or 'any'.")
-
+    elif direction == "outgoing":
+        conditions.append("r.source_node_id = ?"); params.append(node_id)
+    elif direction == "incoming":
+        conditions.append("r.target_node_id = ?"); params.append(node_id)
     if relationship_type:
-        conditions.append("r.relationship_type = ?")
-        params.append(relationship_type)
-
-    where_clause = " AND ".join(conditions) if conditions else "1=1"
+        conditions.append("r.relationship_type = ?"); params.append(relationship_type)
     
-    sql: SQLQuery = f"""
+    where_clause = " AND ".join(conditions)
+    sql = f"""
     SELECT r.relationship_id, r.source_node_id, r.target_node_id, r.relationship_type, r.relationship_properties,
-           s_node.node_label as source_label, s_node.node_properties as source_properties,
-           t_node.node_label as target_label, t_node.node_properties as target_properties
-    FROM graph_relationships r
-    JOIN graph_nodes s_node ON r.source_node_id = s_node.node_id
-    JOIN graph_nodes t_node ON r.target_node_id = t_node.node_id
-    WHERE {where_clause}
-    LIMIT ?;
+           s.node_label as source_label, s.node_properties as source_properties,
+           t.node_label as target_label, t.node_properties as target_properties
+    FROM graph_relationships r JOIN graph_nodes s ON r.source_node_id = s.node_id JOIN graph_nodes t ON r.target_node_id = t.node_id
+    WHERE {where_clause} LIMIT ?;
     """
     params.append(limit)
-    
-    cursor = conn.cursor()
-    relationships: List[Dict[str, Any]] = []
+    relationships = []
     try:
-        cursor.execute(sql, tuple(params))
+        cursor = conn.execute(sql, tuple(params))
         for row in cursor.fetchall():
-            rel_props = json.loads(row[4]) if row[4] else {}
-            src_props = json.loads(row[6]) if row[6] else {}
-            tgt_props = json.loads(row[8]) if row[8] else {}
             relationships.append({
-                "relationship_id": row[0],
-                "source_node_id": row[1],
-                "target_node_id": row[2],
-                "type": row[3],
-                "properties": rel_props,
-                "source_node": {"node_id": row[1], "label": row[5], "properties": src_props},
-                "target_node": {"node_id": row[2], "label": row[7], "properties": tgt_props}
+                "relationship_id": row[0], "source_node_id": row[1], "target_node_id": row[2], "type": row[3],
+                "properties": json.loads(row[4]) if row[4] else {},
+                "source_node": {"node_id": row[1], "label": row[5], "properties": json.loads(row[6]) if row[6] else {}},
+                "target_node": {"node_id": row[2], "label": row[7], "properties": json.loads(row[8]) if row[8] else {}}
             })
         return relationships
     except sqlite3.Error as e:
-        raise GraphDBError(f"DB error fetching relationships for node_id {node_id}: {e}") from e
-    except json.JSONDecodeError as e:
-        raise GraphDBError(f"JSON decode error for properties while fetching relationships for node_id {node_id}: {e}") from e
+        raise GraphDBError(f"DB error fetching relationships for node {node_id}: {e}") from e
 
+def delete_graph_relationship_db(conn: sqlite3.Connection, relationship_id: int) -> int:
+    try:
+        cursor = conn.execute("DELETE FROM graph_relationships WHERE relationship_id = ?", (relationship_id,))
+        return cursor.rowcount
+    except sqlite3.Error as e:
+        raise GraphDBError(f"DB error deleting relationship {relationship_id}: {e}") from e
+
+# --- Graph Vector Functions ---
+def enable_vector_search_on_graph_nodes(conn: sqlite3.Connection, vector_dim: int) -> None:
+    try:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(graph_nodes);")
+        if 'node_vector' not in [col[1] for col in cursor.fetchall()]:
+            cursor.execute("ALTER TABLE graph_nodes ADD COLUMN node_vector BLOB;")
+    except sqlite3.Error as e:
+        raise GraphDBError(f"Failed to enable vector search on graph nodes: {e}") from e
+
+def update_node_vector(conn: sqlite3.Connection, node_id: int, vector: np.ndarray) -> None:
+    try:
+        conn.execute("UPDATE graph_nodes SET node_vector = ? WHERE node_id = ?", (vector, node_id))
+    except sqlite3.Error as e:
+        raise GraphDBError(f"Failed to update vector for node {node_id}: {e}") from e
+
+def search_graph_nodes_by_vector(conn: sqlite3.Connection, query_vector: np.ndarray, top_k: int) -> List[int]:
+    try:
+        cursor = conn.execute("SELECT node_id, node_vector FROM graph_nodes WHERE node_vector IS NOT NULL")
+        all_nodes = cursor.fetchall()
+        if not all_nodes: return []
+        node_ids, vectors_blob = zip(*all_nodes)
+        dtype_str = str(query_vector.dtype)
+        candidate_vectors = np.array([reconstruct_vector(blob, dtype_str) for blob in vectors_blob])
+        norm_query = query_vector / np.linalg.norm(query_vector)
+        norm_candidates = candidate_vectors / np.linalg.norm(candidate_vectors, axis=1, keepdims=True)
+        scores = np.dot(norm_candidates, norm_query)
+        if top_k >= len(scores):
+            top_indices = np.argsort(scores)[::-1]
+        else:
+            top_indices = np.argpartition(scores, -top_k)[-top_k:]
+            top_indices = top_indices[np.argsort(scores[top_indices])][::-1]
+        return [node_ids[i] for i in top_indices]
+    except (sqlite3.Error, DatabaseError) as e:
+        raise GraphDBError(f"Failed to search graph nodes by vector: {e}") from e
+
+# --- Chunk and Link Functions ---
+def link_node_to_chunk(conn: sqlite3.Connection, node_id: int, chunk_id: int) -> None:
+    try:
+        conn.execute("INSERT OR IGNORE INTO node_chunk_links (node_id, chunk_id) VALUES (?, ?)", (node_id, chunk_id))
+    except sqlite3.Error as e:
+        raise GraphDBError(f"Error linking node {node_id} to chunk {chunk_id}: {e}") from e
 
 def get_chunk_ids_for_nodes_db(conn: sqlite3.Connection, node_ids: List[int]) -> Dict[int, List[int]]:
-    """
-    Given a list of node IDs, returns a dictionary mapping each node ID
-    to a list of chunk IDs it's linked to.
-    """
-    if not node_ids:
-        return {}
-    
+    if not node_ids: return {}
     placeholders = ",".join("?" * len(node_ids))
-    sql: SQLQuery = f"SELECT node_id, chunk_id FROM node_chunk_links WHERE node_id IN ({placeholders})"
-    
+    sql = f"SELECT node_id, chunk_id FROM node_chunk_links WHERE node_id IN ({placeholders})"
     results: Dict[int, List[int]] = {node_id: [] for node_id in node_ids}
-    cursor = conn.cursor()
     try:
-        cursor.execute(sql, tuple(node_ids))
+        cursor = conn.execute(sql, tuple(node_ids))
         for row in cursor.fetchall():
-            node_id, chunk_id = row
-            if node_id in results: # Should always be true due to IN clause
-                results[node_id].append(chunk_id)
+            results[row[0]].append(row[1])
         return results
     except sqlite3.Error as e:
         raise GraphDBError(f"DB error fetching chunk links for nodes: {e}") from e
 
-def get_chunk_details_db(
-    conn: sqlite3.Connection,
-    chunk_ids: List[int],
-    encryptor: Optional[Any] = None # Pass Encryptor instance if decryption needed
-) -> List[Dict[str, Any]]:
-    """
-    Fetches full details for a list of chunk IDs, including document path and metadata.
-    Handles decryption if an encryptor is provided and chunks are encrypted.
-    """
-    if not chunk_ids:
-        return []
-
+def get_chunk_details_db(conn, chunk_ids, encryptor):
+    if not chunk_ids: return []
     placeholders = ",".join("?" * len(chunk_ids))
-    sql: SQLQuery = f"""
-    SELECT c.chunk_id, c.chunk_text, c.start_pos, c.end_pos, c.chunk_seq, c.is_encrypted,
-           d.doc_id, d.file_path, d.metadata
-    FROM chunks c
-    JOIN documents d ON c.doc_id = d.doc_id
-    WHERE c.chunk_id IN ({placeholders})
-    """
-    
-    chunk_details_list: List[Dict[str, Any]] = []
-    cursor = conn.cursor()
+    sql = f"SELECT c.chunk_id, c.chunk_text, c.start_pos, c.end_pos, c.is_encrypted, d.file_path FROM chunks c JOIN documents d ON c.doc_id = d.doc_id WHERE c.chunk_id IN ({placeholders})"
+    details = []
     try:
-        # Store original text_factory and set to bytes for reading chunk_text
-        original_text_factory = conn.text_factory
+        original_factory = conn.text_factory
         conn.text_factory = bytes
-
-        cursor.execute(sql, tuple(chunk_ids))
-        rows = cursor.fetchall()
-        
-        conn.text_factory = original_text_factory # Reset text_factory
-
-        for row_bytes in rows:
-            # Decode other text fields manually if read as bytes due to global text_factory change
-            chunk_id, chunk_text_data, start_pos, end_pos, chunk_seq, is_encrypted_flag, \
-            doc_id, file_path_bytes, metadata_json_bytes = row_bytes
-
-            file_path = file_path_bytes.decode('utf-8') if isinstance(file_path_bytes, bytes) else str(file_path_bytes)
-            metadata_json = metadata_json_bytes.decode('utf-8') if isinstance(metadata_json_bytes, bytes) else str(metadata_json_bytes)
-            
-            chunk_text_final: str
-            if is_encrypted_flag:
-                if encryptor and encryptor.is_enabled:
-                    if not isinstance(chunk_text_data, bytes):
-                        chunk_text_final = "[Encrypted - Decryption Failed: Invalid Type]"
-                        ASCIIColors.error(f"Cannot decrypt chunk {chunk_id}: data type {type(chunk_text_data)}.")
-                    else:
-                        try:
-                            chunk_text_final = encryptor.decrypt(chunk_text_data)
-                        except Exception as e: # Catch specific EncryptionError from encryptor
-                            chunk_text_final = "[Encrypted - Decryption Failed]"
-                            ASCIIColors.error(f"Failed to decrypt chunk {chunk_id}: {e}")
-                else:
-                    chunk_text_final = "[Encrypted - Key Unavailable]"
-            else: # Not encrypted
-                if isinstance(chunk_text_data, bytes):
-                    try: chunk_text_final = chunk_text_data.decode('utf-8')
-                    except UnicodeDecodeError: chunk_text_final = "[Data Decode Error]"
-                elif isinstance(chunk_text_data, str): chunk_text_final = chunk_text_data # Should not happen if text_factory was bytes
-                else: chunk_text_final = str(chunk_text_data)
-
-
-            metadata_dict: Optional[Dict[str, Any]] = None
-            if metadata_json:
-                try: metadata_dict = json.loads(metadata_json)
-                except json.JSONDecodeError: metadata_dict = {"error": "invalid JSON"}
-            
-            chunk_details_list.append({
-                "chunk_id": chunk_id,
-                "chunk_text": chunk_text_final,
-                "start_pos": start_pos,
-                "end_pos": end_pos,
-                "chunk_seq": chunk_seq,
-                "is_encrypted": bool(is_encrypted_flag),
-                "doc_id": doc_id,
-                "file_path": file_path,
-                "metadata": metadata_dict
-            })
-        return chunk_details_list
+        cursor = conn.execute(sql, tuple(chunk_ids))
+        for row in cursor.fetchall():
+            text_data = row[1]
+            if row[4] and encryptor and encryptor.is_enabled:
+                text = encryptor.decrypt(text_data)
+            else:
+                text = text_data.decode('utf-8')
+            details.append({"chunk_id": row[0], "chunk_text": text, "start_pos": row[2], "end_pos": row[3], "file_path": row[5].decode('utf-8')})
+        conn.text_factory = original_factory
+        return details
     except sqlite3.Error as e:
-        if 'original_text_factory' in locals(): conn.text_factory = original_text_factory # Ensure reset on error
+        if 'original_factory' in locals(): conn.text_factory = original_factory
         raise GraphDBError(f"DB error fetching chunk details: {e}") from e
-    except Exception as e: # Catch other errors like decryption issues if not handled by encryptor
-        if 'original_text_factory' in locals(): conn.text_factory = original_text_factory
-        raise GraphDBError(f"Unexpected error fetching chunk details: {e}") from e
 
-# --- Functions for updating graph elements (for curation app - Phase 3.5 / 4) ---
-def update_graph_node_properties_db(
-    conn: sqlite3.Connection,
-    node_id: int,
-    new_properties: Dict[str, Any],
-    merge_strategy: str = "merge_overwrite_new"
-) -> bool:
-    """
-    Updates the properties of an existing graph node.
-    Returns True if update occurred, False otherwise (e.g. node not found, no change).
-    """
-    cursor = conn.cursor()
+def mark_chunks_graph_processed(conn: sqlite3.Connection, chunk_ids: List[int]) -> None:
+    if not chunk_ids: return
     try:
-        cursor.execute("SELECT node_properties FROM graph_nodes WHERE node_id = ?", (node_id,))
-        row = cursor.fetchone()
-        if not row:
-            ASCIIColors.warning(f"Node ID {node_id} not found for property update.")
-            return False
-
-        existing_properties_json = row[0]
-        existing_properties = json.loads(existing_properties_json) if existing_properties_json else {}
-        
-        merged_properties: Dict[str, Any]
-        if merge_strategy == "merge_overwrite_new":
-            merged_properties = {**existing_properties, **new_properties}
-        elif merge_strategy == "merge_prefer_existing":
-            merged_properties = {**new_properties, **existing_properties}
-        elif merge_strategy == "overwrite_all":
-            merged_properties = new_properties.copy()
-        else:
-            ASCIIColors.warning(f"Unknown property_merge_strategy '{merge_strategy}'. Defaulting to 'merge_overwrite_new'.")
-            merged_properties = {**existing_properties, **new_properties}
-
-        updated_properties_json = json.dumps(merged_properties)
-
-        if updated_properties_json == existing_properties_json:
-            ASCIIColors.debug(f"Node ID {node_id} properties unchanged after merge. No update needed.")
-            return False # No actual change
-
-        cursor.execute("UPDATE graph_nodes SET node_properties = ? WHERE node_id = ?", (updated_properties_json, node_id))
-        ASCIIColors.debug(f"Successfully updated properties for node ID {node_id}.")
-        return True # Update occurred
+        placeholders = ",".join("?" * len(chunk_ids))
+        conn.execute(f"UPDATE chunks SET graph_processed_at = CURRENT_TIMESTAMP WHERE chunk_id IN ({placeholders})", tuple(chunk_ids))
     except sqlite3.Error as e:
-        raise GraphDBError(f"DB error updating properties for node ID {node_id}: {e}") from e
-    except json.JSONDecodeError as e:
-        raise GraphDBError(f"JSON error processing properties for node ID {node_id}: {e}") from e
+        raise GraphDBError(f"Error marking chunks as graph processed: {e}") from e
 
-def merge_nodes_db(conn: sqlite3.Connection, source_node_id: int, target_node_id: int) -> None:
-    """
-    Merges a source node into a target node.
-    - Re-links all relationships pointing to/from the source node to the target node.
-    - Merges properties (target's properties take precedence).
-    - Re-links all chunk links.
-    - Deletes the source node.
-    This function expects to be called within an existing transaction.
-    """
-    if source_node_id == target_node_id:
-        return
-
-    cursor = conn.cursor()
+# --- Complex Graph Operations ---
+def merge_nodes_db(conn, source_node_id, target_node_id):
+    if source_node_id == target_node_id: return
     try:
-        # 1. Re-link incoming relationships
-        cursor.execute(
-            "UPDATE graph_relationships SET target_node_id = ? WHERE target_node_id = ?",
-            (target_node_id, source_node_id)
-        )
-        
-        # 2. Re-link outgoing relationships
-        cursor.execute(
-            "UPDATE graph_relationships SET source_node_id = ? WHERE source_node_id = ?",
-            (target_node_id, source_node_id)
-        )
-
-        # 3. Merge properties
-        source_props = get_node_details_db(conn, source_node_id).get('properties', {})
-        target_props = get_node_details_db(conn, target_node_id).get('properties', {})
-        
-        merged_props = {**source_props, **target_props} # Target overwrites source
-        update_graph_node_properties_db(conn, target_node_id, merged_props, merge_strategy="overwrite_all")
-
-        # 4. Re-link chunk links (INSERT OR IGNORE to handle conflicts)
-        cursor.execute(
-            """
-            INSERT OR IGNORE INTO node_chunk_links (node_id, chunk_id)
-            SELECT ?, chunk_id FROM node_chunk_links WHERE node_id = ?
-            """,
-            (target_node_id, source_node_id)
-        )
-        
-        # 5. Delete the original source node (and its now-obsolete chunk links)
-        cursor.execute("DELETE FROM graph_nodes WHERE node_id = ?", (source_node_id,))
-        
-        ASCIIColors.debug(f"Successfully prepared merge of node {source_node_id} into {target_node_id}.")
-
+        conn.execute("UPDATE graph_relationships SET target_node_id = ? WHERE target_node_id = ?", (target_node_id, source_node_id))
+        conn.execute("UPDATE graph_relationships SET source_node_id = ? WHERE source_node_id = ?", (target_node_id, source_node_id))
+        conn.execute("INSERT OR IGNORE INTO node_chunk_links (node_id, chunk_id) SELECT ?, chunk_id FROM node_chunk_links WHERE node_id = ?", (target_node_id, source_node_id))
+        conn.execute("DELETE FROM graph_nodes WHERE node_id = ?", (source_node_id,))
     except sqlite3.Error as e:
-        msg = f"Database error during merge of node {source_node_id} into {target_node_id}: {e}"
-        ASCIIColors.error(msg, exc_info=True)
-        # The calling function should handle rollback.
-        raise GraphDBError(msg) from e
-def find_shortest_path_db(conn: sqlite3.Connection, start_node_id: int, end_node_id: int, directed: bool = True) -> Optional[Dict[str, List[Any]]]:
-    """
-    Finds the shortest path between two nodes using a BFS approach simulated with recursive CTEs.
-    Handles both directed and undirected path searches.
-    Returns the path as a list of nodes and a list of relationships.
-    """
-    if start_node_id == end_node_id:
-        node = get_node_details_db(conn, start_node_id)
-        return {"nodes": [node] if node else [], "relationships": []}
-
-    # The base query uses a placeholder for the edges to search over.
-    sql_base = """
-    WITH RECURSIVE
-      -- Define all possible steps (edges) for the search
-      search_edges(s, t, rel_id) AS ({edges_cte}),
-      -- Recursive path finder
-      path_finder(current_node_id, target_node_id, path_nodes_json, path_rels_json) AS (
-        SELECT
-          ?, ?, json_array(?), json_array()
-        UNION
-        SELECT
-          e.t,
-          p.target_node_id,
-          json_insert(p.path_nodes_json, '$[#]', e.t),
-          json_insert(p.path_rels_json, '$[#]', e.rel_id)
-        FROM
-          search_edges e,
-          path_finder p
-        WHERE
-          e.s = p.current_node_id
-          AND instr(p.path_nodes_json, json_quote(e.t)) = 0 -- Avoid cycles in the path
-      )
-    SELECT path_nodes_json, path_rels_json
-    FROM path_finder
-    WHERE current_node_id = target_node_id
-    ORDER BY json_array_length(path_nodes_json) ASC
-    LIMIT 1;
-    """
-    
-    if directed:
-        # For directed search, only use the original edge direction
-        edges_cte = "SELECT source_node_id, target_node_id, relationship_id FROM graph_relationships"
-    else:
-        # For undirected search, consider both directions of each relationship
-        edges_cte = """
-        SELECT source_node_id, target_node_id, relationship_id FROM graph_relationships
-        UNION -- UNION removes duplicates (e.g., if a relationship exists in both directions)
-        SELECT target_node_id, source_node_id, relationship_id FROM graph_relationships
-        """
-    
-    sql = sql_base.format(edges_cte=edges_cte)
-
-    cursor = conn.cursor()
-    try:
-        cursor.execute(sql, (start_node_id, end_node_id, start_node_id))
-        result = cursor.fetchone()
-        
-        if not result:
-            return None # No path found
-
-        node_ids_json, rel_ids_json = result
-        node_ids = json.loads(node_ids_json)
-        rel_ids = json.loads(rel_ids_json)
-
-        # Fetch full details for the nodes and relationships in the path
-        path_nodes = get_nodes_details_db(conn, node_ids)
-        path_relationships = [get_relationship_details_db(conn, rid) for rid in rel_ids]
-
-        return {
-            "nodes": [n for n in path_nodes if n],
-            "relationships": [r for r in path_relationships if r]
-        }
-    except sqlite3.Error as e:
-        raise GraphDBError(f"DB error finding shortest path between {start_node_id} and {end_node_id} (directed={directed}): {e}") from e
+        raise GraphDBError(f"DB error merging node {source_node_id} into {target_node_id}: {e}") from e

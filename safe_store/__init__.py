@@ -31,7 +31,7 @@ from .indexing.parser import SAFE_STORE_SUPPORTED_FILE_EXTENSIONS, parse_documen
 from .indexing.chunking import chunk_text, chunk_text_by_tokens
 from ascii_colors import ASCIIColors # Expose for user configuration convenience
 
-__version__ = "2.3.5"
+__version__ = "2.4.0"
 
 __all__ = [
     "SafeStore",

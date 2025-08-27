@@ -1,0 +1,9 @@
+author: ParisNeo & Lollms
+category: Data
+creation_date: '2025-08-18T10:05:00.000000'
+description: This application allows the user to upload files and convert them to a Graph with an optional ontology. The user can then query the graph using natural language questions. The application uses SafeStore for graph storage and retrieval, and Gemini Pro as the LLM for processing and answering questions.
+disclaimer: null
+last_update_date: '2025-08-18T10:05:00.000000'
+model: Gemini Pro
+name: SafeStoreGraph
+version: 1.0
