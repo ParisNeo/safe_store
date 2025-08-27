@@ -10,6 +10,7 @@ from pydantic import BaseModel
 import json
 import time
 import uuid
+import argparse
 
 from safe_store import SafeStore, GraphStore
 from safe_store.core.exceptions import NodeNotFoundError, RelationshipNotFoundError, GraphError
@@ -363,4 +364,23 @@ async def delete_relationship(project_name: str, relationship_id: int):
     except GraphError as e: raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    parser = argparse.ArgumentParser(
+        description="A simple script to demonstrate parsing host and port."
+    )
+
+    parser.add_argument('--host', 
+                        type=str, 
+                        default='localhost', # Changed default host to 'localhost'
+                        help='The host to bind the server to (default: localhost)')
+
+    parser.add_argument('--port', 
+                        type=int, 
+                        default=9601, 
+                        help='The port to listen on (default: 9601)')
+
+    args = parser.parse_args()
+
+    HOST = args.host
+    PORT = args.port
+
+    uvicorn.run(app, host=HOST, port=PORT)
