@@ -5,15 +5,13 @@ import threading
 import json
 import uuid
 from pathlib import Path
-from typing import Optional, Callable, Dict, List, Any, Tuple, TYPE_CHECKING
+from typing import Optional, Callable, Dict, List, Any, Tuple, TYPE_CHECKING, Set
 
-from ascii_colors import ASCIIColors, trace_exception
-
+from ascii_colors import ASCIIColors
 from ..core import db
 from ..core.exceptions import (
     DatabaseError, ConfigurationError, GraphDBError, GraphProcessingError, LLMCallbackError,
-    GraphError, QueryError, NodeNotFoundError, RelationshipNotFoundError, GraphEntityFusionError,
-    VectorizationError
+    GraphError, QueryError, NodeNotFoundError, RelationshipNotFoundError
 )
 from ..utils.json_parsing import robust_json_parser
 from ..vectorization.base import BaseVectorizer
@@ -25,7 +23,7 @@ if TYPE_CHECKING:
 LLMExecutorCallback = Callable[[str], str]
 ProgressCallback = Callable[[float, str], None]
 
-def load_prompt(file_name):
+def load_prompt(file_name: str) -> str:
     """Loads a prompt template from the 'prompts' subdirectory."""
     path = Path(__file__).parent / "prompts" / f"{file_name}.md"
     return path.read_text()
@@ -42,6 +40,7 @@ class GraphStore:
     """
     GRAPH_FEATURES_ENABLED_KEY = "graph_features_enabled"
     DEFAULT_GRAPH_EXTRACTION_PROMPT_TEMPLATE = load_prompt("graph_extraction_prompt")
+    DEFAULT_GRAPH_EXTRACTION_WITH_ONTOLOGY_PROMPT_TEMPLATE = load_prompt("graph_extraction_prompt_with_ontology")
     DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE = load_prompt("query_parsing_prompt")
     DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE = load_prompt("entity_fusion_prompt")
 
@@ -83,7 +82,7 @@ class GraphStore:
                 try:
                     vectorizer, _ = self.store.vectorizer_manager.get_vectorizer(self.node_vectorizer_name, self.conn)
                     self._embedder = vectorizer
-                except (ConfigurationError, VectorizationError, DatabaseError) as e:
+                except (ConfigurationError, DatabaseError) as e:
                     raise ConfigurationError(f"GraphStore: Failed to load node embedder '{self.node_vectorizer_name}': {e}") from e
         return self._embedder
 
@@ -104,23 +103,20 @@ class GraphStore:
                 if self.conn.in_transaction: self.conn.rollback()
                 raise GraphError("Failed to initialize GraphStore features.") from e
 
-    # [FIX START] Handle text instructions and empty/invalid ontology gracefully.
     def _format_ontology_for_prompt(self) -> str:
         """
         Formats the ontology for the LLM prompt. Handles structured dicts,
         plain text instructions, or empty/invalid inputs.
         """
-        # Case 1: The ontology is provided as plain text instructions.
         if isinstance(self.ontology, str) and self.ontology.strip():
             ASCIIColors.info("Using plain text ontology instructions for prompt.")
             return self.ontology.strip()
 
-        # Case 2: The ontology is a structured dictionary.
         if isinstance(self.ontology, dict):
             lines = []
             nodes = self.ontology.get("nodes")
             if isinstance(nodes, dict) and nodes:
-                lines.append("NODE LABELS:")
+                lines.append("NODE LABELS and PROPERTIES:")
                 for label, details in nodes.items():
                     details = details or {}
                     desc = details.get("description", "")
@@ -133,7 +129,7 @@ class GraphStore:
             relationships = self.ontology.get("relationships")
             if isinstance(relationships, dict) and relationships:
                 if lines: lines.append("")
-                lines.append("RELATIONSHIP TYPES:")
+                lines.append("RELATIONSHIP TYPES and CONSTRAINTS:")
                 for rel_type, details in relationships.items():
                     details = details or {}
                     desc = details.get("description", "")
@@ -145,19 +141,30 @@ class GraphStore:
                 ASCIIColors.info("Formatted structured ontology for prompt.")
                 return "\n".join(lines)
 
-        # Case 3: Ontology is empty, None, or an unsupported type. Fallback.
         ASCIIColors.info("No valid ontology provided; using default instructions.")
         return "No specific ontology provided. Extract entities and relationships based on the text context."
-    # [FIX END]
 
     def _get_graph_extraction_prompt(self, chunk_text: str, guidance: Optional[str] = None) -> str:
-        ontology_schema = self._format_ontology_for_prompt()
-        user_guidance = guidance if guidance and guidance.strip() else "Extract all relevant properties you can identify. For entities that are the same, use the exact same 'identifying_value'."
-        return self.graph_extraction_prompt_template.format(
-            chunk_text=chunk_text,
-            ontology_schema=ontology_schema,
-            user_guidance=user_guidance
-        )
+        user_guidance = guidance if guidance and guidance.strip() else "Extract all relevant properties you can identify."
+        
+        has_valid_ontology = isinstance(self.ontology, (dict, str)) and self.ontology
+        
+        if has_valid_ontology:
+            template = self.DEFAULT_GRAPH_EXTRACTION_WITH_ONTOLOGY_PROMPT_TEMPLATE
+            ontology_schema = self._format_ontology_for_prompt()
+            ASCIIColors.info("Using ontology-aware prompt for graph extraction.")
+            return template.format(
+                chunk_text=chunk_text,
+                ontology_schema=ontology_schema,
+                user_guidance=user_guidance
+            )
+        else:
+            template = self.graph_extraction_prompt_template
+            ASCIIColors.info("Using default prompt for graph extraction.")
+            return template.format(
+                chunk_text=chunk_text,
+                user_guidance=user_guidance
+            )
 
     def _get_query_parsing_prompt(self, natural_language_query: str) -> str:
         return self.query_parsing_prompt_template.format(natural_language_query=natural_language_query)
@@ -170,7 +177,7 @@ class GraphStore:
             entity_label=label
         )
 
-    def _fuse_or_create_node(self, label: str, properties: Dict[str, Any], search_threshold: float = 0.9) -> int:
+    def _fuse_or_create_node(self, label: str, properties: Dict[str, Any]) -> int:
         id_key, id_value = self._get_node_identifying_parts(properties)
         if id_key and id_value:
             sig = f"{label}:{id_key}:{id_value.strip().lower()}"
@@ -192,10 +199,27 @@ class GraphStore:
                 decision = robust_json_parser(raw_response)
                 if decision.get("is_same") is True:
                     ASCIIColors.info(f"LLM confirmed fusion: Merging new data into node {candidate_id}.")
-                    db.update_graph_node_properties_db(self.conn, candidate_id, properties, merge_strategy="overwrite_all")
+                    
+                    # Fusion logic with `other_identifiers`
+                    existing_props = candidate_details['properties']
+                    other_identifiers = existing_props.get("other_identifiers", [])
+                    new_id_key, new_id_value = self._get_node_identifying_parts(properties)
+                    
+                    if new_id_value and new_id_value not in other_identifiers:
+                        other_identifiers.append(new_id_value)
+                    
+                    # Merge properties, but ensure other_identifiers is handled correctly
+                    merged_props = {**existing_props, **properties}
+                    merged_props["other_identifiers"] = sorted(list(set(other_identifiers)))
+
+                    db.update_graph_node_properties_db(self.conn, candidate_id, merged_props, merge_strategy="overwrite_all")
                     return candidate_id
             except (LLMCallbackError, json.JSONDecodeError, KeyError) as e:
                 ASCIIColors.warning(f"Entity fusion LLM call failed for candidate {candidate_id}: {e}")
+
+        # Ensure new nodes have the other_identifiers property
+        if "other_identifiers" not in properties:
+            properties["other_identifiers"] = []
 
         sig = f"{label}:{id_key}:{id_value.strip().lower()}" if id_key and id_value else f"unidentified:{label}:{uuid.uuid4()}"
         new_node_id = db.add_or_update_graph_node(self.conn, label, properties, sig)
@@ -204,9 +228,13 @@ class GraphStore:
 
     def _get_node_identifying_parts(self, properties: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
         if not isinstance(properties, dict): return None, None
+        # Prioritize "identifying_value" if present, as per the prompt's structure
+        if "identifying_value" in properties and properties["identifying_value"]:
+            return "identifying_value", str(properties["identifying_value"])
         for key in ["name", "title", "id", "identifier"]:
             if key in properties and properties[key]:
                 return key, str(properties[key])
+        # Fallback to the first non-empty, sortable property
         for key, value in sorted(properties.items()):
             if isinstance(value, (str, int, float)) and value:
                 return key, str(value)
@@ -221,66 +249,91 @@ class GraphStore:
         except Exception as e:
             ASCIIColors.warning(f"Could not generate or store vector for node {node_id}: {e}")
 
-    def _get_llm_extraction_with_retry(self, chunk_id: int, chunk_text: str, guidance: Optional[str]) -> Dict[str, Any]:
-        max_retries = 1
+    def _get_llm_extraction_with_retry(
+        self, chunk_id: int, chunk_text: str, guidance: Optional[str], max_retries: int
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Calls the LLM to extract graph data, with a retry mechanism for JSON parsing failures.
+        Returns the parsed JSON dictionary on success, or None if all retries fail.
+        """
         prompt = self._get_graph_extraction_prompt(chunk_text, guidance)
         for attempt in range(max_retries + 1):
             try:
                 raw_response = self.llm_executor(prompt)
-                ASCIIColors.cyan(f"--- LLM Raw Output for Chunk {chunk_id} (Attempt {attempt + 1}) ---")
-                ASCIIColors.yellow(raw_response)
-                ASCIIColors.cyan("----------------------------------------------------")
+                if attempt > 0: # Log if we are in a retry attempt
+                    ASCIIColors.cyan(f"--- LLM Raw Output for Chunk {chunk_id} (Attempt {attempt + 1}) ---")
+                    ASCIIColors.yellow(raw_response)
+                    ASCIIColors.cyan("----------------------------------------------------")
+                
                 parsed_json = robust_json_parser(raw_response)
                 return parsed_json
-            except json.JSONDecodeError as e:
+            except Exception as e:
+                ASCIIColors.warning(f"LLM output for chunk {chunk_id} failed parsing on attempt {attempt + 1}/{max_retries + 1}. Error: {e}")
                 if attempt < max_retries:
-                    ASCIIColors.warning(f"JSONDecodeError from LLM on attempt {attempt + 1}. Retrying with corrective prompt.")
-                    prompt = (prompt +f"\n\nPrevious response: {raw_response}"+ f"\n\nThe previous response was not valid JSON (Error: {e}). YOU MUST CORRECT THE OUTPUT TO BE A SINGLE, WELL-FORMED JSON OBJECT IN A MARKDOWN BLOCK.\n\n")
+                    # Add a corrective instruction to the prompt for the next attempt
+                    prompt += (f"\n\n--- Previous Attempt Failed ---"
+                               f"\nYour last response could not be parsed as valid JSON. "
+                               f"Please review the instructions and provide a single, complete, and well-formed JSON object "
+                               f"enclosed in a markdown code block. Raw previous response: {raw_response[:500]}...")
                 else:
-                    ASCIIColors.error(f"Failed to parse JSON from LLM after {max_retries + 1} attempts.")
-                    raise LLMCallbackError(f"Failed to parse JSON from LLM after retries: {e}") from e
-        raise LLMCallbackError("Exited retry loop without successful JSON parsing.")
+                    # This was the last attempt
+                    ASCIIColors.error(f"Failed to get valid JSON from LLM for chunk {chunk_id} after {max_retries + 1} attempts.")
+                    return None
+        return None # Should be unreachable, but here for completeness
 
-    def _process_chunk_for_graph_impl(self, chunk_id: int, guidance: Optional[str] = None) -> None:
-        chunk_details = db.get_chunk_details_db(self.conn, [chunk_id], self.encryptor)
-        if not chunk_details: raise GraphProcessingError(f"Chunk {chunk_id} not found.")
-        decrypted_chunk_text = chunk_details[0]['chunk_text']
-        try:
-            llm_output = self._get_llm_extraction_with_retry(chunk_id, decrypted_chunk_text, guidance)
-        except LLMCallbackError as e:
-            ASCIIColors.error(f"Could not get valid graph data for chunk {chunk_id} from LLM: {e}")
+    def _process_chunk_for_graph_impl(self, chunk_id: int, guidance: Optional[str] = None, llm_retries: int = 1) -> None:
+        chunk_details = db.get_chunk_details_db(self.conn, [chunk_id], self.encryptor)[0]
+        if not chunk_details:
+            raise GraphProcessingError(f"Chunk {chunk_id} not found.")
+        decrypted_chunk_text = chunk_details['chunk_text']
+
+        llm_output = self._get_llm_extraction_with_retry(chunk_id, decrypted_chunk_text, guidance, llm_retries)
+
+        if not llm_output:
+            ASCIIColors.error(f"Skipping graph processing for chunk {chunk_id} due to persistent LLM JSON parsing failures.")
             return
-        if not isinstance(llm_output, dict) or "nodes" not in llm_output or "relationships" not in llm_output:
+
+        if "nodes" not in llm_output or "relationships" not in llm_output:
             ASCIIColors.warning(f"LLM output for chunk {chunk_id} is structured incorrectly (missing keys). Skipping.")
             return
-        node_map = {}
+
+        node_map: Dict[Tuple[str, str], int] = {}
         for node_data in llm_output.get("nodes", []):
             if not (isinstance(node_data, dict) and node_data.get("label") and isinstance(node_data.get("properties"), dict)): continue
             label, props = str(node_data["label"]), node_data["properties"]
             node_id = self._fuse_or_create_node(label, props)
             self._vectorize_and_store_node_update(node_id, label, props)
             db.link_node_to_chunk(self.conn, node_id, chunk_id)
+            
             _, id_value = self._get_node_identifying_parts(props)
             if id_value:
                 node_map[(label, str(id_value))] = node_id
+
         for rel_data in llm_output.get("relationships", []):
             req_keys = ["source_node_label", "source_node_identifying_value", "target_node_label", "target_node_identifying_value", "type"]
             if not (isinstance(rel_data, dict) and all(k in rel_data for k in req_keys)): continue
+            
             src_label, src_val = str(rel_data["source_node_label"]), str(rel_data["source_node_identifying_value"])
             tgt_label, tgt_val = str(rel_data["target_node_label"]), str(rel_data["target_node_identifying_value"])
-            src_id, tgt_id = node_map.get((src_label, src_val)), node_map.get((tgt_label, tgt_val))
+            
+            src_id = node_map.get((src_label, src_val))
+            tgt_id = node_map.get((tgt_label, tgt_val))
+
             def find_node_id_db(label: str, value: str) -> Optional[int]:
-                for key in ["name", "title", "id", "identifier"]:
+                for key in ["identifying_value", "name", "title", "id", "identifier"]:
                     sig = f"{label}:{key}:{value.strip().lower()}"
                     if node_id := db.get_graph_node_by_signature(self.conn, sig): return node_id
                 if similar_nodes := db.find_node_by_label_and_property_value(self.conn, label, value, limit=1):
                     return similar_nodes[0]['node_id']
                 return None
+
             if src_id is None: src_id = find_node_id_db(src_label, src_val)
             if tgt_id is None: tgt_id = find_node_id_db(tgt_label, tgt_val)
+
             if src_id is None or tgt_id is None:
                 ASCIIColors.warning(f"Skipping relationship '{rel_data['type']}'. Src: '{src_val}' (Found: {src_id is not None}), Tgt: '{tgt_val}' (Found: {tgt_id is not None})")
                 continue
+            
             try:
                 props_json = json.dumps(rel_data.get("properties", {}))
                 db.add_graph_relationship(self.conn, src_id, tgt_id, str(rel_data["type"]), props_json)
@@ -288,13 +341,11 @@ class GraphStore:
             except (GraphDBError, json.JSONDecodeError) as e:
                 ASCIIColors.error(f"Error storing relationship '{rel_data['type']}': {e}")
     
-    # ... (the rest of the file is unchanged) ...
-    
-    def process_chunk_for_graph(self, chunk_id: int) -> None:
+    def process_chunk_for_graph(self, chunk_id: int, llm_retries: int = 1) -> None:
         with self.store._instance_lock, self.store._optional_file_lock_context(f"process_chunk_for_graph: {chunk_id}"):
             try:
                 self.conn.execute("BEGIN")
-                self._process_chunk_for_graph_impl(chunk_id)
+                self._process_chunk_for_graph_impl(chunk_id, llm_retries=llm_retries)
                 db.mark_chunks_graph_processed(self.conn, [chunk_id])
                 self.conn.commit()
                 ASCIIColors.success(f"Successfully processed chunk {chunk_id} for graph.")
@@ -303,7 +354,9 @@ class GraphStore:
                 ASCIIColors.error(f"Error processing chunk {chunk_id} for graph: {e}")
                 raise GraphProcessingError(f"Failed to process chunk {chunk_id}") from e
 
-    def build_graph_for_document(self, doc_id: int, guidance: Optional[str] = None, progress_callback: Optional[ProgressCallback] = None) -> None:
+    def build_graph_for_document(
+        self, doc_id: int, guidance: Optional[str] = None, progress_callback: Optional[ProgressCallback] = None, llm_retries: int = 1
+    ) -> None:
         with self.store._instance_lock, self.store._optional_file_lock_context(f"build_graph_for_document: {doc_id}"):
             chunk_ids = [row[0] for row in self.conn.execute("SELECT chunk_id FROM chunks WHERE doc_id = ? AND graph_processed_at IS NULL", (doc_id,)).fetchall()]
             if not chunk_ids:
@@ -315,7 +368,7 @@ class GraphStore:
             try:
                 self.conn.execute("BEGIN")
                 for i, chunk_id in enumerate(chunk_ids):
-                    self._process_chunk_for_graph_impl(chunk_id, guidance)
+                    self._process_chunk_for_graph_impl(chunk_id, guidance, llm_retries)
                     if progress_callback: progress_callback((i + 1) / len(chunk_ids), f"Processed chunk {i + 1}/{len(chunk_ids)}.")
                 
                 db.mark_chunks_graph_processed(self.conn, chunk_ids)
@@ -328,7 +381,9 @@ class GraphStore:
                 ASCIIColors.error(f"Error building graph for document {doc_id}: {e}")
                 raise GraphProcessingError(f"Failed to build graph for document {doc_id}") from e
 
-    def build_graph_for_all_documents(self, batch_size_chunks: int = 20, progress_callback: Optional[ProgressCallback] = None) -> None:
+    def build_graph_for_all_documents(
+        self, batch_size_chunks: int = 20, progress_callback: Optional[ProgressCallback] = None, llm_retries: int = 1
+    ) -> None:
         with self.store._instance_lock, self.store._optional_file_lock_context("build_graph_for_all_documents"):
             total_unprocessed = self.conn.execute("SELECT COUNT(*) FROM chunks WHERE graph_processed_at IS NULL").fetchone()[0]
             if total_unprocessed == 0:
@@ -344,7 +399,8 @@ class GraphStore:
                 if not chunk_ids_batch: break
                 try:
                     self.conn.execute("BEGIN")
-                    for chunk_id in chunk_ids_batch: self._process_chunk_for_graph_impl(chunk_id)
+                    for chunk_id in chunk_ids_batch:
+                        self._process_chunk_for_graph_impl(chunk_id, llm_retries=llm_retries)
                     db.mark_chunks_graph_processed(self.conn, chunk_ids_batch)
                     self.conn.commit()
                     processed += len(chunk_ids_batch)
@@ -378,8 +434,8 @@ class GraphStore:
 
             subgraph_nodes: Dict[int, Dict[str, Any]] = {}
             subgraph_rels: Dict[int, Dict[str, Any]] = {}
-            queue = [(seed_id, 0) for seed_id in seed_node_ids]
-            visited = set(seed_node_ids)
+            queue: List[Tuple[int, int]] = [(seed_id, 0) for seed_id in seed_node_ids]
+            visited: Set[int] = set(seed_node_ids)
 
             for seed_id in seed_node_ids:
                 if details := db.get_node_details_db(self.conn, seed_id): subgraph_nodes[seed_id] = details
@@ -396,8 +452,10 @@ class GraphStore:
                         if neighbor_info:
                             neighbor_id, neighbor_label = neighbor_info["node_id"], neighbor_info["label"]
                             if target_labels and neighbor_label not in target_labels: continue
-                            subgraph_nodes[neighbor_id] = neighbor_info
-                            if neighbor_id not in visited: queue.append((neighbor_id, current_depth + 1)); visited.add(neighbor_id)
+                            if neighbor_id not in subgraph_nodes: subgraph_nodes[neighbor_id] = neighbor_info
+                            if neighbor_id not in visited: 
+                                queue.append((neighbor_id, current_depth + 1))
+                                visited.add(neighbor_id)
             
             final_graph_data = {"nodes": list(subgraph_nodes.values()), "relationships": list(subgraph_rels.values())}
             return self._format_query_output(final_graph_data, output_mode)
@@ -429,6 +487,9 @@ class GraphStore:
 
     def add_node(self, label: str, properties: Dict[str, Any]) -> int:
         with self.store._instance_lock, self.store._optional_file_lock_context("add_node"):
+            # Ensure new manual nodes have the other_identifiers property
+            if "other_identifiers" not in properties:
+                properties["other_identifiers"] = []
             id_key, id_value = self._get_node_identifying_parts(properties)
             sig = f"{label}:{id_key}:{id_value.strip().lower()}" if id_key and id_value else f"manual:{label}:{uuid.uuid4()}"
             try:
@@ -453,8 +514,16 @@ class GraphStore:
                 self.conn.execute("BEGIN")
                 current = db.get_node_details_db(self.conn, node_id)
                 if not current: raise NodeNotFoundError(f"Node {node_id} not found.")
-                if label is not None and label != current["label"]: db.update_graph_node_label_db(self.conn, node_id, label)
-                if properties is not None: db.update_graph_node_properties_db(self.conn, node_id, properties, "overwrite_all")
+                
+                if label is not None and label != current["label"]: 
+                    db.update_graph_node_label_db(self.conn, node_id, label)
+                
+                if properties is not None: 
+                    # Preserve `other_identifiers` if not explicitly provided in the update
+                    if "other_identifiers" not in properties and "other_identifiers" in current["properties"]:
+                        properties["other_identifiers"] = current["properties"]["other_identifiers"]
+                    db.update_graph_node_properties_db(self.conn, node_id, properties, "overwrite_all")
+                
                 self.conn.commit()
                 updated_label = label or current['label']
                 updated_props = properties if properties is not None else current['properties']
@@ -517,7 +586,8 @@ class GraphStore:
         if direction not in ["outgoing", "incoming", "any"]: raise ValueError("Invalid direction.")
         with self.store._instance_lock:
             relationships = db.get_relationships_for_node_db(self.conn, node_id, relationship_type, direction, limit)
-            neighbor_nodes, seen_ids = [], set()
+            neighbor_nodes: List[Dict[str, Any]] = []
+            seen_ids: Set[int] = set()
             for rel in relationships:
                 node_data: Optional[Dict[str, Any]] = None
                 if direction == "any":
@@ -526,6 +596,7 @@ class GraphStore:
                     node_data = rel.get("target_node")
                 elif direction == "incoming":
                     node_data = rel.get("source_node")
+                
                 if node_data and node_data.get("node_id") not in seen_ids:
                     neighbor_nodes.append(node_data)
                     seen_ids.add(node_data["node_id"])
@@ -557,10 +628,6 @@ class GraphStore:
                 raise GraphDBError(f"Database error fetching all nodes: {e}") from e
 
     def get_all_relationships_for_visualization(self, limit: int = 2000) -> List[Dict[str, Any]]:
-        """
-        Retrieves all relationships from the graph, formatted for vis-network.js visualization.
-        The edge label will prioritize 'name' or 'label' from properties over the relationship type.
-        """
         with self.store._instance_lock:
             try:
                 cursor = self.conn.execute(
@@ -571,17 +638,16 @@ class GraphStore:
                 for row in cursor.fetchall():
                     rel_id, source_id, target_id, rel_type, props_json = row
                     
-                    edge_label = rel_type  # Default label is the relationship type
+                    edge_label = rel_type
                     try:
                         properties = json.loads(props_json)
-                        # Prioritize 'name', then 'label', from properties for the edge label
                         if isinstance(properties, dict):
                             if 'name' in properties and properties['name']:
                                 edge_label = str(properties['name'])
                             elif 'label' in properties and properties['label']:
                                 edge_label = str(properties['label'])
                     except (json.JSONDecodeError, TypeError):
-                        pass # Ignore parsing errors and just use the rel_type
+                        pass
 
                     edges.append({
                         "id": rel_id,
@@ -607,20 +673,23 @@ class GraphStore:
         with self.store._instance_lock, self.store._optional_file_lock_context("clear_graph"):
             try:
                 self.conn.execute("BEGIN")
+                # Order matters: clean up linking tables and vector indexes first
                 optional_tables = ["graph_node_vectors", "graph_node_to_chunk_link"]
                 for table in optional_tables:
-                    try:
-                        self.conn.execute(f"DELETE FROM {table}")
-                    except sqlite3.OperationalError as e:
-                        if "no such table" in str(e):
-                            ASCIIColors.warning(f"Table '{table}' not found, skipping cleanup. This is normal if the schema version is different.")
-                        else:
-                            raise e
+                    try: self.conn.execute(f"DROP TABLE IF EXISTS {table}")
+                    except sqlite3.Error as e: ASCIIColors.warning(f"Could not drop table {table}: {e}")
+                
                 self.conn.execute("DELETE FROM graph_relationships")
                 self.conn.execute("DELETE FROM graph_nodes")
                 self.conn.execute("UPDATE chunks SET graph_processed_at = NULL")
+                
+                # Re-initialize the graph features to recreate dropped tables
+                embedder_instance = self.embedder
+                if embedder_instance.dim is not None:
+                    db.enable_vector_search_on_graph_nodes(self.conn, embedder_instance.dim)
+                
                 self.conn.commit()
-                ASCIIColors.success("Graph has been completely cleared.")
+                ASCIIColors.success("Graph has been completely cleared and re-initialized.")
             except Exception as e:
                 if self.conn.in_transaction: self.conn.rollback()
                 raise GraphError(f"Error clearing the graph: {e}") from e
@@ -635,40 +704,44 @@ class GraphStore:
                 self.conn.execute("BEGIN")
                 doc_chunk_ids_cursor = self.conn.execute("SELECT chunk_id FROM chunks WHERE doc_id = ?", (doc_id,))
                 doc_chunk_ids = {row[0] for row in doc_chunk_ids_cursor}
+                
                 if not doc_chunk_ids:
                     ASCIIColors.info(f"No chunks found for document {doc_id}, nothing to remove from graph.")
                     self.conn.commit()
                     return
+                
                 placeholders = ','.join('?' for _ in doc_chunk_ids)
-                nodes_linked_to_doc = set()
-                try:
-                    nodes_linked_to_doc_cursor = self.conn.execute(
-                        f"SELECT DISTINCT node_id FROM graph_node_to_chunk_link WHERE chunk_id IN ({placeholders})",
-                        list(doc_chunk_ids)
-                    )
-                    nodes_linked_to_doc = {row[0] for row in nodes_linked_to_doc_cursor}
-                except sqlite3.OperationalError as e:
-                    if "no such table" in str(e):
-                        ASCIIColors.warning("`graph_node_to_chunk_link` table not found. Cannot determine exclusive nodes to delete. Skipping node deletion for this document.")
-                        self.conn.commit()
-                        return
-                    else:
-                        raise e
+                
+                # Find all nodes linked to this document's chunks
+                nodes_linked_to_doc_cursor = self.conn.execute(
+                    f"SELECT DISTINCT node_id FROM graph_node_to_chunk_link WHERE chunk_id IN ({placeholders})",
+                    list(doc_chunk_ids)
+                )
+                nodes_linked_to_doc = {row[0] for row in nodes_linked_to_doc_cursor}
+                
                 nodes_to_delete = set()
-                for node_id in nodes_linked_to_doc:
-                    other_links_cursor = self.conn.execute(
-                        f"SELECT 1 FROM graph_node_to_chunk_link WHERE node_id = ? AND chunk_id NOT IN ({placeholders}) LIMIT 1",
-                        [node_id] + list(doc_chunk_ids)
-                    )
-                    if other_links_cursor.fetchone() is None:
-                        nodes_to_delete.add(node_id)
+                if nodes_linked_to_doc:
+                    # For each linked node, check if it's linked to ANY OTHER chunk
+                    for node_id in nodes_linked_to_doc:
+                        other_links_cursor = self.conn.execute(
+                            f"SELECT 1 FROM graph_node_to_chunk_link WHERE node_id = ? AND chunk_id NOT IN ({placeholders}) LIMIT 1",
+                            [node_id] + list(doc_chunk_ids)
+                        )
+                        if other_links_cursor.fetchone() is None:
+                            nodes_to_delete.add(node_id)
+                
+                # Unlink all chunks of the document from the graph
+                self.conn.execute(f"UPDATE chunks SET graph_processed_at = NULL WHERE doc_id = ?", (doc_id,))
                 self.conn.execute(f"DELETE FROM graph_node_to_chunk_link WHERE chunk_id IN ({placeholders})", list(doc_chunk_ids))
+                
+                # Delete the exclusive nodes
                 if nodes_to_delete:
                     ASCIIColors.info(f"Identified {len(nodes_to_delete)} exclusive nodes to delete for document {doc_id}.")
                     for node_id in nodes_to_delete:
                         db.delete_graph_node_and_relationships_db(self.conn, node_id)
                 else:
                     ASCIIColors.info(f"No exclusive nodes found for document {doc_id}.")
+                
                 self.conn.commit()
                 ASCIIColors.success(f"Successfully removed graph elements for document {doc_id}.")
             except Exception as e:

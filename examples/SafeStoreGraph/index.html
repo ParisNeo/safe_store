@@ -1,4 +1,3 @@
-<!-- [FINAL & COMPLETE with all fixes] index.html -->
 <!DOCTYPE html>
 <html lang="en" class="dark">
 <head>
@@ -36,12 +35,21 @@
         <!-- Header -->
         <header class="bg-white dark:bg-gray-800/50 backdrop-blur-sm border-b border-gray-200 dark:border-gray-700 p-3 flex justify-between items-center z-20">
             <div class="flex items-center gap-2">
-                 <svg class="w-8 h-8 text-teal-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-2 15-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9Z"></path><path d="M12.29 8.71 9.7 11.3a1 1 0 0 0 1.41 1.41l2.59-2.59a1 1 0 0 0-1.41-1.41Z"></path><path d="M14.71 8.71 10 13.41l1.41 1.41L16.12 10a1 1 0 1 0-1.41-1.29Z"></path></svg>
+                <svg class="w-8 h-8 text-teal-500" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2Zm-2 15-4-4 1.41-1.41L10 14.17l6.59-6.59L18 9Z"></path><path d="M12.29 8.71 9.7 11.3a1 1 0 0 0 1.41 1.41l2.59-2.59a1 1 0 0 0-1.41-1.41Z"></path><path d="M14.71 8.71 10 13.41l1.41 1.41L16.12 10a1 1 0 1 0-1.41-1.29Z"></path></svg>
                 <h1 class="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-teal-500 to-cyan-500">SafeStore Graph</h1>
             </div>
             <div class="flex items-center gap-3">
                 <button id="btn-show-projects" class="icon-btn hidden" title="Projects">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+                </button>
+                <button id="btn-show-search" class="icon-btn hidden" title="Search Graph">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                </button>
+                <button id="btn-show-query" class="icon-btn hidden" title="RAG Query">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                </button>
+                <button id="btn-show-ontology" class="icon-btn hidden" title="Ontology">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
                 </button>
                 <button id="btn-show-tasks" class="icon-btn relative" title="Task Manager">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
@@ -72,29 +80,54 @@
             <main id="graph-view" class="hidden flex-grow flex">
                 <div class="w-1/4 bg-gray-100 dark:bg-gray-800 p-4 overflow-y-auto border-r border-gray-200 dark:border-gray-700">
                     <h3 id="current-project-title" class="text-xl font-bold mb-4 text-teal-600 dark:text-teal-400"></h3>
+                    
+                    <!-- Node Details Section -->
                     <div id="node-details-container" class="mb-6 hidden">
-                        <h4 class="font-semibold mb-2">Node Details</h4>
+                        <h4 class="font-semibold mb-2 flex items-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                            </svg>
+                            Node Details
+                        </h4>
                         <div id="node-details" class="p-2 bg-white dark:bg-gray-900 rounded-md text-sm whitespace-pre-wrap max-h-48 overflow-y-auto"></div>
                     </div>
+
+                    <!-- Actions Section -->
                     <div class="mb-6">
-                        <h4 class="font-semibold mb-2">RAG Query</h4>
-                        <textarea id="query-input" rows="3" class="w-full bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none" placeholder="Ask a question about your documents..."></textarea>
-                        <button id="btn-run-query" class="w-full mt-2 bg-teal-600 hover:bg-teal-500 text-white p-2 rounded-md">Run Query</button>
-                        <div id="query-answer" class="mt-4 p-2 bg-white dark:bg-gray-900 rounded-md text-sm whitespace-pre-wrap h-48 overflow-y-auto"></div>
-                    </div>
-                    <div class="mb-6">
-                        <h4 class="font-semibold mb-2">Actions</h4>
-                        <button id="btn-add-node" class="w-full mb-2 bg-green-600 hover:bg-green-500 text-white p-2 rounded-md">Add Node</button>
-                        <label for="doc-upload" class="w-full text-center block mb-2 bg-indigo-600 hover:bg-indigo-500 text-white p-2 rounded-md cursor-pointer">Upload Document</label>
+                        <h4 class="font-semibold mb-2 flex items-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 100 4m0-4v2m0-6V4"></path>
+                            </svg>
+                            Actions
+                        </h4>
+                        <button id="btn-add-node" title="Add Node" class="w-full mb-2 bg-green-600 hover:bg-green-500 text-white p-2 rounded-md flex items-center justify-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"></path>
+                            </svg>
+                        </button>
+                        <label for="doc-upload" title="Upload Document" class="w-full text-center block mb-2 bg-indigo-600 hover:bg-indigo-500 text-white p-2 rounded-md cursor-pointer flex items-center justify-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+                            </svg>
+                        </label>
                         <input type="file" id="doc-upload" class="hidden">
-                        <button id="btn-manage-documents" class="w-full mb-2 bg-gray-600 hover:bg-gray-500 text-white p-2 rounded-md">Manage Documents</button>
-                        <button id="btn-build-graph" class="w-full bg-blue-600 hover:bg-blue-500 text-white p-2 rounded-md">Build Graph</button>
-                        <button id="btn-rebuild-graph" class="w-full mt-2 bg-orange-600 hover:bg-orange-500 text-white p-2 rounded-md">Rebuild Graph</button>
-                    </div>
-                    <div>
-                        <h4 class="font-semibold mb-2">Ontology (JSON or Text)</h4>
-                        <textarea id="ontology-input" rows="10" class="w-full bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none text-xs"></textarea>
-                        <button id="btn-update-ontology" class="w-full mt-2 bg-purple-600 hover:bg-purple-500 text-white p-2 rounded-md">Update Ontology</button>
+                        <button id="btn-manage-documents" title="Manage Documents" class="w-full mb-2 bg-gray-600 hover:bg-gray-500 text-white p-2 rounded-md flex items-center justify-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                            </svg>
+                        </button>
+                        <button id="btn-build-graph" title="Build Graph" class="w-full mb-2 bg-blue-600 hover:bg-blue-500 text-white p-2 rounded-md flex items-center justify-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+                            </svg>
+                            
+                        </button>
+                        <button id="btn-rebuild-graph" title="Rebuild Graph" class="w-full bg-orange-600 hover:bg-orange-500 text-white p-2 rounded-md flex items-center justify-center gap-2">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+                            </svg>
+                            
+                        </button>
                     </div>
                 </div>
                 
@@ -136,6 +169,89 @@
         </div>
     </div>
 
+    <!-- Search Modal -->
+    <div id="search-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-2xl">
+            <h2 class="text-2xl font-bold mb-4 flex items-center gap-2">
+                <svg class="w-6 h-6 text-teal-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                </svg>
+                Search Graph
+            </h2>
+            <div class="mb-4">
+                <label for="search-input" class="block mb-2 font-semibold">Search nodes by label or properties</label>
+                <input type="text" id="search-input" placeholder="Enter search term..." class="w-full bg-gray-200 dark:bg-gray-700 p-3 rounded-md outline-none focus:ring-2 focus:ring-teal-500">
+            </div>
+            <div class="mb-6">
+                <div id="search-results" class="bg-gray-100 dark:bg-gray-700 rounded-md p-4 max-h-64 overflow-y-auto">
+                    <p class="text-gray-500 dark:text-gray-400 text-center">Enter a search term to find nodes</p>
+                </div>
+            </div>
+            <div class="flex justify-end gap-4">
+                <button id="btn-close-search" class="bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 px-4 py-2 rounded-md">Close</button>
+                <button id="btn-clear-search" class="bg-orange-600 hover:bg-orange-500 text-white px-4 py-2 rounded-md">Clear Selection</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Query Modal -->
+    <div id="query-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-3xl flex flex-col" style="height: 80vh;">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-2xl font-bold flex items-center gap-2">
+                    <svg class="w-6 h-6 text-teal-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path>
+                    </svg>
+                    RAG Query
+                </h2>
+                <button id="btn-close-query" class="text-2xl hover:text-gray-500">&times;</button>
+            </div>
+            <div class="mb-4">
+                <label for="query-input" class="block mb-2 font-semibold">Ask a question about your documents</label>
+                <textarea id="query-input" rows="3" class="w-full bg-gray-200 dark:bg-gray-700 p-3 rounded-md outline-none focus:ring-2 focus:ring-teal-500" placeholder="Ask a question about your documents..."></textarea>
+            </div>
+            <div class="mb-4">
+                <button id="btn-run-query" class="bg-teal-600 hover:bg-teal-500 text-white px-6 py-2 rounded-md flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
+                    </svg>
+                    Run Query
+                </button>
+            </div>
+            <div class="flex-1 bg-gray-100 dark:bg-gray-700 rounded-md p-4 overflow-y-auto">
+                <div id="query-answer" class="text-sm whitespace-pre-wrap">Enter a question and click "Run Query" to see the answer.</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Ontology Modal -->
+    <div id="ontology-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center">
+        <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-4xl flex flex-col" style="height: 80vh;">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-2xl font-bold flex items-center gap-2">
+                    <svg class="w-6 h-6 text-teal-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path>
+                    </svg>
+                    Ontology Configuration
+                </h2>
+                <button id="btn-close-ontology" class="text-2xl hover:text-gray-500">&times;</button>
+            </div>
+            <div class="mb-4">
+                <label for="ontology-input" class="block mb-2 font-semibold">Ontology (JSON or Text)</label>
+                <textarea id="ontology-input" rows="20" class="w-full bg-gray-200 dark:bg-gray-700 p-3 rounded-md outline-none focus:ring-2 focus:ring-teal-500 font-mono text-sm flex-1" placeholder='Enter ontology as JSON or plain text...'></textarea>
+            </div>
+            <div class="flex justify-end gap-4">
+                <button id="btn-cancel-ontology" class="bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 px-4 py-2 rounded-md">Cancel</button>
+                <button id="btn-update-ontology" class="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-md flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path>
+                    </svg>
+                    Update Ontology
+                </button>
+            </div>
+        </div>
+    </div>
+
     <div id="settings-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center">
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-2xl">
             <h2 class="text-2xl font-bold mb-4">LLM Settings</h2>
@@ -151,7 +267,15 @@
 
     <div id="task-manager-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center">
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-3xl flex flex-col" style="height: 80vh;">
-            <div class="flex justify-between items-center mb-4"><h2 class="text-2xl font-bold">Task Manager</h2><button id="btn-close-tasks" class="text-2xl">&times;</button></div>
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-2xl font-bold flex items-center gap-2">
+                    <svg class="w-6 h-6 text-teal-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path>
+                    </svg>
+                    Task Manager
+                </h2>
+                <button id="btn-close-tasks" class="text-2xl hover:text-gray-500">&times;</button>
+            </div>
             <div id="task-list" class="flex-grow overflow-y-auto"></div>
         </div>
     </div>
@@ -159,8 +283,13 @@
     <div id="documents-modal" class="modal fixed inset-0 bg-black bg-opacity-50 items-center justify-center">
         <div class="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-6 w-full max-w-4xl flex flex-col" style="height: 80vh;">
             <div class="flex justify-between items-center mb-4">
-                <h2 class="text-2xl font-bold">Manage Documents</h2>
-                <button id="btn-close-documents" class="text-2xl">&times;</button>
+                <h2 class="text-2xl font-bold flex items-center gap-2">
+                    <svg class="w-6 h-6 text-teal-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                    </svg>
+                    Manage Documents
+                </h2>
+                <button id="btn-close-documents" class="text-2xl hover:text-gray-500">&times;</button>
             </div>
             <div class="flex-grow overflow-y-auto">
                 <table class="w-full text-sm text-left">
@@ -232,7 +361,14 @@
         const i18n = { en: { no_projects_found: "No projects found. Create one to get started!", show_logs: "Show Logs", save: "Save" } };
         
         const app = {
-            state: { currentProject: null, graph: null, bindings: [], ontology: {}, graphData: { nodes: [], edges: [] } },
+            state: { 
+                currentProject: null, 
+                graph: null, 
+                bindings: [], 
+                ontology: {}, 
+                graphData: { nodes: [], edges: [] },
+                searchResults: []
+            },
             
             init() { 
                 this.attachEventListeners(); 
@@ -242,33 +378,57 @@
             },
             
             attachEventListeners() {
+                // Header buttons
                 document.getElementById('btn-show-projects').addEventListener('click', () => this.showProjectsView());
                 document.getElementById('btn-toggle-theme').addEventListener('click', () => this.toggleTheme());
                 document.getElementById('btn-show-settings').addEventListener('click', () => this.showSettingsModal());
                 document.getElementById('btn-show-tasks').addEventListener('click', () => document.getElementById('task-manager-modal').classList.add('active'));
+                document.getElementById('btn-show-search').addEventListener('click', () => this.showSearchModal());
+                document.getElementById('btn-show-query').addEventListener('click', () => this.showQueryModal());
+                document.getElementById('btn-show-ontology').addEventListener('click', () => this.showOntologyModal());
                 
+                // Project modal
                 document.getElementById('btn-save-project').addEventListener('click', () => this.createProject());
                 document.getElementById('btn-cancel-project').addEventListener('click', () => this.hideProjectModal());
 
+                // Search modal
+                document.getElementById('search-input').addEventListener('input', (e) => this.performSearch(e.target.value));
+                document.getElementById('btn-close-search').addEventListener('click', () => document.getElementById('search-modal').classList.remove('active'));
+                document.getElementById('btn-clear-search').addEventListener('click', () => this.clearSearchSelection());
+
+                // Query modal
                 document.getElementById('btn-run-query').addEventListener('click', () => this.runQuery());
+                document.getElementById('btn-close-query').addEventListener('click', () => document.getElementById('query-modal').classList.remove('active'));
+
+                // Ontology modal
+                document.getElementById('btn-update-ontology').addEventListener('click', () => this.updateOntology());
+                document.getElementById('btn-close-ontology').addEventListener('click', () => document.getElementById('ontology-modal').classList.remove('active'));
+                document.getElementById('btn-cancel-ontology').addEventListener('click', () => document.getElementById('ontology-modal').classList.remove('active'));
+
+                // Graph actions
                 document.getElementById('doc-upload').addEventListener('change', () => this.uploadDocument());
                 document.getElementById('btn-build-graph').addEventListener('click', () => this.buildGraph());
                 document.getElementById('btn-rebuild-graph').addEventListener('click', () => this.rebuildGraph());
-                document.getElementById('btn-update-ontology').addEventListener('click', () => this.updateOntology());
                 document.getElementById('btn-add-node').addEventListener('click', () => this.showNodeModal());
                 document.getElementById('btn-manage-documents').addEventListener('click', () => this.showDocumentsModal());
                 
+                // Modal close buttons
                 document.getElementById('btn-close-tasks').addEventListener('click', () => document.getElementById('task-manager-modal').classList.remove('active'));
                 document.getElementById('btn-close-documents').addEventListener('click', () => document.getElementById('documents-modal').classList.remove('active'));
+                
+                // Settings
                 document.getElementById('btn-cancel-settings').addEventListener('click', () => this.hideSettingsModal());
                 document.getElementById('btn-save-settings').addEventListener('click', () => this.saveSettings());
                 document.getElementById('llm-binding-select').addEventListener('change', () => this.renderBindingConfig());
+                
+                // Node and relationship modals
                 document.getElementById('btn-cancel-node').addEventListener('click', () => document.getElementById('node-modal').classList.remove('active'));
                 document.getElementById('btn-save-node').addEventListener('click', () => this.saveNode());
                 document.getElementById('btn-cancel-rel').addEventListener('click', () => document.getElementById('relationship-modal').classList.remove('active'));
                 document.getElementById('btn-save-rel').addEventListener('click', () => this.saveRelationship());
                 document.getElementById('btn-cancel-confirm').addEventListener('click', () => document.getElementById('confirm-modal').classList.remove('active'));
                 
+                // Global event listeners
                 document.addEventListener('click', (e) => {
                     document.getElementById('context-menu').classList.add('hidden');
                     const relList = document.getElementById('rel-modal-target-list');
@@ -276,17 +436,155 @@
                         relList.classList.add('hidden');
                     }
                 });
+                
                 document.getElementById('rel-modal-target-search').addEventListener('input', (e) => this.populateTargetNodeList(e.target.value));
                 document.getElementById('rel-modal-target-search').addEventListener('focus', () => document.getElementById('rel-modal-target-list').classList.remove('hidden'));
             },
 
-            showNotification(message, type = 'info', duration = 4000) { const container = document.getElementById('notification-container'); const colors = { info: 'bg-blue-500', success: 'bg-green-500', error: 'bg-red-500' }; const div = document.createElement('div'); div.className = `notification text-white p-3 rounded-lg shadow-lg mb-2 transform translate-x-full opacity-0 ${colors[type]}`; div.innerText = message; container.appendChild(div); setTimeout(() => { div.classList.remove('translate-x-full', 'opacity-0'); }, 10); setTimeout(() => { div.classList.add('opacity-0'); div.addEventListener('transitionend', () => div.remove()); }, duration); },
+            showNotification(message, type = 'info', duration = 4000) { 
+                const container = document.getElementById('notification-container'); 
+                const colors = { info: 'bg-blue-500', success: 'bg-green-500', error: 'bg-red-500' }; 
+                const div = document.createElement('div'); 
+                div.className = `notification text-white p-3 rounded-lg shadow-lg mb-2 transform translate-x-full opacity-0 ${colors[type]}`; 
+                div.innerText = message; 
+                container.appendChild(div); 
+                setTimeout(() => { div.classList.remove('translate-x-full', 'opacity-0'); }, 10); 
+                setTimeout(() => { div.classList.add('opacity-0'); div.addEventListener('transitionend', () => div.remove()); }, duration); 
+            },
+            
             showSpinner() { document.getElementById('graph-spinner').classList.replace('hidden', 'flex'); },
             hideSpinner() { document.getElementById('graph-spinner').classList.replace('flex', 'hidden'); },
-            showProjectsView() { document.getElementById('projects-view').classList.remove('hidden'); document.getElementById('graph-view').classList.add('hidden'); document.getElementById('project-controls').classList.remove('hidden'); document.getElementById('btn-show-projects').classList.add('hidden'); if (this.state.graph) { this.state.graph.destroy(); this.state.graph = null; } },
-            showGraphView(projectName) { this.state.currentProject = projectName; document.getElementById('projects-view').classList.add('hidden'); document.getElementById('graph-view').classList.remove('hidden'); document.getElementById('btn-show-projects').classList.remove('hidden'); document.getElementById('current-project-title').innerText = projectName; this.fetchGraphData(); this.fetchOntology(); },
-            toggleTheme() { document.documentElement.classList.toggle('dark'); if (this.state.graph) this.renderGraph(this.state.graphData.nodes, this.state.graphData.edges); },
-            async checkLLMStatus() { const res = await fetch(`${API_URL}/llm/status`); const data = await res.json(); if (data.status === 'error') this.showSettingsModal(`LLM connection failed: ${data.message}. Please configure it.`); },
+            
+            showProjectsView() { 
+                document.getElementById('projects-view').classList.remove('hidden'); 
+                document.getElementById('graph-view').classList.add('hidden'); 
+                document.getElementById('project-controls').classList.remove('hidden'); 
+                document.getElementById('btn-show-projects').classList.add('hidden'); 
+                document.getElementById('btn-show-search').classList.add('hidden');
+                document.getElementById('btn-show-query').classList.add('hidden');
+                document.getElementById('btn-show-ontology').classList.add('hidden');
+                if (this.state.graph) { 
+                    this.state.graph.destroy(); 
+                    this.state.graph = null; 
+                } 
+            },
+            
+            showGraphView(projectName) { 
+                this.state.currentProject = projectName; 
+                document.getElementById('projects-view').classList.add('hidden'); 
+                document.getElementById('graph-view').classList.remove('hidden'); 
+                document.getElementById('btn-show-projects').classList.remove('hidden'); 
+                document.getElementById('btn-show-search').classList.remove('hidden');
+                document.getElementById('btn-show-query').classList.remove('hidden');
+                document.getElementById('btn-show-ontology').classList.remove('hidden');
+                document.getElementById('current-project-title').innerText = projectName; 
+                this.fetchGraphData(); 
+                this.fetchOntology(); 
+            },
+            
+            toggleTheme() { 
+                document.documentElement.classList.toggle('dark'); 
+                if (this.state.graph) this.renderGraph(this.state.graphData.nodes, this.state.graphData.edges); 
+            },
+            
+            // Search functionality
+            showSearchModal() {
+                document.getElementById('search-input').value = '';
+                document.getElementById('search-results').innerHTML = '<p class="text-gray-500 dark:text-gray-400 text-center">Enter a search term to find nodes</p>';
+                document.getElementById('search-modal').classList.add('active');
+            },
+
+            performSearch(searchTerm) {
+                if (!searchTerm.trim()) {
+                    document.getElementById('search-results').innerHTML = '<p class="text-gray-500 dark:text-gray-400 text-center">Enter a search term to find nodes</p>';
+                    return;
+                }
+
+                const nodes = this.state.graphData.nodes || [];
+                const term = searchTerm.toLowerCase();
+                
+                const matchingNodes = nodes.filter(node => {
+                    // Search in label
+                    if (node.label && node.label.toLowerCase().includes(term)) return true;
+                    
+                    // Search in properties
+                    if (node.properties) {
+                        const propertiesStr = JSON.stringify(node.properties).toLowerCase();
+                        if (propertiesStr.includes(term)) return true;
+                    }
+                    
+                    // Search in ID
+                    if (node.id.toString().includes(term)) return true;
+                    
+                    return false;
+                });
+
+                this.state.searchResults = matchingNodes;
+                this.displaySearchResults(matchingNodes);
+            },
+
+            displaySearchResults(nodes) {
+                const resultsDiv = document.getElementById('search-results');
+                
+                if (nodes.length === 0) {
+                    resultsDiv.innerHTML = '<p class="text-gray-500 dark:text-gray-400 text-center">No nodes found matching your search</p>';
+                    return;
+                }
+
+                const resultsHTML = nodes.map(node => `
+                    <div class="bg-white dark:bg-gray-800 rounded-md p-3 mb-2 cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-600 border border-gray-200 dark:border-gray-600" 
+                         data-node-id="${node.id}">
+                        <div class="font-semibold text-teal-600 dark:text-teal-400">${node.label}</div>
+                        <div class="text-xs text-gray-500 dark:text-gray-400">ID: ${node.id}</div>
+                        ${node.properties ? `<div class="text-xs text-gray-600 dark:text-gray-300 mt-1 truncate">${JSON.stringify(node.properties).substring(0, 100)}...</div>` : ''}
+                    </div>
+                `).join('');
+
+                resultsDiv.innerHTML = resultsHTML;
+                
+                // Add click listeners to results
+                resultsDiv.querySelectorAll('[data-node-id]').forEach(element => {
+                    element.addEventListener('click', () => {
+                        const nodeId = parseInt(element.dataset.nodeId);
+                        this.focusOnNode(nodeId);
+                        document.getElementById('search-modal').classList.remove('active');
+                    });
+                });
+            },
+
+            focusOnNode(nodeId) {
+                if (this.state.graph) {
+                    this.state.graph.selectNodes([nodeId]);
+                    this.state.graph.focus(nodeId, { scale: 1.5 });
+                    this.showNodeDetails(nodeId);
+                }
+            },
+
+            clearSearchSelection() {
+                if (this.state.graph) {
+                    this.state.graph.selectNodes([]);
+                }
+                this.clearNodeDetails();
+                this.showNotification('Selection cleared', 'info');
+            },
+
+            // Query modal functionality
+            showQueryModal() {
+                this.fetchOntology(); // Ensure ontology is loaded
+                document.getElementById('query-modal').classList.add('active');
+            },
+
+            // Ontology modal functionality
+            showOntologyModal() {
+                this.fetchOntology(); // Ensure ontology is loaded
+                document.getElementById('ontology-modal').classList.add('active');
+            },
+            
+            async checkLLMStatus() { 
+                const res = await fetch(`${API_URL}/llm/status`); 
+                const data = await res.json(); 
+                if (data.status === 'error') this.showSettingsModal(`LLM connection failed: ${data.message}. Please configure it.`); 
+            },
             
             async fetchProjects() {
                 const res = await fetch(`${API_URL}/projects`);
@@ -370,7 +668,20 @@
                 }
             },
             
-            async fetchGraphData() { if (!this.state.currentProject) return; this.showSpinner(); try { const res = await fetch(`${API_URL}/projects/${this.state.currentProject}/graph`); const data = await res.json(); this.state.graphData = data; this.renderGraph(data.nodes, data.edges); } catch (e) { this.showNotification('Failed to load graph data.', 'error'); } finally { this.hideSpinner(); } },
+            async fetchGraphData() { 
+                if (!this.state.currentProject) return; 
+                this.showSpinner(); 
+                try { 
+                    const res = await fetch(`${API_URL}/projects/${this.state.currentProject}/graph`); 
+                    const data = await res.json(); 
+                    this.state.graphData = data; 
+                    this.renderGraph(data.nodes, data.edges); 
+                } catch (e) { 
+                    this.showNotification('Failed to load graph data.', 'error'); 
+                } finally { 
+                    this.hideSpinner(); 
+                } 
+            },
             
             renderGraph(nodes, edges) {
                 const container = document.getElementById('graph-container');
@@ -419,7 +730,6 @@
                 this.state.graph.on('click', p => p.nodes.length > 0 ? this.showNodeDetails(p.nodes[0]) : this.clearNodeDetails());
                 this.state.graph.on('oncontext', p => this.handleGraphContextMenu(p));
             },
-            
             showNodeDetails(nodeId) { const container = document.getElementById('node-details-container'); const detailsDiv = document.getElementById('node-details'); const node = this.state.graph.body.data.nodes.get(nodeId); if (node) { detailsDiv.innerHTML = `<p class="font-bold text-teal-500">${node.label}</p><pre class="text-xs">${JSON.stringify(node.properties || {}, null, 2)}</pre>`; container.classList.remove('hidden'); } },
             clearNodeDetails() { document.getElementById('node-details-container').classList.add('hidden'); document.getElementById('node-details').innerHTML = ''; },
 
@@ -526,7 +836,46 @@
             async performDeleteDocument(docId) { try { const res = await fetch(`${API_URL}/projects/${this.state.currentProject}/documents/${docId}`, { method: 'DELETE' }); if (!res.ok) { const err = await res.json(); throw new Error(err.detail || 'Server error'); } this.showNotification('Document deleted. Refreshing graph...', 'success'); this.showDocumentsModal(); this.fetchGraphData(); } catch (e) { this.showNotification(`Error deleting document: ${e.message}`, 'error'); } },
             async showSettingsModal(errorMessage = null) { const errorDiv = document.getElementById('settings-error-msg'); if (errorMessage) { errorDiv.innerText = errorMessage; errorDiv.classList.remove('hidden'); } else { errorDiv.classList.add('hidden'); } const select = document.getElementById('llm-binding-select'); select.innerHTML = ''; const [bindingsRes, currentSettingsRes] = await Promise.all([ fetch(`${API_URL}/settings/llm-bindings`), fetch(`${API_URL}/settings`) ]); this.state.bindings = await bindingsRes.json(); const currentSettings = await currentSettingsRes.json(); this.state.bindings.forEach(b => { const option = document.createElement('option'); option.value = b.name; option.innerText = b.name; if (b.name === currentSettings.binding_name) option.selected = true; select.appendChild(option); }); this.renderBindingConfig(currentSettings.config); document.getElementById('settings-modal').classList.add('active'); },
             hideSettingsModal() { document.getElementById('settings-modal').classList.remove('active'); },
-            renderBindingConfig(currentConfig = {}) { const select = document.getElementById('llm-binding-select'); const fieldsDiv = document.getElementById('llm-config-fields'); const binding = this.state.bindings.find(b => b.name === select.value); fieldsDiv.innerHTML = ''; if (!binding) return; binding.parameters.forEach(p => { const value = currentConfig[p.name] !== undefined ? currentConfig[p.name] : (p.default || ''); const type = p.type === 'int' ? 'number' : (p.type === 'bool' ? 'checkbox' : 'text'); const checked = (p.type === 'bool' && String(value).toLowerCase() === 'true') ? 'checked' : ''; fieldsDiv.innerHTML += `<div class="flex flex-col"><label class="mb-1 text-sm">${p.name}</label><input type="${type}" id="setting-${p.name}" ${checked} value="${type !== 'checkbox' ? value : ''}" placeholder="${p.description || ''}" class="bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none"></div>`; }); },
+            renderBindingConfig(currentConfig = {}) {
+                const select = document.getElementById('llm-binding-select');
+                const fieldsDiv = document.getElementById('llm-config-fields');
+                const binding = this.state.bindings.find(b => b.name === select.value);
+            
+                fieldsDiv.innerHTML = '';
+                if (!binding) return;
+            
+                // Add the verify_ssl_certificate parameter if it doesn't exist
+                if (!binding.parameters.some(p => p.name === 'verify_ssl_certificate')) {
+                    binding.parameters.push({
+                        name: 'verify_ssl_certificate',
+                        type: 'bool',
+                        default: true,
+                        description: 'Verify SSL certificate when connecting'
+                    });
+                }
+            
+                binding.parameters.forEach(p => {
+                    const value = currentConfig[p.name] !== undefined ? currentConfig[p.name] : (p.default || '');
+                    const type = p.type === 'int' ? 'number' : (p.type === 'bool' ? 'checkbox' : 'text');
+                    const checked = (p.type === 'bool' && String(value).toLowerCase() === 'true') ? 'checked' : '';
+                    const isCheckbox = p.type === 'bool';
+            
+                    fieldsDiv.innerHTML += `
+                        <div class="flex flex-col">
+                            <label class="mb-1 text-sm">${p.name}</label>
+                            <input
+                                type="${type}"
+                                id="setting-${p.name}"
+                                ${checked}
+                                value="${isCheckbox ? (checked ? 'true' : 'false') : value}"
+                                placeholder="${p.description || ''}"
+                                class="bg-gray-200 dark:bg-gray-700 p-2 rounded-md outline-none ${isCheckbox ? 'h-5 w-5' : ''}"
+                                ${isCheckbox ? 'class="h-5 w-5"' : ''}
+                            >
+                        </div>
+                    `;
+                });
+            },
             async saveSettings() { const saveButton = document.getElementById('btn-save-settings'); const errorDiv = document.getElementById('settings-error-msg'); saveButton.disabled = true; saveButton.innerText = "Saving..."; errorDiv.classList.add('hidden'); const binding_name = document.getElementById('llm-binding-select').value; const binding = this.state.bindings.find(b => b.name === binding_name); const config = {}; if (binding) { binding.parameters.forEach(p => { const input = document.getElementById(`setting-${p.name}`); if(input) config[p.name] = input.type === 'checkbox' ? input.checked : input.value; }); } try { const res = await fetch(`${API_URL}/settings`, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ binding_name, config }) }); const data = await res.json(); if (!res.ok) throw new Error(data.detail); this.hideSettingsModal(); this.showNotification("Settings saved successfully!", 'success'); } catch (e) { errorDiv.innerText = `Error: ${e.message}`; errorDiv.classList.remove('hidden'); } finally { saveButton.disabled = false; saveButton.innerText = i18n.en.save; } },
             async updateTasksView() {
                 try {

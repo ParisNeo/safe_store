@@ -16,7 +16,7 @@ from safe_store import SafeStore, GraphStore
 from safe_store.core.exceptions import NodeNotFoundError, RelationshipNotFoundError, GraphError
 from lollms_client import LollmsClient
 from lollms_client.lollms_llm_binding import get_available_bindings
-from ascii_colors import ASCIIColors
+from ascii_colors import ASCIIColors, trace_exception
 
 app = FastAPI()
 PROJECTS_DIR = Path("projects")
@@ -43,11 +43,11 @@ def load_config() -> Dict:
     if CONFIG_FILE.exists():
         try: return json.loads(CONFIG_FILE.read_text())
         except json.JSONDecodeError: pass
-    return {"binding_name": "ollama", "config": {"model_name": "mistral:latest"}}
+    return {"binding_name": "ollama", "config": {"model_name": "mistral:latest"}, "chunk_size": 512*5, "chunk_overlap": 50}
 
 def save_config(settings: LLMSettings):
     global LLM_CLIENT
-    CONFIG_FILE.write_text(settings.json(indent=2))
+    CONFIG_FILE.write_text(settings.model_dump_json(indent=2))
     LLM_CLIENT = None
 
 def get_lollms_client(force_reload: bool = False) -> LollmsClient:
@@ -65,8 +65,8 @@ def get_lollms_client(force_reload: bool = False) -> LollmsClient:
         ASCIIColors.error(f"Failed to initialize LollmsClient: {e}")
         LLM_CLIENT = None; raise
 
-def llm_executor_callback(prompt: str) -> str:
-    return get_lollms_client().generate_code(prompt, language="json", temperature=0.1)
+def llm_executor_callback(prompt: str) -> str|None:
+    return get_lollms_client().generate_code(prompt, language="json", temperature=0.1, override_all_prompts=True)
 
 def create_task(name: str, project_name: str) -> str:
     task_id = str(uuid.uuid4())
@@ -123,7 +123,7 @@ def _add_document_worker(project_name: str, file_path: Path, task_id: str):
         store = get_project_store(project_name)
         with store:
             update_task_progress(task_id, 10, f"Indexing document: {file_path.name}")
-            store.add_document(file_path)
+            store.add_document(file_path, chunk_size=512*5, chunk_overlap=50)
             update_task_progress(task_id, 90, "Document indexed. Invalidate graph store for next build.")
             if project_name in GRAPH_STORES: del GRAPH_STORES[project_name]
             finish_task(task_id, "complete", "Document processing finished.")
@@ -293,8 +293,10 @@ async def get_ontology(project_name: str):
     try:
         store = get_project_store(project_name)
         properties = store.get_properties() or {}
+        if properties.get("metadata", {}) is None: properties["metadata"] = {}
         return (properties.get("metadata", {})).get("ontology", {})
     except Exception as e:
+        trace_exception(e)
         ASCIIColors.error(f"Failed to get ontology for {project_name}: {e}")
         raise HTTPException(status_code=503, detail=f"Could not initialize project backend. Error: {e}")
 
