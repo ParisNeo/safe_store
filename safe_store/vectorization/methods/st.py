@@ -10,7 +10,7 @@ class_name="STVectorizer"
 
 # Attempt import, handle gracefully
 try:
-    pm.ensure_packages({"torch":"","torchvision":"","sentence-transformers":"4.1.0"})
+    pm.ensure_packages(["torch","torchvision","sentence-transformers"])
     from sentence_transformers import SentenceTransformer
 except Exception as e:
     trace_exception(e)
