@@ -51,7 +51,7 @@ parsing = [
 ]
 
 # --- Vectorizer Libraries ---
-sentence-transformers = ["sentence-transformers>=2.2.0"]
+sentence-transformers = ["sentence-transformers==4.1.0"]
 tfidf = ["scikit-learn>=1.0"]
 # Future vectorizers can be added here:
 openai = ["openai>=1.0"]

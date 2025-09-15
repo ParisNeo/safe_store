@@ -4,16 +4,16 @@ from typing import List, Optional, Dict, Any # Added Optional
 from ..base import BaseVectorizer
 from ...core.exceptions import ConfigurationError, VectorizationError # Import custom exceptions
 from ascii_colors import ASCIIColors, trace_exception
-
+import pipmaster as pm
 # each vectorizer must have a class name variable to be identified
 class_name="STVectorizer"
 
 # Attempt import, handle gracefully
 try:
+    pm.ensure_packages({"sentence-transformers":"4.1.0"})
     from sentence_transformers import SentenceTransformer
-    _SENTENCE_TRANSFORMERS_AVAILABLE = True
-except ImportError:
-    _SENTENCE_TRANSFORMERS_AVAILABLE = False
+except Exception as e:
+    trace_exception(e)
     SentenceTransformer = None # Set to None if import fails
 
 
@@ -49,8 +49,8 @@ class STVectorizer(BaseVectorizer):
             vectorizer_name = "sentence_transformer"
         )
 
-        if not _SENTENCE_TRANSFORMERS_AVAILABLE or SentenceTransformer is None:
-            msg = "SentenceTransformerVectorizer requires 'sentence-transformers' library. Install with: pip install safe_store[sentence-transformers]"
+        if  SentenceTransformer is None:
+            msg = "SentenceTransformerVectorizer requires 'sentence-transformers' library. Install with: pip install safe_store[sentence-transformers]\n_SENTENCE_TRANSFORMERS_AVAILABLE"
             ASCIIColors.error(msg)
             raise ConfigurationError(msg)
 
