@@ -1,7 +1,9 @@
 # safe_store/indexing/parser.py
 from pathlib import Path
-from typing import Callable, Dict, Union # Added Union
+from typing import Callable, Dict, Union, List
 from ascii_colors import ASCIIColors
+import os
+import pipmaster as pm
 # Import specific custom exceptions
 from ..core.exceptions import ParsingError, FileHandlingError, ConfigurationError
 
@@ -28,7 +30,83 @@ class BeautifulSoupProtocol(Protocol): # noqa
 
 
 # --- Parsing Functions ---
+def _process_msg_attachment(data: bytes, filename: str, images: dict) -> str:
+    # Guess file type based on filename
+    mime_type, _ = mimetypes.guess_type(filename)
+    file_ext = filename.lower().split(".")[-1] if "." in filename else ""
 
+    # Try decoding as text if likely to be a text attachment
+    if mime_type and mime_type.startswith("text") or file_ext in ("txt", "csv", "md"):
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = data.decode("latin1")
+            except Exception:
+                text = None
+        if text and text.strip():
+            return f"[Attachment: {filename}]\n{text[:300]}{'...' if len(text)>300 else ''}"
+        else:
+            return f"[Attachment: {filename} -- undecodable text]"
+
+    # If it's a PDF, Word, or other known binary type, just summarize
+    if file_ext in ("pdf", "docx", "xlsx", "pptx", "zip", "eml", "msg") or \
+       (mime_type and (mime_type.startswith("application/") or mime_type.startswith("image/"))):
+        # Optionally store images for further processing
+        if mime_type and mime_type.startswith("image") and images is not None:
+            images[filename] = data  # Store image bytes for future use
+        return f"[Attachment: {filename} ({mime_type or file_ext}) not parsed as text]"
+
+    # Otherwise, unknown type
+    return f"[Attachment: {filename} (unknown type) -- size {len(data)} bytes]"
+
+def parse_msg(file_path: Union[str, Path]) -> str:
+    try:
+        import extract_msg
+        from bs4 import BeautifulSoup  # Correct import
+    except ImportError:
+        pm.ensure_packages(["extract-msg", "bs4"])  # Use 'bs4' not 'BeautifulSoup'
+        import extract_msg
+        from bs4 import BeautifulSoup
+
+    try:
+        msg = extract_msg.Message(str(file_path))
+        images = {}
+        header_lines = []
+        if getattr(msg, "subject", ""):
+            header_lines.append(f"# {getattr(msg, 'subject', '')}")
+        meta = []
+        sender = getattr(msg, "sender", None) or getattr(msg, "from_", None)
+        if sender:
+            meta.append(f"From: {sender}")
+        if getattr(msg, "to", ""):
+            meta.append(f"To: {getattr(msg, 'to', '')}")
+        if getattr(msg, "date", ""):
+            meta.append(f"Date: {getattr(msg, 'date', '')}")
+        if meta:
+            header_lines.append("\n".join(meta))
+        header = "\n\n".join(header_lines)
+
+        msg_body = (getattr(msg, "body", "") or "").strip()
+        if not msg_body and getattr(msg, "htmlBody", None):
+            html_body = getattr(msg, "htmlBody", "")
+            if html_body:
+                msg_body = BeautifulSoup(html_body, "html.parser").get_text()
+
+        attachment_text_parts: List[str] = [header, msg_body]
+        if hasattr(msg, "attachments"):
+            for att in msg.attachments:
+                att_data = getattr(att, "data", b"")
+                att_name = getattr(att, "longFilename", None) or getattr(att, "shortFilename", None) or "attachment"
+                text_part = _process_msg_attachment(att_data, att_name, images)
+                if text_part:
+                    attachment_text_parts.append(text_part)
+
+        extracted_text = "\n\n".join([p for p in attachment_text_parts if p and p.strip()])
+        return extracted_text
+    except Exception as e:
+        return f"[Error processing MSG file: {e}. Is extract_msg installed?]"
+    
 def parse_txt(file_path: Union[str, Path]) -> str:
     """
     Parses a plain text file (UTF-8 encoding).
@@ -341,6 +419,9 @@ parser_map: Dict[str, ParserFunc] = {
     '.html': parse_html,
     '.htm': parse_html, # Treat .htm the same as .html
     '.pptx': parse_pptx,
+    
+    # Outlook messages
+    '.msg': parse_msg,
 
     # --- General Text & Document Formats ---
     '.md': parse_txt,        # Markdown
