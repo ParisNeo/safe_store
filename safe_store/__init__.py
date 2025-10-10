@@ -1,4 +1,3 @@
-# safe_store/__init__.py
 """
 safe_store: Simple SQLite Vector Store for RAG.
 
@@ -9,7 +8,7 @@ Includes optional encryption, concurrency control, and graph data capabilities.
 """
 
 from .store import SafeStore, LogLevel, TEMP_FILE_DB_INDICATOR, IN_MEMORY_DB_INDICATOR, DEFAULT_LOCK_TIMEOUT
-from .graph.graph_store import GraphStore # Added GraphStore
+from .graph.graph_store import GraphStore
 from .core.exceptions import ( # Expose exceptions for users
     SafeStoreError,
     DatabaseError,
@@ -28,14 +27,14 @@ from .core.exceptions import ( # Expose exceptions for users
     LLMCallbackError,
 )
 from .indexing.parser import SAFE_STORE_SUPPORTED_FILE_EXTENSIONS, parse_document 
-from .indexing.chunking import chunk_text, chunk_text_by_tokens
+from .processing.text_cleaning import basic_text_cleaner # Expose the basic cleaner as a utility
 from ascii_colors import ASCIIColors # Expose for user configuration convenience
 
-__version__ = "2.5.0"
+__version__ = "2.6.0" # Version bump to reflect API changes
 
 __all__ = [
     "SafeStore",
-    "GraphStore", # Added GraphStore
+    "GraphStore",
     "ASCIIColors",
     "LogLevel",
     # Exceptions
@@ -49,10 +48,10 @@ __all__ = [
     "ConfigurationError",
     "ConcurrencyError",
     "EncryptionError",
-    "GraphError", # Added GraphError
-    "GraphDBError", # Added GraphDBError
-    "GraphProcessingError", # Added GraphProcessingError
-    "LLMCallbackError", # Added LLMCallbackError
+    "GraphError",
+    "GraphDBError",
+    "GraphProcessingError",
+    "LLMCallbackError",
     # globals
     "SAFE_STORE_SUPPORTED_FILE_EXTENSIONS",
     "TEMP_FILE_DB_INDICATOR",
@@ -60,6 +59,5 @@ __all__ = [
     "DEFAULT_LOCK_TIMEOUT",
     # utilities
     "parse_document",
-    "chunk_text",
-    "chunk_text_by_tokens"
+    "basic_text_cleaner"
 ]
