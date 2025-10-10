@@ -1,10 +1,10 @@
-# safe_store/store.py
 import sqlite3
 import json
 from pathlib import Path
 import hashlib
 import threading
 from typing import Optional, List, Dict, Any, Union, Literal, ContextManager, Callable
+import tempfile
 from contextlib import contextmanager
 
 from filelock import FileLock, Timeout
@@ -24,7 +24,15 @@ from .vectorization.utils import load_vectorizer_module
 from .processing.text_cleaning import get_cleaner
 from ascii_colors import ASCIIColors, LogLevel
 
+# --- FIX: Define module-level constants that were missing ---
+DEFAULT_LOCK_TIMEOUT: int = 60
+TEMP_FILE_DB_INDICATOR = ":tempfile:"
+IN_MEMORY_DB_INDICATOR = ":memory:"
+
 class SafeStore:
+    """
+    Manages a local vector store with a single, fixed vectorizer and chunking strategy.
+    """
     DEFAULT_VECTORIZER_NAME: str = "st"
     DEFAULT_VECTORIZER_CONFIG: Dict[str, Any] = {"model": "all-MiniLM-L6-v2"}
 
@@ -115,9 +123,6 @@ class SafeStore:
 
     @classmethod
     def list_available_models(cls, vectorizer_name: str, custom_vectorizers_path: Optional[str] = None, **kwargs) -> List[str]:
-        """
-        Dynamically lists available models for a given vectorizer type.
-        """
         try:
             module = load_vectorizer_module(vectorizer_name, custom_vectorizers_path)
             if hasattr(module, 'list_available_models'):
@@ -126,11 +131,9 @@ class SafeStore:
                 ASCIIColors.warning(f"Vectorizer module '{vectorizer_name}' does not have a 'list_available_models' function.")
                 return []
         except (FileNotFoundError, ConfigurationError, VectorizationError) as e:
-            # Renvoyer l'exception pour que l'utilisateur sache ce qui s'est mal passé
             raise e
         except Exception as e:
             raise SafeStoreError(f"An unexpected error occurred while listing models for '{vectorizer_name}': {e}") from e
-
 
     def _initialize_and_verify_vectorizer(self):
         with self._optional_file_lock_context("initialize and verify vectorizer"):
@@ -152,7 +155,6 @@ class SafeStore:
                         f"Database at '{self.db_path}' is already configured with a different vectorizer: '{stored_info.get('unique_name')}'. "
                         f"This instance is configured with '{unique_name_from_instance}'. Use a new DB file for a new vectorizer."
                     )
-                ASCIIColors.info("Instance vectorizer matches the one stored in the database.")
             else:
                 ASCIIColors.info("No vectorizer info found in DB. Storing current vectorizer configuration.")
                 vectorizer_info = {
