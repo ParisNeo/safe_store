@@ -1,10 +1,10 @@
+# safe_store/store.py
 import sqlite3
 import json
 from pathlib import Path
 import hashlib
 import threading
-from typing import Optional, List, Dict, Any, Tuple, Union, Literal, ContextManager, Callable
-import tempfile
+from typing import Optional, List, Dict, Any, Union, Literal, ContextManager, Callable
 from contextlib import contextmanager
 
 from filelock import FileLock, Timeout
@@ -19,19 +19,12 @@ from .core.exceptions import (
 from .indexing import parser, chunking
 from .search import similarity
 from .vectorization.manager import VectorizationManager
-from .vectorization.methods.tfidf import TfidfVectorizerWrapper
 from .vectorization.base import BaseVectorizer
+from .vectorization.utils import load_vectorizer_module
 from .processing.text_cleaning import get_cleaner
 from ascii_colors import ASCIIColors, LogLevel
 
-DEFAULT_LOCK_TIMEOUT: int = 60
-TEMP_FILE_DB_INDICATOR = ":tempfile:"
-IN_MEMORY_DB_INDICATOR = ":memory:"
-
 class SafeStore:
-    """
-    Manages a local vector store with a single, fixed vectorizer and chunking strategy.
-    """
     DEFAULT_VECTORIZER_NAME: str = "st"
     DEFAULT_VECTORIZER_CONFIG: Dict[str, Any] = {"model": "all-MiniLM-L6-v2"}
 
@@ -40,6 +33,7 @@ class SafeStore:
         db_path: Optional[Union[str, Path]] = "safe_store.db",
         vectorizer_name: str = "st",
         vectorizer_config: Optional[Dict[str, Any]] = None,
+        custom_vectorizers_path: Optional[str] = None,
         chunk_size: int = 384,
         chunk_overlap: int = 50,
         chunking_strategy: Literal['character', 'token'] = 'token',
@@ -79,7 +73,10 @@ class SafeStore:
         
         self.conn: Optional[sqlite3.Connection] = None
         self._is_closed: bool = True
-        self.vectorizer_manager = VectorizationManager(cache_folder=cache_folder)
+        self.vectorizer_manager = VectorizationManager(
+            cache_folder=cache_folder,
+            custom_vectorizers_path=custom_vectorizers_path
+        )
         self._file_hasher = hashlib.sha256
         self.encryptor = Encryptor(encryption_key)
         self._instance_lock = threading.RLock()
@@ -117,42 +114,23 @@ class SafeStore:
             self.name = "in_memory_store" if self._is_in_memory else Path(self.db_path).stem
 
     @classmethod
-    def list_available_models(cls, vectorizer_name: str, **kwargs) -> List[str]:
-        if vectorizer_name == "ollama":
-            try:
-                import ollama
-            except ImportError:
-                raise ConfigurationError("Ollama support is not installed. Please run: pip install safe_store[ollama]")
-            
-            # The ollama library uses the OLLAMA_HOST environment variable by default.
-            # This classmethod does not need to manage the host directly.
-            # We simply call the module-level function.
-            try:
-                response = ollama.list()
-                return [model.model for model in response.models]
-            except ollama.RequestError as e:
-                raise VectorizationError("Could not connect to the Ollama server. Please ensure it is running and accessible (check OLLAMA_HOST env var if not on localhost).") from e
-            except Exception as e:
-                raise VectorizationError(f"An unexpected error occurred while trying to list Ollama models: {e}") from e
+    def list_available_models(cls, vectorizer_name: str, custom_vectorizers_path: Optional[str] = None, **kwargs) -> List[str]:
+        """
+        Dynamically lists available models for a given vectorizer type.
+        """
+        try:
+            module = load_vectorizer_module(vectorizer_name, custom_vectorizers_path)
+            if hasattr(module, 'list_available_models'):
+                return module.list_available_models(**kwargs)
+            else:
+                ASCIIColors.warning(f"Vectorizer module '{vectorizer_name}' does not have a 'list_available_models' function.")
+                return []
+        except (FileNotFoundError, ConfigurationError, VectorizationError) as e:
+            # Renvoyer l'exception pour que l'utilisateur sache ce qui s'est mal passé
+            raise e
+        except Exception as e:
+            raise SafeStoreError(f"An unexpected error occurred while listing models for '{vectorizer_name}': {e}") from e
 
-        elif vectorizer_name == "st":
-            return ["all-MiniLM-L6-v2", "all-mpnet-base-v2", "multi-qa-mpnet-base-dot-v1", "all-distilroberta-v1", "paraphrase-albert-small-v2", "LaBSE"]
-        
-        elif vectorizer_name == "openai":
-            return ["text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"]
-
-        elif vectorizer_name == "cohere":
-            return ["embed-english-v3.0", "embed-english-light-v3.0", "embed-multilingual-v3.0"]
-
-        elif vectorizer_name == "tfidf":
-            return []
-        
-        elif vectorizer_name == "lollms":
-            ASCIIColors.warning("Model listing for 'lollms' is dynamic. Please check your Lollms server for available embedding models.")
-            return []
-
-        else:
-            raise ValueError(f"Unknown vectorizer name: '{vectorizer_name}'")
 
     def _initialize_and_verify_vectorizer(self):
         with self._optional_file_lock_context("initialize and verify vectorizer"):

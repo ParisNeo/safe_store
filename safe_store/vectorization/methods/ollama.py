@@ -22,6 +22,19 @@ except ImportError:
     _OllamaResponseError = None # Define dummy exception if ollama not present
     _OllamaRequestError = None # Define dummy exception if ollama not present
 
+def list_available_models(**kwargs) -> List[str]:
+    """Dynamically lists models from a running Ollama server."""
+    if not _OLLAMA_AVAILABLE:
+        raise ConfigurationError("Ollama support is not installed. Please run: pip install safe_store[ollama]")
+    
+    try:
+        # ollama.list() uses the OLLAMA_HOST env var by default, which is perfect.
+        response = ollama.list()
+        return [model.name for model in response.models]
+    except ollama.RequestError as e:
+        raise VectorizationError("Could not connect to the Ollama server. Please ensure it is running.") from e
+    except Exception as e:
+        raise VectorizationError(f"An unexpected error occurred while listing Ollama models: {e}") from e
 
 class OllamaVectorizer(BaseVectorizer):
     """
