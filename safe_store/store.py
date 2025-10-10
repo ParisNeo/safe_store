@@ -40,6 +40,9 @@ class SafeStore:
     """
     Manages a local vector store backed by an SQLite database, tied to a single
     vectorization method defined at initialization.
+
+    Provides functionalities for indexing documents, querying based on semantic
+    similarity, and handling concurrent access safely.
     """
     DEFAULT_VECTORIZER_NAME: str = "st"
     DEFAULT_VECTORIZER_CONFIG: Dict[str, Any] = {"model": "all-MiniLM-L6-v2"}
@@ -59,6 +62,18 @@ class SafeStore:
     ):
         """
         Initializes the SafeStore instance with a specific vectorizer.
+
+        Args:
+            db_path: Path to the SQLite database file.
+            vectorizer_name: The name of the vectorizer type (e.g., 'st', 'openai').
+            vectorizer_config: Configuration for the vectorizer (e.g., `{"model": "name"}`).
+            name: A human-readable name for the store.
+            description: A description of the store's purpose.
+            metadata: Custom metadata for the store.
+            log_level: Minimum log level for console output.
+            lock_timeout: Timeout in seconds for the inter-process write lock.
+            encryption_key: Optional password to encrypt chunk text at rest.
+            cache_folder: Optional folder to cache downloaded models.
         """
         self.lock_timeout: int = lock_timeout
         self._is_in_memory: bool = False
@@ -79,16 +94,20 @@ class SafeStore:
         ASCIIColors.set_log_level(log_level)
         db_path_input_str = str(db_path).lower() if db_path is not None else IN_MEMORY_DB_INDICATOR
 
-        # Database path and lock setup... (same as before)
         if db_path_input_str == IN_MEMORY_DB_INDICATOR:
-            self.db_path = IN_MEMORY_DB_INDICATOR; self._is_in_memory = True; self.lock_path = None
+            self.db_path = IN_MEMORY_DB_INDICATOR
+            self._is_in_memory = True
+            self.lock_path = None
         elif db_path_input_str == TEMP_FILE_DB_INDICATOR:
-            tmp_f = tempfile.NamedTemporaryFile(suffix=".db", prefix="safestore_temp_", delete=False)
-            self.db_path = self._temp_db_actual_path = tmp_f.name
-            self._is_temp_file_db = True
-            db_file_obj = Path(self.db_path)
-            self.lock_path = str(db_file_obj.parent / f"{db_file_obj.name}.lock")
-            self._file_lock = FileLock(self.lock_path, timeout=self.lock_timeout)
+            try:
+                tmp_f = tempfile.NamedTemporaryFile(suffix=".db", prefix="safestore_temp_", delete=False)
+                self.db_path = self._temp_db_actual_path = tmp_f.name
+                self._is_temp_file_db = True
+                db_file_obj = Path(self.db_path)
+                self.lock_path = str(db_file_obj.parent / f"{db_file_obj.name}.lock")
+                self._file_lock = FileLock(self.lock_path, timeout=self.lock_timeout)
+            except Exception as e:
+                raise ConfigurationError(f"Failed to create temporary database file: {e}") from e
         else:
             self.db_path = str(Path(db_path).resolve())
             db_file_obj = Path(self.db_path)
@@ -96,7 +115,8 @@ class SafeStore:
             self.lock_path = str(db_file_obj.parent / f"{db_file_obj.name}.lock")
             self._file_lock = FileLock(self.lock_path, timeout=self.lock_timeout)
 
-        if self.name is None: self.name = "in_memory_store" if self._is_in_memory else Path(self.db_path).stem
+        if self.name is None:
+            self.name = "in_memory_store" if self._is_in_memory else Path(self.db_path).stem
         
         self.conn: Optional[sqlite3.Connection] = None
         self._is_closed: bool = True
@@ -112,6 +132,64 @@ class SafeStore:
         except Exception as e:
             self._manual_cleanup_temp_files_on_error()
             raise e
+
+    @classmethod
+    def list_available_models(cls, vectorizer_name: str, **kwargs) -> List[str]:
+        """
+        Lists available models for a given vectorizer type.
+
+        - For 'ollama', this method dynamically queries the Ollama server.
+        - For 'st', 'openai', etc., it returns a curated list of common models.
+        - For 'tfidf', it returns an empty list as models are user-defined.
+
+        Args:
+            vectorizer_name: The name of the vectorizer (e.g., 'ollama', 'st').
+            **kwargs: Additional arguments, such as 'host' for the Ollama client.
+
+        Returns:
+            A list of available model name strings.
+
+        Raises:
+            ConfigurationError: If a required library for a vectorizer is not installed.
+            VectorizationError: If it fails to connect to a service like Ollama.
+            ValueError: If the vectorizer_name is unknown.
+        """
+        if vectorizer_name == "ollama":
+            try:
+                import ollama
+            except ImportError:
+                raise ConfigurationError("Ollama support is not installed. Please run: pip install safe_store[ollama]")
+            
+            host = kwargs.get("host", "http://localhost:11434")
+            try:
+                client = ollama.Client(host=host)
+                response = client.list()
+                return [model['name'] for model in response.get('models', [])]
+            except Exception as e:
+                raise VectorizationError(f"Could not connect to Ollama server at '{host}'. Please ensure it is running. Error: {e}") from e
+
+        elif vectorizer_name == "st":
+            # Returning a curated list of popular models
+            return [
+                "all-MiniLM-L6-v2", "all-mpnet-base-v2", "multi-qa-mpnet-base-dot-v1",
+                "all-distilroberta-v1", "paraphrase-albert-small-v2", "LaBSE"
+            ]
+        
+        elif vectorizer_name == "openai":
+            return ["text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"]
+
+        elif vectorizer_name == "cohere":
+            return ["embed-english-v3.0", "embed-english-light-v3.0", "embed-multilingual-v3.0"]
+
+        elif vectorizer_name == "tfidf":
+            return [] # TF-IDF models are not pre-existing, they are fitted on data.
+        
+        elif vectorizer_name == "lollms":
+            ASCIIColors.warning("Model listing for 'lollms' is dynamic. Please check your Lollms server for available embedding models.")
+            return []
+
+        else:
+            raise ValueError(f"Unknown vectorizer name: '{vectorizer_name}'")
 
     def _initialize_and_verify_vectorizer(self):
         with self._optional_file_lock_context("initialize and verify vectorizer"):
@@ -145,7 +223,88 @@ class SafeStore:
             self.vectorizer = current_vectorizer
             ASCIIColors.success(f"SafeStore is ready with vectorizer '{self.vectorizer.vectorizer_name}'.")
 
-    # ... (core methods like _connect, close, __enter__, etc. are unchanged) ...
+    def _connect_and_initialize(self) -> None:
+        """Establishes the database connection, initializes the schema, and loads store properties."""
+        with self._optional_file_lock_context("DB connection/schema setup"):
+            if self.conn is None or self._is_closed:
+                self.conn = db.connect_db(self.db_path)
+                db.initialize_schema(self.conn)
+                self._is_closed = False
+            self._load_or_initialize_store_properties()
+
+    def _load_or_initialize_store_properties(self) -> None:
+        """Loads or sets up store properties in the database."""
+        assert self.conn is not None
+        try:
+            self.conn.execute("BEGIN")
+            db_name = db.get_store_metadata(self.conn, "store_name")
+            if db_name is None:
+                if self.name: db.set_store_metadata(self.conn, "store_name", self.name)
+                if self.description: db.set_store_metadata(self.conn, "store_description", self.description)
+                if self.metadata: db.set_store_metadata(self.conn, "store_metadata", json.dumps(self.metadata))
+            else:
+                self.name = db_name
+                self.description = db.get_store_metadata(self.conn, "store_description")
+                meta_json = db.get_store_metadata(self.conn, "store_metadata")
+                self.metadata = json.loads(meta_json) if meta_json else None
+            self.conn.commit()
+        except Exception as e:
+            if self.conn.in_transaction: self.conn.rollback()
+            raise SafeStoreError("Failed to load/initialize store properties") from e
+    
+    @contextmanager
+    def _optional_file_lock_context(self, description: Optional[str] = None) -> ContextManager[None]:
+        if self._file_lock:
+            try:
+                with self._file_lock:
+                    yield
+            except Timeout as e:
+                raise ConcurrencyError(f"Timeout acquiring file lock for {description}") from e
+        else:
+            yield
+    
+    def close(self) -> None:
+        with self._instance_lock:
+            if self.conn:
+                self.conn.close()
+                self.conn = None
+            self._is_closed = True
+            self.vectorizer_manager.clear_cache()
+            if self._is_temp_file_db and self._temp_db_actual_path:
+                self._manual_cleanup_temp_files_on_error()
+
+    def _manual_cleanup_temp_files_on_error(self):
+        if self._temp_db_actual_path:
+            Path(self._temp_db_actual_path).unlink(missing_ok=True)
+            if self.lock_path:
+                Path(self.lock_path).unlink(missing_ok=True)
+            self._temp_db_actual_path = None
+
+    def __enter__(self):
+        with self._instance_lock:
+            if self._is_closed or self.conn is None:
+                self._connect_and_initialize()
+                self._initialize_and_verify_vectorizer()
+            return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
+    def _ensure_connection(self) -> None:
+        if self._is_closed or self.conn is None or not hasattr(self, 'vectorizer'):
+            raise ConnectionError("Database connection is closed or vectorizer not initialized.")
+
+    def _get_file_hash(self, file_path: Path) -> str:
+        hasher = self._file_hasher()
+        with open(file_path, 'rb') as f:
+            while chunk := f.read(8192): hasher.update(chunk)
+        return hasher.hexdigest()
+
+    def _get_text_hash(self, text: str) -> str:
+        hasher = self._file_hasher()
+        hasher.update(text.encode("utf-8"))
+        return hasher.hexdigest()
+
     def add_document(
         self,
         file_path: Union[str, Path],
@@ -289,7 +448,9 @@ class SafeStore:
             
             for row in details_raw:
                 chunk_id, text_data, start, end, is_enc, path, meta = row
-                text = self.encryptor.decrypt(text_data) if is_enc else text_data.decode('utf-8')
+                text = self.encryptor.decrypt(text_data) if is_enc and self.encryptor.is_enabled else (
+                    "[Encrypted - Key Unavailable]" if is_enc else text_data.decode('utf-8')
+                )
                 path_str = path.decode('utf-8')
                 meta_dict = json.loads(meta.decode('utf-8')) if meta else None
                 details_map[chunk_id] = {"chunk_text": text, "start_pos": start, "end_pos": end, "file_path": path_str, "metadata": meta_dict}
@@ -308,5 +469,43 @@ class SafeStore:
             assert self.conn is not None
             info_json = db.get_store_metadata(self.conn, "vectorizer_info")
             return json.loads(info_json) if info_json else None
-    
-    # Other methods like delete_document_by_id, list_documents etc. remain largely unchanged.
+
+    def delete_document_by_id(self, doc_id: int) -> None:
+        """Deletes a document and all its associated data by its ID."""
+        with self._instance_lock, self._optional_file_lock_context(f"delete_document: {doc_id}"):
+            self._ensure_connection()
+            assert self.conn is not None
+            try:
+                self.conn.execute("BEGIN")
+                rows = self.conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,)).rowcount
+                self.conn.commit()
+                if rows > 0: ASCIIColors.success(f"Deleted document ID {doc_id}.")
+            except sqlite3.Error as e:
+                if self.conn.in_transaction: self.conn.rollback()
+                raise DatabaseError from e
+
+    def delete_document_by_path(self, file_path: Union[str, Path]) -> None:
+        """Deletes a document by its file path or unique_id."""
+        _path_or_id = str(Path(file_path).resolve() if isinstance(file_path, Path) else file_path)
+        with self._instance_lock, self._optional_file_lock_context(f"delete_document: {_path_or_id}"):
+            self._ensure_connection()
+            assert self.conn is not None
+            res = self.conn.execute("SELECT doc_id FROM documents WHERE file_path = ?", (_path_or_id,)).fetchone()
+            if res:
+                self.delete_document_by_id(res[0])
+            else:
+                ASCIIColors.warning(f"Document '{_path_or_id}' not found.")
+
+    def list_documents(self) -> List[Dict[str, Any]]:
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+            docs = []
+            for r in self.conn.execute("SELECT doc_id, file_path, file_hash, added_timestamp, metadata FROM documents"):
+                 docs.append({"doc_id": r[0], "file_path": r[1], "file_hash": r[2], "added_timestamp": r[3], "metadata": json.loads(r[4]) if r[4] else None})
+            return docs
+
+    def vectorize_text(self, text_to_vectorize: str):
+        self._ensure_connection()
+        assert self.vectorizer is not None
+        return self.vectorizer.vectorize([text_to_vectorize])

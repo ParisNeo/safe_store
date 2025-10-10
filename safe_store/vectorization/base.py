@@ -1,13 +1,11 @@
 # safe_store/vectorization/base.py
 from abc import ABC, abstractmethod
 import numpy as np
-from typing import List, Optional
+from typing import List, Optional, Any
 
 class BaseVectorizer(ABC):
     """
     Abstract base class for all vectorizer implementations within safe_store.
-
-    Defines the common interface for converting text into numerical vectors.
     """
 
     def __init__(self, vectorizer_name:str="unknown"):
@@ -15,33 +13,29 @@ class BaseVectorizer(ABC):
 
     @abstractmethod
     def vectorize(self, texts: List[str]) -> np.ndarray:
-        """
-        Converts a list of text documents into a NumPy array of vector embeddings.
-
-        Args:
-            texts: A list of strings, where each string is a document or chunk.
-
-        Returns:
-            A 2D NumPy array where each row corresponds to the vector embedding
-            of the input text at the same index. Shape: (len(texts), self.dim).
-        """
+        """Converts a list of text documents into a NumPy array of vector embeddings."""
         pass
 
     @property
     @abstractmethod
-    def dim(self) -> Optional[int]: # Allow dim to be None before fitting (e.g., TF-IDF)
-        """
-        Returns the dimension (number of features) of the vectors produced by
-        this vectorizer. Can be None if the dimension is not known until fitting
-        (e.g., TF-IDF).
-        """
+    def dim(self) -> Optional[int]:
+        """The dimension of the vectors produced by this vectorizer."""
         pass
 
     @property
     @abstractmethod
     def dtype(self) -> np.dtype:
-        """
-        Returns the NumPy data type (e.g., np.float32, np.float64) of the
-        vector embeddings produced by this vectorizer.
-        """
+        """The NumPy data type of the vector embeddings."""
         pass
+
+    def get_tokenizer(self) -> Optional[Any]:
+        """
+        Returns the tokenizer associated with the vectorizer, if available.
+
+        The returned tokenizer should have `encode` and `decode` methods
+        compatible with libraries like Hugging Face's tokenizers.
+
+        Returns:
+            A tokenizer object or None if no tokenizer is available client-side.
+        """
+        return None
