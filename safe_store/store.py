@@ -10,21 +10,21 @@ from contextlib import contextmanager
 from filelock import FileLock, Timeout
 import numpy as np
 
-from .core import db
-from .security.encryption import Encryptor
-from .core.exceptions import (
+from safe_store.core import db
+from safe_store.security.encryption import Encryptor
+from safe_store.core.exceptions import (
     DatabaseError, FileHandlingError, ParsingError, ConfigurationError,
     VectorizationError, QueryError, ConcurrencyError, SafeStoreError, EncryptionError
 )
-from .indexing import parser, chunking
-from .search import similarity
-from .vectorization.manager import VectorizationManager
-from .vectorization.base import BaseVectorizer
-from .vectorization.utils import load_vectorizer_module
-from .processing.text_cleaning import get_cleaner
+from safe_store.indexing import parser, chunking
+from safe_store.search import similarity
+from safe_store.vectorization.manager import VectorizationManager
+from safe_store.vectorization.base import BaseVectorizer
+from safe_store.vectorization.utils import load_vectorizer_module
+from safe_store.processing.text_cleaning import get_cleaner
+from safe_store.processing.tokenizers import get_tokenizer
 from ascii_colors import ASCIIColors, LogLevel
 
-# --- FIX: Define module-level constants that were missing ---
 DEFAULT_LOCK_TIMEOUT: int = 60
 TEMP_FILE_DB_INDICATOR = ":tempfile:"
 IN_MEMORY_DB_INDICATOR = ":memory:"
@@ -45,6 +45,7 @@ class SafeStore:
         chunk_size: int = 384,
         chunk_overlap: int = 50,
         chunking_strategy: Literal['character', 'token'] = 'token',
+        custom_tokenizer: Optional[Dict[str, Any]] = None,
         expand_before: int = 0,
         expand_after: int = 0,
         text_cleaner: Union[str, Callable[[str], str], None] = 'basic',
@@ -63,6 +64,7 @@ class SafeStore:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.chunking_strategy = chunking_strategy
+        self.custom_tokenizer = custom_tokenizer
         self.expand_before = expand_before
         self.expand_after = expand_after
         self.text_cleaner = get_cleaner(text_cleaner)
@@ -89,6 +91,7 @@ class SafeStore:
         self.encryptor = Encryptor(encryption_key)
         self._instance_lock = threading.RLock()
         self.vectorizer: BaseVectorizer
+        self.tokenizer_for_chunking: Optional[Any] = None
 
         try:
             self._connect_and_initialize()
@@ -141,8 +144,24 @@ class SafeStore:
             
             self.vectorizer = self.vectorizer_manager.get_vectorizer(self.vectorizer_name, self.vectorizer_config)
 
-            if self.chunking_strategy == 'token' and self.vectorizer.get_tokenizer() is None:
-                raise ConfigurationError(f"Chunking strategy is 'token', but the '{self.vectorizer_name}' vectorizer does not provide a client-side tokenizer. Use 'character' strategy instead.")
+            if self.chunking_strategy == 'token':
+                tokenizer = self.vectorizer.get_tokenizer()
+                if tokenizer is not None:
+                    self.tokenizer_for_chunking = tokenizer
+                    ASCIIColors.info("Using tokenizer provided by the vectorizer model for chunking.")
+                elif self.custom_tokenizer is not None:
+                    self.tokenizer_for_chunking = get_tokenizer(self.custom_tokenizer)
+                    ASCIIColors.warning(
+                        f"Using custom tokenizer '{self.custom_tokenizer.get('name')}' for chunking. "
+                        "Note: This may not perfectly match the remote vectorizer's internal tokenizer, "
+                        "but is a close approximation."
+                    )
+                else:
+                    raise ConfigurationError(
+                        f"Chunking strategy is 'token', but the '{self.vectorizer_name}' vectorizer does not provide a client-side tokenizer. "
+                        "To resolve this, either set `chunking_strategy='character'` or provide a `custom_tokenizer` "
+                        "(e.g., `custom_tokenizer={'name': 'tiktoken', 'model': 'cl100k_base'}`)."
+                    )
 
             stored_info_json = db.get_store_metadata(self.conn, "vectorizer_info")
             
@@ -310,7 +329,7 @@ class SafeStore:
                 chunk_overlap=self.chunk_overlap,
                 expand_before=self.expand_before,
                 expand_after=self.expand_after,
-                tokenizer=self.vectorizer.get_tokenizer()
+                tokenizer=self.tokenizer_for_chunking
             )
             if not chunks_data:
                 self.conn.commit(); return
@@ -318,12 +337,14 @@ class SafeStore:
             vector_texts = [item[0] for item in chunks_data]
             storage_texts = [item[1] for item in chunks_data]
             
-            if isinstance(self.vectorizer, TfidfVectorizerWrapper) and not self.vectorizer._fitted:
+            # --- FIX: Use duck typing to check for fit capability, removing the specific import ---
+            if hasattr(self.vectorizer, 'fit') and hasattr(self.vectorizer, '_fitted') and not self.vectorizer._fitted:
                 self.vectorizer.fit(vector_texts)
-                stored_info = json.loads(db.get_store_metadata(self.conn, "vectorizer_info") or '{}')
-                stored_info["dim"] = self.vectorizer.dim
-                stored_info["params"] = self.vectorizer.get_params_to_store()
-                db.set_store_metadata(self.conn, "vectorizer_info", json.dumps(stored_info))
+                if hasattr(self.vectorizer, 'get_params_to_store'):
+                    stored_info = json.loads(db.get_store_metadata(self.conn, "vectorizer_info") or '{}')
+                    stored_info["dim"] = self.vectorizer.dim
+                    stored_info["params"] = self.vectorizer.get_params_to_store()
+                    db.set_store_metadata(self.conn, "vectorizer_info", json.dumps(stored_info))
             
             vectors = self.vectorizer.vectorize(vector_texts)
             

@@ -11,26 +11,11 @@ def generate_chunks(
     chunk_overlap: int,
     expand_before: int = 0,
     expand_after: int = 0,
-    tokenizer: Optional[Any] = None
+    tokenizer: Optional[Any] = None # Expects a TokenizerWrapper now
 ) -> List[Chunk]:
-    """
-    Generates chunks from text using a specified strategy, with optional context expansion.
-
-    Args:
-        text: The input text to chunk.
-        strategy: The chunking strategy ('character' or 'token').
-        chunk_size: The size of the core chunk for vectorization.
-        chunk_overlap: The overlap between core chunks.
-        expand_before: How many units (chars or tokens) to expand before the core chunk for storage.
-        expand_after: How many units (chars or tokens) to expand after the core chunk for storage.
-        tokenizer: A tokenizer object with `encode` and `decode` methods, required for 'token' strategy.
-
-    Returns:
-        A list of tuples, where each tuple is (text_for_vectorization, text_for_storage).
-    """
     if strategy == 'token':
-        if not tokenizer or not hasattr(tokenizer, 'encode') or not hasattr(tokenizer, 'decode'):
-            raise ValueError("A valid tokenizer with 'encode' and 'decode' methods is required for 'token' strategy.")
+        if tokenizer is None:
+            raise ValueError("A tokenizer is required for 'token' strategy.")
         return _chunk_by_tokens(text, tokenizer, chunk_size, chunk_overlap, expand_before, expand_after)
     elif strategy == 'character':
         return _chunk_by_character(text, chunk_size, chunk_overlap, expand_before, expand_after)
@@ -57,7 +42,7 @@ def _chunk_by_character(text: str, chunk_size: int, chunk_overlap: int, expand_b
         
         next_start_pos = start_pos + chunk_size - chunk_overlap
         if next_start_pos <= start_pos:
-            break # Prevent infinite loop
+            break
         start_pos = next_start_pos
         
     return chunks
@@ -74,21 +59,21 @@ def _chunk_by_tokens(text: str, tokenizer: Any, chunk_size: int, chunk_overlap: 
     while start_token < num_tokens:
         end_token = min(start_token + chunk_size, num_tokens)
         
-        # Core chunk for vectorization
         vector_tokens = all_tokens[start_token:end_token]
-        vector_text = tokenizer.decode(vector_tokens, skip_special_tokens=True)
+        # --- FIX: Call decode without extra arguments ---
+        vector_text = tokenizer.decode(vector_tokens)
         
-        # Expanded chunk for storage
         storage_start_token = max(0, start_token - expand_before)
         storage_end_token = min(num_tokens, end_token + expand_after)
         storage_tokens = all_tokens[storage_start_token:storage_end_token]
-        storage_text = tokenizer.decode(storage_tokens, skip_special_tokens=True)
+        # --- FIX: Call decode without extra arguments ---
+        storage_text = tokenizer.decode(storage_tokens)
         
         chunks.append((vector_text, storage_text))
         
         next_start_token = start_token + chunk_size - chunk_overlap
         if next_start_token <= start_token:
-            break # Prevent infinite loop
+            break
         start_token = next_start_token
         
     return chunks

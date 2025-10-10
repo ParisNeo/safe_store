@@ -129,18 +129,21 @@ if __name__ == "__main__":
     # --- Example 3: Ollama ---
     if USE_OLLAMA:
         db_file_ollama = "ollama_store.db"
-        print_header(f"Ollama Example (DB: {db_file_ollama})")
+        print_header(f"Ollama Example with Custom Tokenizer (DB: {db_file_ollama})")
         cleanup_db_files(db_file_ollama)
         try:
             available_models = safe_store.SafeStore.list_available_models("ollama")
             print(f"  Found Ollama models: {available_models}")
             if ollama_config["model"] not in available_models:
-                 print(f"  [SKIP] Model '{ollama_config['model']}' not found in Ollama. Please run `ollama pull {ollama_config['model']}`.")
+                 print(f"  [SKIP] Model '{ollama_config['model']}' not found in Ollama.")
             else:
                 store_ollama = safe_store.SafeStore(
                     db_path=db_file_ollama,
                     vectorizer_name="ollama",
-                    vectorizer_config=ollama_config
+                    vectorizer_config=ollama_config,
+                    # --- NOUVEAUTÉ : Utiliser le chunking par token en fournissant un tokenizer personnalisé ---
+                    chunking_strategy='token',
+                    custom_tokenizer={"name": "tiktoken", "model": "cl100k_base"}
                 )
                 with store_ollama:
                     store_ollama.add_document(DOC_DIR / "intro.txt")
@@ -154,13 +157,19 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"  [ERROR] An unexpected error occurred: {e}")
 
+
     # --- API-based examples ---
     if USE_OPENAI:
         db_file_openai = "openai_store.db"
         print_header(f"OpenAI Example (DB: {db_file_openai})")
         cleanup_db_files(db_file_openai)
         try:
-            store_openai = safe_store.SafeStore(db_path=db_file_openai, vectorizer_name="openai", vectorizer_config=openai_config)
+            store_openai = safe_store.SafeStore(
+                db_path=db_file_openai,
+                vectorizer_name="openai",
+                vectorizer_config=openai_config,
+                chunking_strategy='character' # Also required for OpenAI
+            )
             with store_openai:
                 store_openai.add_document(DOC_DIR / "intro.txt")
                 results_openai = store_openai.query("python tool for embeddings", top_k=1)
@@ -174,7 +183,12 @@ if __name__ == "__main__":
         print_header(f"Cohere Example (DB: {db_file_cohere})")
         cleanup_db_files(db_file_cohere)
         try:
-            store_cohere = safe_store.SafeStore(db_path=db_file_cohere, vectorizer_name="cohere", vectorizer_config=cohere_config)
+            store_cohere = safe_store.SafeStore(
+                db_path=db_file_cohere,
+                vectorizer_name="cohere",
+                vectorizer_config=cohere_config,
+                chunking_strategy='character' # Also required for Cohere
+            )
             with store_cohere:
                 store_cohere.add_document(DOC_DIR / "intro.txt")
                 results_cohere = store_cohere.query("library for vector search", top_k=1)
@@ -184,7 +198,6 @@ if __name__ == "__main__":
             print(f"  [ERROR] Cohere example failed: {e}")
 
     print("\n--- Final Cleanup ---")
-    # Clean up the document directory at the very end
     if DOC_DIR.exists():
         shutil.rmtree(DOC_DIR)
         print(f"- Removed directory: {DOC_DIR}")

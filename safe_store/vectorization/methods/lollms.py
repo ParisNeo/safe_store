@@ -21,6 +21,26 @@ _OpenAIBadRequestError = openai.BadRequestError
 _OpenAIAPIConnectionError = openai.APIConnectionError
 _OPENAI_AVAILABLE = True
 
+def list_available_models(**kwargs) -> List[str]:
+    """
+    Dynamically lists models from a running Lollms (OpenAI-compatible) server.
+    """
+    if not _OPENAI_AVAILABLE:
+        raise ConfigurationError("Lollms support requires 'openai'. Please run: pip install safe_store[openai]")
+    
+    base_url = kwargs.get("base_url", "http://localhost:9600")
+    api_key = kwargs.get("api_key", "not_needed")
+    
+    try:
+        client = openai.Client(base_url=base_url, api_key=api_key)
+        models = client.models.list()
+        # The response is an object with a 'data' attribute which is a list of model objects
+        return [model.id for model in models.data]
+    except openai.APIConnectionError as e:
+        raise VectorizationError(f"Could not connect to Lollms server at '{base_url}'. Please ensure it is running.") from e
+    except Exception as e:
+        raise VectorizationError(f"An unexpected error occurred while listing Lollms models: {e}") from e
+
 class LollmsVectorizer(BaseVectorizer):
     """
     Vectorizes text using an OpenAI-compatible API, such as a local Lollms instance.
