@@ -51,7 +51,7 @@ def connect_db(db_path: Union[str, Path]) -> sqlite3.Connection:
         raise DatabaseError(msg) from e
 
 def initialize_schema(conn: sqlite3.Connection) -> None:
-    """Initializes the database schema including all tables for documents, vectors, and the knowledge graph."""
+    """Initializes the database schema for a single-vectorizer design."""
     cursor = conn.cursor()
     try:
         cursor.execute("""
@@ -60,12 +60,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             full_text TEXT, metadata TEXT, added_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
         );""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_doc_file_path ON documents (file_path);")
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS vectorization_methods (
-            method_id INTEGER PRIMARY KEY AUTOINCREMENT, method_name TEXT UNIQUE NOT NULL, method_type TEXT NOT NULL,
-            vector_dim INTEGER NOT NULL, vector_dtype TEXT NOT NULL, params TEXT
-        );""")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_method_name ON vectorization_methods (method_name);")
+        
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS chunks (
             chunk_id INTEGER PRIMARY KEY AUTOINCREMENT, doc_id INTEGER NOT NULL, chunk_text BLOB NOT NULL,
@@ -75,16 +70,20 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         );""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunk_doc_id ON chunks (doc_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunk_graph_processed_at ON chunks (graph_processed_at);")
+
+        # The vectors table is simplified, removing method_id.
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS vectors (
-            vector_id INTEGER PRIMARY KEY AUTOINCREMENT, chunk_id INTEGER NOT NULL, method_id INTEGER NOT NULL,
-            vector_data BLOB NOT NULL, FOREIGN KEY (chunk_id) REFERENCES chunks (chunk_id) ON DELETE CASCADE,
-            FOREIGN KEY (method_id) REFERENCES vectorization_methods (method_id) ON DELETE CASCADE,
-            UNIQUE (chunk_id, method_id)
+            vector_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chunk_id INTEGER NOT NULL UNIQUE, -- Each chunk has only one vector now
+            vector_data BLOB NOT NULL,
+            FOREIGN KEY (chunk_id) REFERENCES chunks (chunk_id) ON DELETE CASCADE
         );""")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_vector_method_id ON vectors (method_id);")
         
+        # This table now stores vectorizer info.
         cursor.execute("CREATE TABLE IF NOT EXISTS store_metadata (key TEXT PRIMARY KEY, value TEXT);")
+        
+        # Graph-related tables remain unchanged.
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS graph_nodes (
             node_id INTEGER PRIMARY KEY AUTOINCREMENT, node_label TEXT NOT NULL, node_properties TEXT,
@@ -110,7 +109,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         );""")
 
         conn.commit()
-        ASCIIColors.debug("Database schema verified/initialized successfully.")
+        ASCIIColors.debug("Database schema verified/initialized successfully (single vectorizer design).")
     except sqlite3.Error as e:
         conn.rollback()
         raise DatabaseError(f"Schema initialization error: {e}") from e
@@ -124,68 +123,44 @@ def add_document_record(conn: sqlite3.Connection, file_path: str, full_text: str
         doc_id = cursor.lastrowid
         if doc_id is None: raise DatabaseError(f"Failed to get lastrowid for document '{file_path}'.")
         return doc_id
-    except sqlite3.IntegrityError as e:
+    except sqlite3.IntegrityError:
+        # If path is not unique, get the existing ID.
         existing_id = get_document_id_by_path(conn, file_path)
         if existing_id is not None: return existing_id
-        raise DatabaseError(f"IntegrityError for '{file_path}', but could not retrieve existing ID.") from e
+        raise 
     except sqlite3.Error as e:
         raise DatabaseError(f"Error inserting document '{file_path}': {e}") from e
 
 def get_document_id_by_path(conn: sqlite3.Connection, file_path: str) -> Optional[int]:
     cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT doc_id FROM documents WHERE file_path = ?", (file_path,))
-        result = cursor.fetchone()
-        return result[0] if result else None
-    except sqlite3.Error as e:
-        raise DatabaseError(f"Error fetching doc_id for '{file_path}': {e}") from e
-
-def add_or_get_vectorization_method(conn: sqlite3.Connection, name: str, type: str, dim: int, dtype: str, params: Optional[str] = None) -> int:
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT method_id FROM vectorization_methods WHERE method_name = ?", (name,))
-        result = cursor.fetchone()
-        if result: return result[0]
-        cursor.execute("INSERT INTO vectorization_methods (method_name, method_type, vector_dim, vector_dtype, params) VALUES (?, ?, ?, ?, ?)",
-                       (name, type, dim, dtype, params or '{}'))
-        method_id = cursor.lastrowid
-        if method_id is None: raise DatabaseError(f"Failed to get lastrowid for vectorizer '{name}'.")
-        return method_id
-    except sqlite3.Error as e:
-        raise DatabaseError(f"Error adding/getting vectorizer '{name}': {e}") from e
+    cursor.execute("SELECT doc_id FROM documents WHERE file_path = ?", (file_path,))
+    result = cursor.fetchone()
+    return result[0] if result else None
 
 def add_chunk_record(conn: sqlite3.Connection, doc_id: int, text: Union[str, bytes], start: int, end: int, seq: int, tags: Optional[str] = None, is_encrypted: bool = False, encryption_metadata: Optional[bytes] = None) -> int:
     sql = "INSERT INTO chunks (doc_id, chunk_text, start_pos, end_pos, chunk_seq, tags, is_encrypted, encryption_metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     cursor = conn.cursor()
-    try:
-        cursor.execute(sql, (doc_id, text, start, end, seq, tags, 1 if is_encrypted else 0, encryption_metadata))
-        chunk_id = cursor.lastrowid
-        if chunk_id is None: raise DatabaseError(f"Failed to get lastrowid for chunk (doc={doc_id}, seq={seq}).")
-        return chunk_id
-    except sqlite3.Error as e:
-        raise DatabaseError(f"Error inserting chunk (doc={doc_id}, seq={seq}): {e}") from e
+    cursor.execute(sql, (doc_id, text, start, end, seq, tags, 1 if is_encrypted else 0, encryption_metadata))
+    chunk_id = cursor.lastrowid
+    if chunk_id is None: raise DatabaseError(f"Failed to get lastrowid for chunk (doc={doc_id}, seq={seq}).")
+    return chunk_id
 
-def add_vector_record(conn: sqlite3.Connection, chunk_id: int, method_id: int, vector: np.ndarray) -> None:
-    sql = "INSERT OR IGNORE INTO vectors (chunk_id, method_id, vector_data) VALUES (?, ?, ?)"
+def add_vector_record(conn: sqlite3.Connection, chunk_id: int, vector: np.ndarray) -> None:
+    """Adds a vector for a given chunk, simplified for single-vectorizer design."""
+    sql = "INSERT OR IGNORE INTO vectors (chunk_id, vector_data) VALUES (?, ?)"
     try:
-        conn.execute(sql, (chunk_id, method_id, vector))
+        conn.execute(sql, (chunk_id, vector))
     except sqlite3.Error as e:
-        raise DatabaseError(f"Error inserting vector (chunk={chunk_id}, method={method_id}): {e}") from e
+        raise DatabaseError(f"Error inserting vector for chunk={chunk_id}: {e}") from e
 
 # --- Metadata Functions ---
 def set_store_metadata(conn: sqlite3.Connection, key: str, value: str) -> None:
-    try:
-        conn.execute("INSERT OR REPLACE INTO store_metadata (key, value) VALUES (?, ?)", (key, value))
-    except sqlite3.Error as e:
-        raise DatabaseError(f"Error setting store metadata '{key}': {e}") from e
+    conn.execute("INSERT OR REPLACE INTO store_metadata (key, value) VALUES (?, ?)", (key, value))
 
 def get_store_metadata(conn: sqlite3.Connection, key: str) -> Optional[str]:
-    try:
-        cursor = conn.execute("SELECT value FROM store_metadata WHERE key = ?", (key,))
-        result = cursor.fetchone()
-        return result[0] if result else None
-    except sqlite3.Error as e:
-        raise DatabaseError(f"Error getting store metadata for key '{key}': {e}") from e
+    cursor = conn.execute("SELECT value FROM store_metadata WHERE key = ?", (key,))
+    result = cursor.fetchone()
+    return result[0] if result else None
 
 # --- Graph Node Functions ---
 def add_or_update_graph_node(conn: sqlite3.Connection, label: str, properties: Dict[str, Any], unique_signature: str) -> int:
