@@ -29,49 +29,39 @@ class OpenAIVectorizer(BaseVectorizer):
 
     Requires the `openai` Python library to be installed (`pip install openai`).
     An OpenAI API key is required, which can be provided via the
-    `model_identifier_string` or the `OPENAI_API_KEY` environment variable.
+    `model_config` or the `OPENAI_API_KEY` environment variable.
 
-    The `model_identifier_string` is used to specify the OpenAI model name
-    and an optional API key. The format is:
-    `"model_name"` or `"model_name::api_key"`.
-    For example: `"text-embedding-ada-002"`
-    or `"text-embedding-3-small::sk-yourSecretOpenAIKey"`.
+    The `model_config` dictionary specifies the OpenAI model and connection
+    parameters.
+    Example:
+    `{"model": "text-embedding-3-small", "api_key": "sk-...", "base_url": "..."}`
 
-    If the API key is not provided in the `model_identifier_string`,
-    the client will attempt to use the `OPENAI_API_KEY` environment variable.
+    If the API key is not provided in the config, the client will attempt to
+    use the `OPENAI_API_KEY` environment variable.
 
     Attributes:
-        model_name (str): The name of the OpenAI model to use for embeddings
-                          (e.g., "text-embedding-ada-002").
+        model_name (str): The name of the OpenAI model to use for embeddings.
         api_key (Optional[str]): The OpenAI API key, if provided directly.
         client (openai.OpenAI): The OpenAI client instance.
     """
 
-    def __init__(self,
-                 model_identifier_string: str,
-                 params: Optional[Dict[str, Any]] = None,
-                 **kwargs):
+    def __init__(self, model_config: Dict[str, Any], **kwargs):
         """
         Initializes the OpenAIVectorizer.
 
-        Parses the model identifier string, sets up the OpenAI client,
-        and verifies the model by fetching a test embedding to determine its dimension.
+        Parses the model config, sets up the OpenAI client, and verifies the
+        model by fetching a test embedding to determine its dimension.
 
         Args:
-            model_identifier_string: A string identifying the OpenAI model,
-                                     and optionally an API key.
-                                     Format: "model_name[::api_key][::host_address]".
-                                     Example: "text-embedding-ada-002" or
-                                              "text-embedding-ada-002::YOUR_API_KEY" or
-                                              "text-embedding-ada-002::YOUR_API_KEY::http://localhost:8080".
-            params: Optional dictionary of additional parameters. Not currently used by this vectorizer
-                    but included for interface consistency.
+            model_config: A dictionary containing the vectorizer's configuration.
+                          Must contain a "model" key. Can also contain "api_key"
+                          and "base_url".
+                          Example: `{"model": "text-embedding-ada-002"}`
 
         Raises:
             ConfigurationError: If the 'openai' library is not installed, if
-                                the `model_identifier_string` is malformed,
-                                if the API key is missing or invalid, or if the
-                                specified model is not found.
+                                the `model_config` is invalid, if the API key
+                                is missing or invalid, or if the model is not found.
             VectorizationError: If connection to OpenAI API fails during the test,
                                 or the model doesn't return valid embeddings.
         """
@@ -84,43 +74,31 @@ class OpenAIVectorizer(BaseVectorizer):
             ASCIIColors.error(msg)
             raise ConfigurationError(msg)
 
-        if not model_identifier_string or not isinstance(model_identifier_string, str):
-            msg = "OpenAI `model_identifier_string` must be a non-empty string."
+        if not isinstance(model_config, dict) or "model" not in model_config:
+            msg = "OpenAI vectorizer config must be a dictionary with a 'model' key."
             ASCIIColors.error(msg)
             raise ConfigurationError(msg)
 
-        parts = model_identifier_string.split('::')
-        if not parts[0].strip():
-            msg = (f"Invalid OpenAI model identifier string: '{model_identifier_string}'. "
-                   "Model name (first part) cannot be empty. "
-                   "Expected format 'model_name' or 'model_name::api_key'.")
-            ASCIIColors.error(msg)
-            raise ConfigurationError(msg)
+        self.model_name: str = model_config["model"]
+        self.api_key: Optional[str] = model_config.get("api_key")
+        self.base_url: Optional[str] = model_config.get("base_url")
 
-        self.model_name: str = parts[0].strip()
-        self.api_key: Optional[str] = None
-        if len(parts) > 1 and parts[1].strip():
-            self.api_key = parts[1].strip()
-            ASCIIColors.info(f"Using API key provided in model_identifier_string for OpenAI client.")
+        if self.api_key:
+            ASCIIColors.info("Using API key provided in vectorizer_config for OpenAI client.")
         else:
-            ASCIIColors.info(f"API key not in model_identifier_string. OpenAI client will use OPENAI_API_KEY env var if set.")
+            ASCIIColors.info("API key not in config. OpenAI client will use OPENAI_API_KEY env var if set.")
 
-        self.base_url: Optional[str] = None
-        if len(parts) > 2 and parts[2].strip():
-            self.base_url = parts[2].strip()
         ASCIIColors.info(f"Initializing OpenAI client. Model: {self.model_name}")
         try:
             # Instantiate the OpenAI client
-            # If self.api_key is None, OpenAI client will look for OPENAI_API_KEY env var.
-            self.client: openai.OpenAI = openai.OpenAI(api_key=self.api_key,base_url=self.base_url)
+            self.client: openai.OpenAI = openai.OpenAI(api_key=self.api_key, base_url=self.base_url)
 
             # Test connection and get embedding dimension by sending a dummy prompt
             ASCIIColors.debug(f"Testing OpenAI model '{self.model_name}' and retrieving dimension...")
-            test_prompt = "hello world"  # A generic, simple prompt
-            
+            test_prompt = "hello world"
             response = self.client.embeddings.create(
                 model=self.model_name,
-                input=[test_prompt] # API expects a list of strings
+                input=[test_prompt]
             )
 
             if not response.data or not response.data[0].embedding:
@@ -131,7 +109,7 @@ class OpenAIVectorizer(BaseVectorizer):
             
             embedding = response.data[0].embedding
 
-            if not isinstance(embedding, list) or not embedding: # Should be caught by above, but defensive
+            if not isinstance(embedding, list) or not embedding:
                 msg = (f"OpenAI model '{self.model_name}' returned an invalid embedding structure "
                        f"for test prompt. Embedding: {embedding}")
                 ASCIIColors.error(msg)
@@ -139,17 +117,17 @@ class OpenAIVectorizer(BaseVectorizer):
 
             self._dim = len(embedding)
             if self._dim == 0:
-                msg = (f"OpenAI model '{self.model_name}' returned a zero-dimension embedding.")
+                msg = f"OpenAI model '{self.model_name}' returned a zero-dimension embedding."
                 ASCIIColors.error(msg)
                 raise VectorizationError(msg)
 
-            self._dtype = np.dtype(np.float32) # OpenAI embeddings are float, float32 is standard.
+            self._dtype = np.dtype(np.float32)
             ASCIIColors.info(f"OpenAI model '{self.model_name}' ready. Dimension: {self._dim}, Dtype: {self._dtype.name}")
 
         except _OpenAIAuthenticationError as e:
             msg = (f"OpenAI API authentication error for model '{self.model_name}': "
                    f"HTTP {e.http_status if hasattr(e, 'http_status') else 'N/A'} - {e.code if hasattr(e, 'code') else 'N/A'} - {e.message}. "
-                   "Please check your API key (from model_identifier_string or OPENAI_API_KEY env var).")
+                   "Please check your API key (from vectorizer_config or OPENAI_API_KEY env var).")
             ASCIIColors.error(msg)
             raise ConfigurationError(msg) from e
         except _OpenAINotFoundError as e:
@@ -158,26 +136,12 @@ class OpenAIVectorizer(BaseVectorizer):
                    "Ensure the model name is correct and available to your API key.")
             ASCIIColors.error(msg)
             raise ConfigurationError(msg) from e
-        except _OpenAIBadRequestError as e: # e.g. if test prompt was empty, or other model config issue
-             msg = (f"OpenAI API bad request during test for model '{self.model_name}': "
-                   f"HTTP {e.http_status if hasattr(e, 'http_status') else 'N/A'} - {e.code if hasattr(e, 'code') else 'N/A'} - {e.message}.")
-             ASCIIColors.error(msg)
-             raise VectorizationError(msg) from e
-        except _OpenAIRateLimitError as e:
-            msg = (f"OpenAI API rate limit hit during test for model '{self.model_name}': "
-                   f"HTTP {e.http_status if hasattr(e, 'http_status') else 'N/A'} - {e.code if hasattr(e, 'code') else 'N/A'} - {e.message}.")
-            ASCIIColors.error(msg)
-            raise VectorizationError(msg) from e
-        except _OpenAIAPIConnectionError as e:
-            msg = f"OpenAI API connection error for model '{self.model_name}': {e}. Check network and OpenAI API status."
-            ASCIIColors.error(msg)
-            raise VectorizationError(msg) from e
-        except _OpenAIAPIError as e: # Catch other OpenAI API errors
+        except (_OpenAIBadRequestError, _OpenAIRateLimitError, _OpenAIAPIConnectionError, _OpenAIAPIError) as e:
             msg = (f"OpenAI API error for model '{self.model_name}': "
                    f"HTTP {e.http_status if hasattr(e, 'http_status') else 'N/A'} - {e.code if hasattr(e, 'code') else 'N/A'} - {e.message}.")
             ASCIIColors.error(msg)
             raise VectorizationError(msg) from e
-        except Exception as e: # Catch other unexpected errors
+        except Exception as e:
             msg = f"Failed to initialize OpenAI vectorizer or test model '{self.model_name}': {e}"
             ASCIIColors.error(msg, exc_info=True)
             raise VectorizationError(msg) from e
@@ -232,14 +196,10 @@ class OpenAIVectorizer(BaseVectorizer):
                     raise VectorizationError(msg)
 
                 for i, embedding_data in enumerate(response.data):
-                    # The OpenAI API documentation states that the order of embeddings in the 'data' list
-                    # corresponds to the order of the input texts.
-                    # The `embedding_data.index` field also confirms this.
                     original_idx = original_indices_for_api_texts[i]
                     
                     if embedding_data.index != i :
                          ASCIIColors.warning(f"OpenAI embedding index mismatch: expected {i}, got {embedding_data.index}. Relying on list order.")
-
 
                     embedding_vector = embedding_data.embedding
                     if not isinstance(embedding_vector, list) or len(embedding_vector) != self.dim:
@@ -256,38 +216,24 @@ class OpenAIVectorizer(BaseVectorizer):
                 status_info = (f"HTTP {e.http_status if hasattr(e, 'http_status') else 'N/A'} - "
                                f"{e.code if hasattr(e, 'code') else 'N/A'} - {e.message if hasattr(e, 'message') else str(e)}")
                 
-                # Try to identify which text might have caused it, if possible from error (often not for batch)
-                # For OpenAI, error messages sometimes contain `param` like `input.[ problematic_index ]`
-                failed_text_preview = "N/A (batch operation)" 
-                if hasattr(e, 'body') and e.body and 'param' in e.body: # type: ignore
-                    param_info = e.body['param'] # type: ignore
-                    if 'input.' in param_info: # type: ignore
-                        try:
-                            idx_str = param_info.split('.')[1].strip('[]') # type: ignore
-                            problematic_api_idx = int(idx_str)
-                            if 0 <= problematic_api_idx < len(actual_texts_to_embed):
-                                failed_text_preview = actual_texts_to_embed[problematic_api_idx][:50] + '...'
-                        except Exception:
-                            pass # Keep generic preview
-
+                failed_text_preview = "N/A (batch operation)"
                 msg = (f"OpenAI {err_type} during vectorization with model '{self.model_name}' "
                        f"(problematic text hint: '{failed_text_preview}'): {status_info}")
                 ASCIIColors.error(msg, exc_info=True)
                 raise VectorizationError(msg) from e
             except Exception as e:
-                failed_text_preview = "N/A (batch operation)" # In general exceptions, hard to know
+                failed_text_preview = "N/A (batch operation)"
                 msg = f"Unexpected error during OpenAI vectorization with '{self.model_name}' (text hint: '{failed_text_preview}'): {e}"
                 ASCIIColors.error(msg, exc_info=True)
                 raise VectorizationError(msg) from e
 
-        # Convert the list of lists/np.zeros into a 2D NumPy array
         embeddings_array = np.array(embeddings_results, dtype=self._dtype)
 
         if embeddings_array.ndim != 2 or embeddings_array.shape[0] != len(texts) or embeddings_array.shape[1] != self.dim:
              msg = (f"OpenAI vectorization resulted in unexpected shape {embeddings_array.shape}. "
                     f"Expected ({len(texts)}, {self.dim}). This indicates an internal logic error.")
              ASCIIColors.error(msg)
-             raise VectorizationError(msg) # Should not happen if logic is correct
+             raise VectorizationError(msg)
 
         ASCIIColors.debug(f"OpenAI vectorization complete. Output shape: {embeddings_array.shape}")
         return embeddings_array

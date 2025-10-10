@@ -55,7 +55,8 @@ safe_store is currently in Beta. The core API for both `SafeStore` (vectors) and
     *   Optional JSON metadata per document.
 *   **Encryption (Optional):** Encrypts `chunk_text` at rest (AES-128-CBC via `cryptography`).
 *   **Vectorization:**
-    *   Supports multiple methods (Sentence Transformers `st:`, TF-IDF `tfidf:`, OpenAI `openai:`, Cohere `cohere:`, Ollama `ollama:`).
+    *   Uses a clean `vectorizer_name` (e.g., "st", "tfidf", "openai") and a `vectorizer_config` dictionary for parameters.
+    *   Supports multiple vectorization methods: Sentence Transformers, TF-IDF, OpenAI, Cohere, Ollama.
     *   Manages vectorizer state (e.g., fitted TF-IDF models).
 *   **Querying (`query`):** Cosine similarity search for `top_k` relevant chunks.
 *   **Management:** `add_vectorization`, `remove_vectorization`, `list_documents`, `list_vectorization_methods`.
@@ -65,14 +66,10 @@ safe_store is currently in Beta. The core API for both `SafeStore` (vectors) and
 *   **LLM Integration for Graph Building:**
     *   Uses a user-provided `llm_executor_callback` (takes prompt string, returns LLM response string).
     *   Internal prompts for extracting nodes and relationships from text chunks.
-    *   Handles de-duplication and property updates of nodes.
-    *   Links graph nodes to source text chunks.
 *   **Graph Building Methods:** `process_chunk_for_graph`, `build_graph_for_document`, `build_graph_for_all_documents`.
 *   **LLM Integration for Graph Querying (`query_graph`):**
-    *   Uses `llm_executor_callback` with an internal query-parsing prompt to translate Natural Language Query (NLQ) into structured graph query parameters.
-    *   Performs graph traversal.
-    *   Output Modes: `"graph_only"`, `"chunks_summary"`, `"full"`.
-*   **Direct Graph Read Methods:** `get_node_details`, `get_nodes_by_label`, `get_relationships`, `find_neighbors`, `get_chunks_for_node`.
+    *   Uses `llm_executor_callback` to translate Natural Language Queries into structured graph queries.
+*   **Direct Graph Read Methods:** `get_node_details`, `get_nodes_by_label`, `find_neighbors`, etc.
 *   **Encryption Awareness:** Decrypts chunk text for LLM processing if `encryption_key` is provided.
 
 ---
@@ -89,31 +86,13 @@ Install optional dependencies based on the features you need:
 # For Sentence Transformers embedding models
 pip install safe-store[sentence-transformers]
 
-# For TF-IDF vectorization
-pip install safe-store[tfidf]
-
-# For Ollama embedding models (requires Ollama server running)
-pip install safe-store[ollama] # Installs 'ollama' library
-
 # For OpenAI embedding models (requires OpenAI API key)
-pip install safe-store[openai] # Installs 'openai' library
-
-# For Cohere embedding models (requires Cohere API key)
-pip install safe-store[cohere] # Installs 'cohere' library
-
-# For parsing PDF, DOCX, HTML files
-pip install safe-store[parsing]
-
-# For encrypting chunk text at rest
-pip install safe-store[encryption]
-
-# For the Web User Interface and its LLM client (lollms-client)
-pip install safe-store[webui]
+pip install safe-store[openai]
 
 # To install everything (all vectorizers, parsers, encryption, webui):
 pip install safe-store[all] 
 ```
-**Note:** For `openai:`, `cohere:`, and `ollama:` vectorizers, you need to provide API keys or ensure the respective services are accessible as per their documentation. The WebUI uses `lollms-client`, so ensure your LLM service (e.g., Ollama) is running and configured in `webui/config.toml`.
+**Note:** For API-based vectorizers like "openai", you need to provide API keys in the `vectorizer_config` or ensure environment variables are set.
 
 ---
 
@@ -124,9 +103,10 @@ This example shows basic `SafeStore` usage followed by `GraphStore` graph buildi
 ```python
 import safe_store
 from safe_store import GraphStore, LogLevel
-from lollms_client import LollmsClient # Example LLM client
+from lollms_client import LollmsClient
 from pathlib import Path
-import shutil # For cleanup
+import shutil
+from typing import Optional
 
 # --- 0. Configuration & LLM Setup ---
 DB_FILE = "quickstart_store.db"
@@ -136,29 +116,27 @@ DOC_DIR = Path("temp_docs_qs")
 if DOC_DIR.exists(): shutil.rmtree(DOC_DIR)
 DOC_DIR.mkdir(exist_ok=True, parents=True)
 Path(DB_FILE).unlink(missing_ok=True)
-Path(f"{DB_FILE}.lock").unlink(missing_ok=True)
 
+# Vectorizer configuration
+vectorizer_name = "st"
+vectorizer_config = {"model": "all-MiniLM-L6-v2"}
 
 # LollmsClient setup (replace with your actual LLM server config)
 LC_CLIENT: Optional[LollmsClient] = None
 def init_llm():
     global LC_CLIENT
     try:
-        # Example: Using Ollama with mistral
-        LC_CLIENT = LollmsClient(binding_name="ollama", model_name="mistral:latest", host_address="http://localhost:11434")
-        if not hasattr(LC_CLIENT, 'binding') or LC_CLIENT.binding is None: # Basic check
-             raise ConnectionError("LLM client binding not loaded.")
+        LC_CLIENT = LollmsClient() # Assumes default connection
         print("LLM Client Initialized for GraphStore.")
         return True
     except Exception as e:
-        print(f"LLM Client init failed: {e}. Graph features needing LLM will not work.")
+        print(f"LLM Client init failed: {e}. Graph features will not work.")
         return False
 
 # LLM Executor Callback for GraphStore
-def llm_executor(prompt_to_llm: str) -> str:
-    if not LC_CLIENT: raise ConnectionError("LLM Client not ready for executor callback.")
-    # generate_code expects LLM to output markdown ```json ... ```
-    response = LC_CLIENT.generate_code(prompt_to_llm, language="json", temperature=0.1, max_size=4096)
+def llm_executor(prompt: str) -> str:
+    if not LC_CLIENT: raise ConnectionError("LLM Client not ready.")
+    response = LC_CLIENT.generate_text(prompt, max_size=4096)
     return response if response else ""
 
 if not init_llm():
@@ -174,16 +152,26 @@ print("\n--- SafeStore Operations ---")
 store = safe_store.SafeStore(DB_FILE, log_level=LogLevel.INFO)
 doc_id_1 = -1
 with store:
-    store.add_document(doc1_path, vectorizer_name="st:all-MiniLM-L6-v2", chunk_size=100)
+    store.add_document(
+        doc1_path,
+        vectorizer_name=vectorizer_name,
+        vectorizer_config=vectorizer_config,
+        chunk_size=100
+    )
     docs = store.list_documents()
-    if docs: doc_id_1 = docs[0]['doc_id']
-    print(f"Document '{doc1_path.name}' (ID: {doc_id_1}) indexed by SafeStore.")
+    if docs: doc_id_1 = docs['doc_id']
+    print(f"Document '{doc1_path.name}' (ID: {doc_id_1}) indexed.")
     
-    query_results = store.query("AI research in Geneva", top_k=1)
+    query_results = store.query(
+        "AI research in Geneva",
+        top_k=1,
+        vectorizer_name=vectorizer_name,
+        vectorizer_config=vectorizer_config
+    )
     if query_results:
-        print(f"SafeStore query result for 'AI research in Geneva': {query_results[0]['chunk_text'][:100]}...")
+        print(f"SafeStore query result: {query_results['chunk_text'][:100]}...")
 
-if LC_CLIENT and doc_id_1 != -1: # Proceed with GraphStore only if LLM and doc are ready
+if LC_CLIENT and doc_id_1 != -1:
     # --- 3. Use GraphStore to Build & Query Knowledge Graph ---
     print("\n--- GraphStore Operations ---")
     graph_store = GraphStore(
@@ -194,129 +182,41 @@ if LC_CLIENT and doc_id_1 != -1: # Proceed with GraphStore only if LLM and doc a
     with graph_store:
         print(f"Building graph for document ID: {doc_id_1}...")
         graph_store.build_graph_for_document(doc_id_1)
-        print("Graph building for document complete.")
-
-        aris_nodes = graph_store.get_nodes_by_label("Person", limit=5)
-        print(f"\nFound Person nodes: {[n.get('properties',{}).get('name') for n in aris_nodes if n.get('properties')]}")
+        print("Graph building complete.")
 
         nl_query = "Who is the CEO of QuantumLeap AI and where is it based?"
         print(f"\nGraphStore NLQ: \"{nl_query}\"")
         
         graph_data = graph_store.query_graph(nl_query, output_mode="graph_only")
-        print("\nQuery Result (graph_only):")
         if graph_data.get('nodes'): 
-            print(f"  Sample Node: {graph_data['nodes'][0]['label']} - {graph_data['nodes'][0]['properties']}")
+            print(f"  Sample Node from NLQ result: {graph_data['nodes']['properties']}")
 
-# Optional: Cleanup after example
-# shutil.rmtree(DOC_DIR, ignore_errors=True)
-# Path(DB_FILE).unlink(missing_ok=True)
-# Path(f"{DB_FILE}.lock").unlink(missing_ok=True)
 ```
 
-*(See `examples/` directory for more detailed usage, including `graph_usage.py`.)*
+*(See `examples/` directory for more detailed usage.)*
 
 ---
 
 ## 🖥️ Web User Interface (Experimental)
 
-`safe_store` includes an experimental Web User Interface (WebUI) that allows you to:
-
-*   **Upload documents:** Add new documents to your `SafeStore` instance.
-*   **Trigger graph building:** After uploading, the WebUI automatically initiates graph extraction for the new document using `GraphStore`.
-*   **Visualize the knowledge graph:** View the extracted nodes and relationships in an interactive graph visualization.
-*   **Inspect node/edge details:** Click on elements in the graph to see their properties.
-
-### Prerequisites for WebUI
-
-1.  **Install WebUI dependencies:**
-    ```bash
-    pip install safe-store[webui]
-    # This installs uvicorn, fastapi, python-multipart, toml, and lollms-client.
-    ```
-2.  **LLM Server:** The WebUI (and `GraphStore`) relies on an LLM for graph extraction. You need a running LLM server that `lollms-client` can connect to. Ollama is a common choice.
-    *   Ensure Ollama (or your chosen backend for `lollms-client`) is running.
-    *   Ensure the model specified in the WebUI's configuration is pulled/available (e.g., `ollama pull mistral:latest`).
+`safe_store` includes an experimental Web User Interface (WebUI) that allows you to upload documents, trigger graph building, and visualize the knowledge graph.
 
 ### Launching the WebUI
-
-Once `safe_store` is installed with the `[webui]` extra, you can launch the WebUI using the command-line:
 
 ```bash
 safestore-webui
 ```
-
-This command will:
-1.  Look for a `config.toml` file in the `safe_store/webui/` directory (within your Python environment's `site-packages` where `safe_store` is installed). If not found, it will create a default `config.toml` there.
-2.  Start a Uvicorn server. By default, it will be accessible at `http://0.0.0.0:8000`.
+This starts the UI, accessible at `http://0.0.0.0:8000`.
 
 ### Configuring the WebUI
 
-The WebUI's behavior is controlled by the `config.toml` file. When first launched via `safestore-webui`, if `config.toml` doesn't exist in the expected location (`.../site-packages/safe_store/webui/config.toml`), a default one is created. You can then edit this file.
+The WebUI's behavior is controlled by `config.toml`. A default is created in `.../site-packages/safe_store/webui/` on the first run.
 
-**Default `config.toml` structure (located in `.../site-packages/safe_store/webui/` after first run):**
-
-```toml
-[lollms]
-binding_name = "ollama" # Examples: "ollama", "lollms", "openai"
-host_address = "http://localhost:11434" # e.g., "http://localhost:9600" for lollms, null for openai
-model_name = "mistral:latest" # e.g., "mistral:latest", "gpt-4", specific model path for lollms
-# service_key = null # Only if needed, e.g. for OpenAI if not using env var
-
-[safestore]
-db_file = "webui_store.db" # Path to the SQLite DB file used by the WebUI
-doc_dir = "webui_safestore_docs" # Directory where uploaded files are temporarily copied for SafeStore processing
-default_vectorizer = "st:all-MiniLM-L6-v2"
-chunk_size = 250
-chunk_overlap = 40
-
-[graphstore]
-# graph_extraction_prompt_template_file = null # Path to custom extraction prompt (optional)
-# query_parsing_prompt_template_file = null # Path to custom query parsing prompt (optional)
-
-[webui]
-host = "0.0.0.0"
-port = 8000
-temp_upload_dir = "temp_uploaded_files_webui" # Initial upload destination before copying to doc_dir
-log_level = "INFO" # DEBUG, INFO, WARNING, ERROR, CRITICAL
-```
-
-**Key `config.toml` settings for WebUI:**
-
-*   **`[lollms]` section:** Configure how `lollms-client` connects to your LLM.
-    *   `binding_name`: The `lollms-client` binding (e.g., "ollama").
-    *   `host_address`: URL of your LLM server (e.g., Ollama's default `http://localhost:11434`).
-    *   `model_name`: The specific model for graph extraction (e.g., `mistral:latest`).
-*   **`[safestore]` section:**
-    *   `db_file`: The SQLite database file the WebUI will use. It will be created if it doesn't exist.
-    *   `doc_dir`: A directory where files uploaded via the WebUI are placed for `SafeStore` to process.
-*   **`[webui]` section:**
-    *   `host`, `port`: Network interface and port for the WebUI.
-    *   `temp_upload_dir`: A temporary staging area for uploads.
-    *   `log_level`: Logging level for the WebUI backend console output.
-
-**Using the WebUI:**
-
-1.  **Launch:** Run `safestore-webui` in your terminal.
-2.  **Access:** Open your web browser and go to `http://localhost:8000` (or the configured host/port).
-3.  **Upload Document:**
-    *   Use the "Upload Document" section.
-    *   Select a file (`.txt`, `.pdf`, `.docx`, `.html` are supported if parsing extras are installed).
-    *   Click "Upload & Process".
-4.  **Processing:**
-    *   The backend will save the file, add it to `SafeStore` (creating vector embeddings using the `default_vectorizer` from `config.toml`), and then trigger `GraphStore` to build graph elements from the document's text chunks using the configured LLM.
-    *   Status messages will appear below the upload form.
-5.  **View Graph:**
-    *   The graph visualization should update automatically after processing (or on page load if data already exists).
-    *   You can pan, zoom, and drag nodes.
-6.  **Inspect Details:**
-    *   Click on a node or an edge in the graph.
-    *   Its details (label, properties) will appear in the "Selection Details" panel on the sidebar.
-
-**Notes on WebUI:**
-*   The WebUI currently uses the `default_vectorizer` specified in `config.toml` when `SafeStore` indexes uploaded documents.
-*   Graph extraction and natural language querying in the WebUI (if implemented later) will use the LLM configured in the `[lollms]` section.
-*   The graph visualization might become slow with very large graphs. The WebUI currently fetches a limited number of nodes/edges for display.
-*   This WebUI is experimental and primarily for demonstration and basic interaction.
+**Key `config.toml` settings:**
+*   **`[lollms]`**: Configure your LLM connection for graph extraction.
+*   **`[safestore]`**: Define the database and document directories for the WebUI.
+    *   `default_vectorizer_name`: The name of the vectorizer (e.g., "st").
+    *   `default_vectorizer_config`: A TOML inline table or multiline table with the vectorizer's config. Example: `default_vectorizer_config = '{model = "all-MiniLM-L6-v2"}'`
 
 ---
 
@@ -324,32 +224,21 @@ log_level = "INFO" # DEBUG, INFO, WARNING, ERROR, CRITICAL
 
 ### `SafeStore`
 *   Manages vector embeddings for semantic search.
-*   Focuses on indexing documents, chunking, vectorizing text, and similarity queries.
+*   Uses a `vectorizer_name` and `vectorizer_config` to specify how text is converted to vectors.
 
 ### `GraphStore`
 *   Builds and queries a knowledge graph from text data.
-*   **LLM Executor Callback:** You provide a simple function `(prompt_string: str) -> llm_response_string`. `GraphStore` uses this to send its internally crafted prompts (for graph extraction or query parsing) to your chosen LLM.
-*   **Internal Prompts:** `GraphStore` contains default prompt templates optimized for extracting graph data and for parsing natural language queries.
-*   **Graph Querying (`query_graph`):** Translates natural language to graph traversals, returning subgraphs or linked text chunks.
+*   **LLM Executor Callback:** You provide a function `(prompt_string: str) -> llm_response_string` that `GraphStore` uses to communicate with your chosen LLM.
 
 ---
 ## 🪵 Logging & Concurrency
 
-*   **Logging:** Uses [`ascii_colors`](https://github.com/ParisNeo/ascii_colors). Configurable via `SafeStore(log_level=...)` or `GraphStore(log_level=...)`, or globally. The WebUI also uses `ascii_colors`, configured by `webui.log_level` in `config.toml`.
-*   **Concurrency:** `filelock` ensures process-safe writes for both `SafeStore` and `GraphStore` operations on the shared SQLite DB.
-
----
-
-## 🔮 Future Work
-
-*   **WebUI Enhancements:** Natural language query input, graph editing, metadata filtering.
-*   **Advanced Graph Traversal:** More complex pathfinding in `query_graph`.
-*   **Hybrid Search:** Combining vector similarity search with graph query results.
-*   **Async API.**
+*   **Logging:** Uses [`ascii_colors`](https://github.com/ParisNeo/ascii_colors). Configurable via `SafeStore(log_level=...)`.
+*   **Concurrency:** `filelock` ensures process-safe writes to the shared SQLite DB.
 
 ---
 
 ## 🤝 Contributing & License
 
 Contributions welcome! Please open an issue or PR on [GitHub](https://github.com/ParisNeo/safe_store).
-Licensed under Apache 2.0. See [LICENSE](LICENSE).
+Licensed under Apache 2.0.

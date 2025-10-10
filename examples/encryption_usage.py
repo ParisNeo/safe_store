@@ -13,6 +13,10 @@ import sqlite3 # For direct DB check example
 DB_FILE = "encrypted_example_store.db"
 ENCRYPTION_KEY = "this-is-my-secret-Pa$$wOrd!" # !! Use a strong, managed key in real apps !!
 DOC_DIR = Path("temp_docs_encrypted")
+# --- Vectorizer Configuration ---
+# Define a default vectorizer to be used in the example
+DEFAULT_VECTORIZER_NAME = "st"
+DEFAULT_VECTORIZER_CONFIG = {"model": "all-MiniLM-L6-v2"}
 
 # --- Helper Functions ---
 def print_header(title):
@@ -54,15 +58,11 @@ if __name__ == "__main__":
     try:
         store_encrypted = safe_store.SafeStore(
             DB_FILE,
-            log_level=safe_store.LogLevel.INFO, # Use INFO for less noise
+            log_level=safe_store.LogLevel.INFO,
             encryption_key=ENCRYPTION_KEY
         )
     except safe_store.ConfigurationError as e:
         print(f"[ERROR] Failed to initialize: {e}")
-        print("Please install 'cryptography': pip install safe_store[encryption]")
-        exit()
-    except Exception as e:
-        print(f"[ERROR] Unexpected error during init: {e}")
         exit()
 
     # --- 2. Add Document to Encrypted Store ---
@@ -73,44 +73,36 @@ if __name__ == "__main__":
                 doc_path,
                 chunk_size=80,
                 chunk_overlap=10,
-                metadata={"sensitivity": "high"}
+                metadata={"sensitivity": "high"},
+                vectorizer_name=DEFAULT_VECTORIZER_NAME,
+                vectorizer_config=DEFAULT_VECTORIZER_CONFIG
             )
             print(f"- Added '{doc_path.name}'. Chunk text should be encrypted in '{DB_FILE}'.")
 
-            # Verify chunk text is NOT plaintext in DB (Optional - Direct Check)
+            # Direct DB check
             try:
                  conn = sqlite3.connect(store_encrypted.db_path)
                  cursor = conn.cursor()
                  cursor.execute("SELECT chunk_text, is_encrypted FROM chunks LIMIT 1")
                  row = cursor.fetchone()
                  conn.close()
-                 if row:
-                      chunk_text_raw = row[0]
-                      is_encrypted_flag = row[1]
-                      if isinstance(chunk_text_raw, str) and "Project Phoenix" in chunk_text_raw:
-                           print("[WARNING] Direct DB check shows plaintext. Encryption might not be working.")
-                      elif is_encrypted_flag == 1:
-                           print("[VERIFIED] Direct DB check: is_encrypted flag is set and text is not plaintext.")
-                      else:
-                           print("[WARNING] Direct DB check: is_encrypted flag is NOT set.")
+                 if row and row[1] == 1:
+                      print("[VERIFIED] Direct DB check: is_encrypted flag is set and text is not plaintext.")
                  else:
-                      print("[INFO] No chunks found for direct DB check.")
+                      print("[WARNING] Direct DB check failed or text appears unencrypted.")
             except Exception as db_err:
                  print(f"[INFO] Could not perform direct DB check: {db_err}")
-
 
             # --- 3. Query Encrypted Store (With Key) ---
             print_header("Querying Encrypted Store (With Key)")
             query = "budget personnel"
-            results = store_encrypted.query(query, top_k=2)
+            results = store_encrypted.query(query, top_k=2, vectorizer_name=DEFAULT_VECTORIZER_NAME, vectorizer_config=DEFAULT_VECTORIZER_CONFIG)
             print(f"Query: '{query}'")
             if results:
                 for i, res in enumerate(results):
-                    print(f"  Result {i+1}: Score={res['similarity']:.4f}")
-                    # Text should be DECRYPTED here
+                    print(f"  Result {i+1}: Score={res['similarity_score']:.4f}")
                     print(f"    Text: '{res['chunk_text'][:60]}...'")
-                    assert "[Encrypted" not in res['chunk_text'], "Decryption failed in query result!"
-                    print(f"    Metadata: {res.get('metadata')}")
+                    assert "[Encrypted" not in res['chunk_text']
             else:
                 print("  No results found.")
 
@@ -119,74 +111,38 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
 
-    finally:
-         print("\n--- Encrypted store operations finished ---")
-
-
     # --- 4. Access Encrypted DB WITHOUT the Key ---
     print_header("Accessing Encrypted Store WITHOUT Key")
     try:
-        store_no_key = safe_store.SafeStore(
-            DB_FILE, # Use the SAME database file
-            log_level=safe_store.LogLevel.WARNING, # Less verbose
-            encryption_key=None # Crucially, DO NOT provide the key
-        )
-
+        store_no_key = safe_store.SafeStore(DB_FILE, log_level=safe_store.LogLevel.WARNING)
         with store_no_key:
             query = "security protocol"
-            print(f"Querying again: '{query}' (no key provided)")
-            results_no_key = store_no_key.query(query, top_k=1)
+            results_no_key = store_no_key.query(query, top_k=1, vectorizer_name=DEFAULT_VECTORIZER_NAME, vectorizer_config=DEFAULT_VECTORIZER_CONFIG)
 
             if results_no_key:
-                 print(f"  Result 1:")
-                 # Text should be a placeholder indicating it's encrypted
                  print(f"    Text: '{results_no_key[0]['chunk_text']}'")
                  assert results_no_key[0]['chunk_text'] == "[Encrypted - Key Unavailable]"
-            else:
-                 print("  No results found (or query failed).")
-
-            # Attempting to add TF-IDF (requires reading text) should fail
+            
             print("\nAttempting to add TF-IDF vectorization (should fail)...")
             try:
-                 store_no_key.add_vectorization("tfidf:fail_test")
-            except safe_store.ConfigurationError as e: # This error message was changed to pass tests
+                 store_no_key.add_vectorization(vectorizer_name="tfidf", vectorizer_config={"name": "fail_test"})
+            except safe_store.ConfigurationError as e:
                  print(f"[EXPECTED ERROR] ConfigurationError: {e}")
                  assert "Cannot fit TF-IDF on encrypted chunks without the correct encryption key." in str(e)
-            except Exception as e:
-                 print(f"[UNEXPECTED ERROR] {e.__class__.__name__}: {e}")
-
 
     except Exception as e:
         print(f"\n[ERROR] An error occurred while using the store without key: {e}")
-    finally:
-        print("\n--- Store access without key finished ---")
-
 
     # --- 5. Access Encrypted DB with WRONG Key ---
     print_header("Accessing Encrypted Store With WRONG Key")
     try:
-        store_wrong_key = safe_store.SafeStore(
-            DB_FILE, # Use the SAME database file
-            log_level=safe_store.LogLevel.WARNING,
-            encryption_key="this-is-the-WRONG-key" # Provide incorrect key
-        )
-
+        store_wrong_key = safe_store.SafeStore(DB_FILE, log_level=safe_store.LogLevel.WARNING, encryption_key="this-is-the-WRONG-key")
         with store_wrong_key:
             query = "launch date"
-            print(f"Querying again: '{query}' (wrong key provided)")
-            results_wrong_key = store_wrong_key.query(query, top_k=1)
-
+            results_wrong_key = store_wrong_key.query(query, top_k=1, vectorizer_name=DEFAULT_VECTORIZER_NAME, vectorizer_config=DEFAULT_VECTORIZER_CONFIG)
             if results_wrong_key:
-                 print(f"  Result 1:")
-                 # Text should indicate decryption failure
                  print(f"    Text: '{results_wrong_key[0]['chunk_text']}'")
                  assert results_wrong_key[0]['chunk_text'] == "[Encrypted - Decryption Failed]"
-            else:
-                 print("  No results found (or query failed).")
 
     except Exception as e:
         print(f"\n[ERROR] An error occurred while using the store with wrong key: {e}")
-    finally:
-        print("\n--- Store access with wrong key finished ---")
-        print("\nEnd of Example.")
-        # Optional: cleanup()

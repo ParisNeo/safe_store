@@ -1,4 +1,4 @@
-# safe_store/vectorization/methods/sentence_transformer.py
+# safe_store/vectorization/methods/st.py
 import numpy as np
 from typing import List, Optional, Dict, Any # Added Optional
 from ..base import BaseVectorizer
@@ -30,31 +30,36 @@ class STVectorizer(BaseVectorizer):
 
     DEFAULT_MODEL: str = "all-MiniLM-L6-v2"
 
-    def __init__(self, model_identifier_string: Optional[str] = None, params: Optional[Dict[str, Any]] = None, cache_folder: Optional[str] = None, **kwargs):
+    def __init__(self, model_config: Dict[str, Any], cache_folder: Optional[str] = None, **kwargs):
         """
         Initializes the SentenceTransformerVectorizer.
 
-        Loads the specified sentence-transformer model.
+        Loads the specified sentence-transformer model from the configuration.
 
         Args:
-            model_identifier_string: The name of the model to load from the
-                        sentence-transformers library (e.g., 'all-MiniLM-L6-v2').
-                        Defaults to `SentenceTransformerVectorizer.DEFAULT_MODEL`.
+            model_config: A dictionary containing the vectorizer's configuration.
+                          Must contain a "model" key with the name of the model
+                          to load (e.g., {"model": "all-MiniLM-L6-v2"}).
+            cache_folder: Optional path to a folder for caching downloaded models.
 
         Raises:
-            ConfigurationError: If the 'sentence-transformers' library is not installed.
+            ConfigurationError: If the 'sentence-transformers' library is not installed
+                                or if the "model" key is missing in model_config.
             VectorizationError: If the specified model cannot be loaded.
         """
         super().__init__(
-            vectorizer_name = "sentence_transformer"
+            vectorizer_name = "st"
         )
 
-        if  SentenceTransformer is None:
-            msg = "SentenceTransformerVectorizer requires 'sentence-transformers' library. Install with: pip install safe_store[sentence-transformers]\n_SENTENCE_TRANSFORMERS_AVAILABLE"
+        if SentenceTransformer is None:
+            msg = "STVectorizer requires 'sentence-transformers' library. Install with: pip install safe_store[sentence-transformers]"
             ASCIIColors.error(msg)
             raise ConfigurationError(msg)
 
-        self.model_name: str = model_identifier_string or self.DEFAULT_MODEL
+        self.model_name: str = model_config.get("model", self.DEFAULT_MODEL)
+        if not self.model_name:
+             raise ConfigurationError("STVectorizer config must include a 'model' key with the model name.")
+
         ASCIIColors.info(f"Loading Sentence Transformer model: {self.model_name}")
         try:
             # Instantiate the model
