@@ -8,7 +8,7 @@ from ...core.exceptions import ConfigurationError, VectorizationError
 from ascii_colors import ASCIIColors
 
 # each vectorizer must have a class name variable to be identified
-class_name = "LollmsChatVectorizer"
+class_name = "LollmsVectorizer"
 
 # Attempt import of openai and related error types, handle gracefully
 import pipmaster as pm
@@ -23,7 +23,7 @@ _OpenAIBadRequestError = openai.BadRequestError
 _OpenAIAPIConnectionError = openai.APIConnectionError
 _OPENAI_AVAILABLE = True
 
-class LollmsChatVectorizer(BaseVectorizer):
+class LollmsVectorizer(BaseVectorizer):
     """
     Vectorizes text using models from OpenAI via their API.
 
@@ -52,7 +52,7 @@ class LollmsChatVectorizer(BaseVectorizer):
                  params: Optional[Dict[str, Any]] = None,
                  **kwargs):
         """
-        Initializes the LollmsChatVectorizer.
+        Initializes the LollmsVectorizer.
 
         Parses the model identifier string, sets up the OpenAI client,
         and verifies the model by fetching a test embedding to determine its dimension.
@@ -79,7 +79,7 @@ class LollmsChatVectorizer(BaseVectorizer):
             vectorizer_name="lollms_chat"
         )
         if not _OPENAI_AVAILABLE or openai is None:
-            msg = ("LollmsChatVectorizer requires the 'openai' library. "
+            msg = ("LollmsVectorizer requires the 'openai' library. "
                    "Install with: pip install safe_store[openai] (or pip install openai)")
             ASCIIColors.error(msg)
             raise ConfigurationError(msg)
