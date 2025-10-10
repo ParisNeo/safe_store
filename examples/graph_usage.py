@@ -45,6 +45,16 @@ SIMPLE_ONTOLOGY = {
     "relationships": {"IS_RELATED_TO": {"description": "Indicates a general connection between two entities.", "source": "Entity", "target": "Entity"}}
 }
 
+# NEW: Ontology as a simple string of instructions
+STRING_ONTOLOGY = """
+- Extract People, Companies, and Products as nodes.
+- For 'People' nodes, extract their full name and any job title mentioned as properties.
+- For 'Companies' nodes, extract their full name and location as properties.
+- For 'Products' nodes, extract their name.
+- Create relationships like WORKS_AT, CEO_OF, and PRODUCES between these nodes.
+"""
+
+
 LC_CLIENT: Optional[LollmsClient] = None
 
 def initialize_lollms_client() -> bool:
@@ -76,12 +86,25 @@ def generate_answer_from_context(question: str, graph_data: Dict, chunks_data: O
     if graph_data and graph_data.get("nodes"):
         context_lines.append("\n[Graph Information]:")
         node_map = {n['node_id']: n for n in graph_data['nodes']}
+
+        def get_node_instance_name(node_id: int) -> str:
+            """Helper to get the best possible name for a node instance."""
+            node = node_map.get(node_id)
+            if not node:
+                return f"ID:{node_id}"
+            props = node.get('properties', {})
+            # Prioritize 'identifying_value', then 'name', then 'title' before falling back to ID.
+            return props.get('identifying_value') or props.get('name') or props.get('title') or f"ID:{node_id}"
+
         for node in graph_data['nodes']:
-            context_lines.append(f"- Node {node['node_id']} ({node['label']}): {json.dumps(node.get('properties', {}))}")
+            instance_name = get_node_instance_name(node['node_id'])
+            context_lines.append(f"- Instance '{instance_name}' (type: {node['label']}): {json.dumps(node.get('properties', {}))}")
+        
         for rel in graph_data.get('relationships', []):
-            src_name = node_map.get(rel['source_node_id'], {}).get('properties', {}).get('name', f"ID:{rel['source_node_id']}")
-            tgt_name = node_map.get(rel['target_node_id'], {}).get('properties', {}).get('name', f"ID:{rel['target_node_id']}")
+            src_name = get_node_instance_name(rel['source_node_id'])
+            tgt_name = get_node_instance_name(rel['target_node_id'])
             context_lines.append(f"- Relationship: '{src_name}' --[{rel['type']}]--> '{tgt_name}'")
+
     if chunks_data:
         context_lines.append("\n[Relevant Text Snippets]:")
         for i, chunk in enumerate(chunks_data):
@@ -159,7 +182,6 @@ if __name__ == "__main__":
             print_header("DEMO 1.2: Manually Editing the Graph")
             ASCIIColors.info("We will manually add a new product 'ChronoLeap' and link it to an 'Acme' company.")
             
-            # **CORRECTED:** Use a flexible search to find the Acme node
             company_nodes = graph_store_detailed.get_nodes_by_label("Company")
             acme_node = next((n for n in company_nodes if 'acme' in n.get('properties', {}).get('name', '').lower()), None)
 
@@ -197,6 +219,22 @@ if __name__ == "__main__":
                 for n in simple_nodes: print(f"  - ID: {n['node_id']}, Props: {n.get('properties')}")
             else:
                 print("  No 'Entity' nodes found.")
+            
+            print_header("PASS 3: Rebuilding Graph with STRING-BASED Ontology")
+            clear_graph_data(store.conn)
+
+            graph_store_string = GraphStore(store=store, llm_executor_callback=llm_executor_callback, ontology=STRING_ONTOLOGY)
+            graph_store_string.build_graph_for_all_documents()
+            ASCIIColors.success("Graph building with string-based ontology complete.")
+            
+            print_header("DEMO 3.1: Observing the graph from string ontology")
+            string_nodes_viz = graph_store_string.get_all_nodes_for_visualization(limit=15)
+            ASCIIColors.blue("\nNodes extracted with the string ontology:")
+            if string_nodes_viz:
+                for n in string_nodes_viz: print(f"  - Label: {n['label']}, Props: {n.get('properties')}")
+            else:
+                print("  No nodes found.")
+
 
     except Exception as e:
         ASCIIColors.error(f"An unexpected error occurred in the main process: {e}")

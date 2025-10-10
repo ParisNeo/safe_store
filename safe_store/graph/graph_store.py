@@ -48,7 +48,6 @@ class GraphStore:
         self,
         store: "SafeStore",
         llm_executor_callback: LLMExecutorCallback,
-        node_vectorizer_name: Optional[str] = None,
         ontology: Optional[Dict[str, Any]] = None,
         graph_extraction_prompt_template: Optional[str] = None,
         query_parsing_prompt_template: Optional[str] = None,
@@ -56,9 +55,7 @@ class GraphStore:
     ):
         self.store = store
         self.llm_executor = llm_executor_callback
-        self.node_vectorizer_name = node_vectorizer_name or self.store.DEFAULT_VECTORIZER
         self.ontology = ontology
-        self._embedder: Optional[BaseVectorizer] = None
         self.graph_extraction_prompt_template = graph_extraction_prompt_template or self.DEFAULT_GRAPH_EXTRACTION_PROMPT_TEMPLATE
         self.query_parsing_prompt_template = query_parsing_prompt_template or self.DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE
         self.entity_fusion_prompt_template = entity_fusion_prompt_template or self.DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE
@@ -77,14 +74,11 @@ class GraphStore:
 
     @property
     def embedder(self) -> BaseVectorizer:
-        if self._embedder is None:
-            with self.store._instance_lock, self.store._optional_file_lock_context("Lazy loading graph embedder"):
-                try:
-                    vectorizer, _ = self.store.vectorizer_manager.get_vectorizer(self.node_vectorizer_name, self.conn)
-                    self._embedder = vectorizer
-                except (ConfigurationError, DatabaseError) as e:
-                    raise ConfigurationError(f"GraphStore: Failed to load node embedder '{self.node_vectorizer_name}': {e}") from e
-        return self._embedder
+        """Directly uses the vectorizer from the parent SafeStore instance."""
+        self.store._ensure_connection()
+        if not hasattr(self.store, 'vectorizer') or self.store.vectorizer is None:
+            raise ConfigurationError("The parent SafeStore has not been initialized with a vectorizer.")
+        return self.store.vectorizer
 
     def _initialize_graph_features(self) -> None:
         with self.store._instance_lock, self.store._optional_file_lock_context("Graph feature initialization"):
@@ -96,7 +90,8 @@ class GraphStore:
                 
                 embedder_instance = self.embedder
                 if embedder_instance.dim is None:
-                    raise ConfigurationError(f"GraphStore embedder '{self.node_vectorizer_name}' has an unknown dimension.")
+                    vectorizer_name_for_error = self.store.vectorizer_name if hasattr(self.store, 'vectorizer_name') else 'unknown'
+                    raise ConfigurationError(f"GraphStore embedder '{vectorizer_name_for_error}' has an unknown dimension.")
                 db.enable_vector_search_on_graph_nodes(self.conn, embedder_instance.dim)
                 self.conn.commit()
             except Exception as e:
@@ -487,7 +482,6 @@ class GraphStore:
 
     def add_node(self, label: str, properties: Dict[str, Any]) -> int:
         with self.store._instance_lock, self.store._optional_file_lock_context("add_node"):
-            # Ensure new manual nodes have the other_identifiers property
             if "other_identifiers" not in properties:
                 properties["other_identifiers"] = []
             id_key, id_value = self._get_node_identifying_parts(properties)
@@ -495,8 +489,8 @@ class GraphStore:
             try:
                 self.conn.execute("BEGIN")
                 node_id = db.add_or_update_graph_node(self.conn, label, properties, sig)
-                self.conn.commit()
                 self._vectorize_and_store_node_update(node_id, label, properties)
+                self.conn.commit()
                 ASCIIColors.success(f"Node added successfully with ID: {node_id}")
                 return node_id
             except Exception as e:
@@ -519,15 +513,14 @@ class GraphStore:
                     db.update_graph_node_label_db(self.conn, node_id, label)
                 
                 if properties is not None: 
-                    # Preserve `other_identifiers` if not explicitly provided in the update
                     if "other_identifiers" not in properties and "other_identifiers" in current["properties"]:
                         properties["other_identifiers"] = current["properties"]["other_identifiers"]
                     db.update_graph_node_properties_db(self.conn, node_id, properties, "overwrite_all")
                 
-                self.conn.commit()
                 updated_label = label or current['label']
                 updated_props = properties if properties is not None else current['properties']
                 self._vectorize_and_store_node_update(node_id, updated_label, updated_props)
+                self.conn.commit()
                 ASCIIColors.success(f"Node {node_id} updated successfully.")
                 return True
             except Exception as e:

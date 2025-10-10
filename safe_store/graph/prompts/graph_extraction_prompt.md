@@ -1,19 +1,19 @@
-Extract entities (nodes) and their relationships from the following text based on your understanding of the context.
-Format the output strictly as a JSON object.
-**The entire JSON output MUST be enclosed in a single markdown code block starting with ```json and ending with ```.**
+**CRITICAL INSTRUCTION: You are a data extraction expert. Your task is to extract entities (nodes) and relationships from the provided text, strictly adhering to the ontology schema below.**
+
+- **ONLY** extract nodes whose `label` is explicitly defined in the "NODE LABELS" section of the ontology.
+- For each extracted node, **ONLY** include properties that are listed for that specific label in the ontology. Be exhaustive and extract every property defined in the ontology that is present in the text.
+- **ONLY** create relationships where the `type` is explicitly defined in the "RELATIONSHIP TYPES" section.
+- You **MUST** respect the `Source` and `Target` constraints for relationships if they are specified.
+- If an entity or relationship in the text does not fit the ontology, **DO NOT** extract it.
+- Every node's `properties` object **MUST** contain an `identifying_value`. This is a unique name or identifier for the entity (e.g., "John Doe", "Acme Corporation") and is used to link relationships.
+- Format the output as a single JSON object inside a markdown code block.
 
 ---
-**Extraction Rules:**
-1.  **Nodes:** For each entity, create a node object.
-2.  **Mandatory Properties:** Every node's `properties` object **MUST** contain `identifying_value` and `type`.
-    - `identifying_value`: A unique name or identifier for the entity (e.g., "John Doe", "Acme Corporation"). This is critical for creating relationships. Entities that are the same **MUST** have the exact same `identifying_value`.
-    - `type`: A category for the entity (e.g., "Person", "Company", "Location").
-3.  **Inferred Properties:** Add any other relevant properties you can infer from the text.
-4.  **Consistency:** Nodes that share the same `type` should have a similar set of properties where applicable.
-5.  **Relationships:** Define connections between nodes using their `identifying_value`.
-
+**Ontology Schema (You MUST adhere to this strictly):**
+{ontology_schema}
 ---
-**User Guidance (Additional instructions):**
+
+**User Guidance (Follow these additional instructions within the ontology's constraints):**
 {user_guidance}
 ---
 
@@ -21,42 +21,30 @@ Format the output strictly as a JSON object.
 {chunk_text}
 ---
 
-**JSON Structure Example (Use this as a template):**
+**JSON Output Structure (Populate this structure according to the rules):**
 ```json
 {{
     "nodes": [
         {{
-            "label": "LabelA",
+            "label": "LabelFromOntology",
             "properties": {{
-                "identifying_value": "Unique Identifier for A",
-                "type": "TypeA",
-                "inferred_property_1": "Value 1",
-                "another_property": "Some other value"
-            }}
-        }},
-        {{
-            "label": "LabelB",
-            "properties": {{
-                "identifying_value": "Unique Identifier for B",
-                "type": "TypeB",
-                "some_other_prop": "Value 2"
+                "identifying_value": "A unique value for this entity (MANDATORY)",
+                "property_from_ontology": "Value from text",
+                "...": "..."
             }}
         }}
     ],
     "relationships": [
         {{
-            "source_node_label": "LabelA",
-            "source_node_identifying_value": "Unique Identifier for A",
-            "target_node_label": "LabelB",
-            "target_node_identifying_value": "Unique Identifier for B",
-            "type": "RELATIONSHIP_TYPE",
+            "source_node_label": "SourceLabelFromOntology",
+            "source_node_identifying_value": "Identifier of the source node",
+            "target_node_label": "TargetLabelFromOntology",
+            "target_node_identifying_value": "Identifier of the target node",
+            "type": "RelationshipTypeFromOntology",
             "properties": {{
-                "description": "Describes the relationship"
+                "role": "A role or description if applicable"
             }}
         }}
     ]
 }}
-
-# Warning!!
-For nodes: label, properties/identifying_value and properties/type are mandatory. never generate a node that doesn't have these entries
-For relationships: source_node_label and target_node_label properties/descrition are also mandatory
+```
