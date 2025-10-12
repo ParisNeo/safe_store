@@ -1,235 +1,236 @@
-# safe_store: Simple, Concurrent SQLite Vector Store & Graph Database for Local RAG
+# safe_store: Transform Your Digital Chaos into a Queryable Knowledge Base
 
-[![PyPI version](https://img.shields.io/pypi/v/safe_store.svg)](https://pypi.org/project/safe_store/)
-[![PyPI pyversions](https://img.shields.io/pypi/pyversions/safe_store.svg)](https://pypi.org/project/safe_store/)
-[![PyPI license](https://img.shields.io/pypi/l/safe_store.svg)](https://github.com/ParisNeo/safe_store/blob/main/LICENSE)
-[![PyPI downloads](https://img.shields.io/pypi/dm/safe_store.svg)](https://pypi.org/project/safe_store/)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![Tests](https://github.com/ParisNeo/safe_store/actions/workflows/test.yml/badge.svg)](https://github.com/ParisNeo/safe_store/actions/workflows/test.yml)
+[![PyPI version](https://img_shields.io/pypi/v/safe_store.svg)](https://pypi.org/project/safe_store/)
+[![PyPI license](https://img_shields.io/pypi/l/safe_store.svg)](https://github.com/ParisNeo/safe_store/blob/main/LICENSE)
+[![PyPI pyversions](https://img_shields.io/pypi/pyversions/safe_store.svg)](https://pypi.org/project/safe_store/)
 
-**safe_store** is a Python library providing a lightweight, file-based **vector database AND graph database** using a single **SQLite** file. It's designed for simplicity, robustness, and efficiency, making it ideal for integrating into **local Retrieval-Augmented Generation (RAG)** pipelines and knowledge graph applications.
+**`safe_store` is a Python library that turns your local folders of documents into a powerful, private, and intelligent knowledge base.** It achieves this by combining two powerful AI concepts into a single, seamless tool:
 
-Each `SafeStore` database is tied to a **single, consistent vector space**, ensuring that all documents are vectorized and queried using the same model. This robust design simplifies the API and prevents errors common in multi-vectorizer systems.
+1.  **Deep Semantic Search:** It reads and *understands* the content of your files, allowing you to search by meaning and context, not just keywords.
+2.  **AI-Powered Knowledge Graph:** It uses a Large Language Model (LLM) to automatically identify key entities (people, companies, concepts) and the relationships between them, building an interconnected web of your knowledge.
 
----
-
-## ✨ Why safe_store?
-
-*   **🎯 RAG & Knowledge Graph Focused:** Built for local RAG and knowledge graph use cases.
-*   **🚀 Simple & Robust API:** One database, one vectorizer. This core design principle makes the API intuitive and less error-prone.
-*   **🏠 Local First:** Keep your embeddings, document text, and graph data entirely on your local machine.
-*   **🤝 Concurrent Safe:** Handles database writes from multiple processes safely using file-based locking.
-*   **💡 Dual Capabilities:**
-    *   **Vector Store (`SafeStore` class):** Index documents and perform semantic similarity search within a single, consistent vector space. Supports Sentence Transformers, TF-IDF, OpenAI, Cohere, and Ollama.
-    *   **Graph Store (`GraphStore` class):** Extract entities and relationships from text using an LLM, build a persistent knowledge graph, and query it using natural language.
-*   **🌐 Web User Interface (WebUI):** An experimental interface to upload documents, trigger graph building, and visualize the resulting knowledge graph.
-*   **🔧 Extensible:** Supports custom vectorizers through a dedicated folder path.
-*   **⚙️ Advanced Indexing:** Configurable chunking strategies ('token' or 'character'), context expansion for stored chunks, and pluggable text cleaning.
-*   **📄 Document Parsing:** Built-in parsers for `.txt`, `.pdf`, `.docx`, `.html`, and many common text-based formats.
-*   **🔒 Optional Encryption:** Encrypts document chunk text at rest (AES-128) for enhanced security.
-*   **🔄 Change Aware:** Automatically detects file changes for efficient re-indexing of vectors.
+All of this happens entirely on your local machine, using a single, portable SQLite file. Your data never leaves your control.
 
 ---
 
-## ⚙️ Features
+## The Journey from Search to Understanding
 
-### `SafeStore` (Vector Database)
-*   **Single Vector Space:** Each database is configured with **one** vectorizer upon initialization, ensuring all vectors are comparable.
-*   **Advanced Indexing Pipeline:**
-    *   **Text Cleaning:** Pluggable function to clean text before processing (e.g., remove artifacts).
-    *   **Chunking Strategy:** Chunk text by `'character'` count or by `'token'` count using a model's tokenizer.
-    *   **Context Expansion:** Store chunks with extra context (`expand_before`, `expand_after`) around the vectorized portion to improve RAG quality.
-*   **Vectorization:**
-    *   The vectorizer is defined when creating the `SafeStore` instance using a `vectorizer_name` (e.g., "st", "openai") and a `vectorizer_config` dictionary.
-    *   Supports Sentence Transformers, TF-IDF, OpenAI, Cohere, and Ollama.
-*   **Extensibility:** Provide a path to a folder with your own vectorizer implementations via the `custom_vectorizers_path` parameter.
-*   **Querying (`query`):** Performs cosine similarity search using the instance's configured vectorizer.
-*   **Model Discovery:** A class method `SafeStore.list_available_models()` to dynamically find available models for vectorizers like Ollama.
+`safe_store` is designed to grow with your needs. You can start with a simple, powerful RAG system in minutes, and then evolve it into a sophisticated knowledge engine.
 
-### `GraphStore` (Graph Database)
-*   **Schema:** Dedicated tables for `graph_nodes`, `graph_relationships`, and `node_chunk_links` within the same SQLite DB.
-*   **LLM Integration:** Uses a flexible `llm_executor_callback` to integrate with your choice of LLM (e.g., via `lollms-client`) for graph extraction and natural language querying.
-*   **Graph Building Methods:** `process_chunk_for_graph`, `build_graph_for_document`, `build_graph_for_all_documents`.
-*   **Natural Language Querying (`query_graph`):** Translates questions into graph traversals and returns results in various modes (`"graph_only"`, `"chunks_summary"`, `"full"`).
-*   **Encryption Awareness:** Decrypts chunk text for LLM processing if the `encryption_key` is provided.
+### Level 1: Build a Powerful RAG System with Semantic Search
+**The Foundation: Retrieval-Augmented Generation (RAG)**
 
+RAG is the state-of-the-art technique for making Large Language Models (LLMs) answer questions about your private documents. The process is simple:
+1.  **Retrieve:** Find the most relevant text chunks from your documents related to a user's query.
+2.  **Augment:** Add those chunks as context to your prompt.
+3.  **Generate:** Ask the LLM to generate an answer based *only* on the provided context.
+
+`SafeStore` is the perfect tool for the "Retrieve" step. It uses vector embeddings to understand the *meaning* of your text, allowing you to find relevant passages even if they don't contain the exact keywords.
+
+**Example: A Simple RAG Pipeline**
+
+```python
+import safe_store
+
+# 1. Create a store. This will create a 'my_notes.db' file.
+store = safe_store.SafeStore(db_path="my_notes.db", vectorizer_name="st")
+
+# 2. Add your documents. It will scan the folder and process all supported files.
+with store:
+    store.add_document("path/to/my_notes_and_articles/")
+
+# 3. Query the store to find context for your RAG prompt.
+user_query = "What were the main arguments about AI consciousness in my research?"
+context_chunks = store.query(user_query, top_k=3)
+
+# 4. Build the prompt and send to your LLM.
+context_text = "\n\n".join([chunk['chunk_text'] for chunk in context_chunks])
+prompt = f"""
+Based on the following context, please answer the user's question.
+Do not use any external knowledge.
+
+Context:
+---
+{context_text}
 ---
 
-## 🚀 Installation
+Question: {user_query}
+"""
 
-```bash
-pip install safe-store
+# result = my_llm_function(prompt) # Send to your LLM of choice
 ```
-Install optional dependencies for the vectorizers or features you need:
-```bash
-# For Sentence Transformers (provides a tokenizer)
-pip install safe-store[sentence-transformers]
+With just this, you have a powerful, private RAG system running on your local files.
 
-# For API-based vectorizers (OpenAI, Ollama, Cohere)
-pip install safe-store[openai]
-pip install safe-store[ollama]
-pip install safe-store[cohere]
+### Level 2: Uncover Hidden Connections with a Knowledge Graph
+**The Next Dimension: From Passages to a Web of Knowledge**
 
-# For providing a custom tokenizer like tiktoken
-pip install tiktoken
+Semantic search is great for finding *relevant passages*, but it struggles with questions about *specific facts* and *relationships* scattered across multiple documents.
+*   It can find a document mentioning "Dr. Hinton" and another mentioning "backpropagation."
+*   It cannot easily answer: "Did Dr. Hinton *invent* backpropagation?"
 
-# For parsing PDF, DOCX, etc.
-pip install safe-store[parsing]
+This is where the `GraphStore` comes in. It reads the text chunks you've already indexed and uses an LLM to build a knowledge graph of the key **instances** (like the person "Geoffrey Hinton") and their **relationships** (like `PIONEERED` the concept "Backpropagation").
 
-# For encryption features
-pip install safe-store[encryption]
+**Example: Upgrading Your RAG System with a Graph**
 
-# For the Web User Interface
-pip install safe-store[webui]
+```python
+from safe_store import GraphStore
 
-# To install everything:
-pip install safe-store[all] 
+# Assume 'store' object from Level 1 already exists and is populated.
+# 1. Define an ontology to guide the LLM. It can be a simple string!
+ontology = """
+- Extract People, Concepts, and Companies.
+- A Person can be a PIONEER_OF a Concept.
+- A Person can WORK_FOR a Company.
+"""
+
+# 2. Create the GraphStore. It uses the same database and vectorizer.
+graph_store = GraphStore(store=store, llm_executor_callback=my_llm, ontology=ontology)
+
+# 3. Build the graph. This is a one-time process (per document).
+with graph_store:
+    graph_store.build_graph_for_all_documents()
+
+# 4. Now, ask a precise, structured question.
+graph_results = graph_store.query_graph(
+    "Who pioneered backpropagation and where did they work?",
+    output_mode="graph_only"
+)
+
+# The result is no longer just text, but a structured subgraph:
+# {
+#   "nodes": [
+#     {"label": "Person", "properties": {"identifying_value": "Geoffrey Hinton", ...}},
+#     {"label": "Concept", "properties": {"identifying_value": "Backpropagation", ...}},
+#     {"label": "Company", "properties": {"identifying_value": "Google", ...}}
+#   ],
+#   "relationships": [
+#     {"source": "Geoffrey Hinton", "type": "PIONEER_OF", "target": "Backpropagation"},
+#     {"source": "Geoffrey Hinton", "type": "WORK_FOR", "target": "Google"}
+#   ]
+# }
 ```
+
+### The Magic: Combining Semantic and Graph Search
+The true power of `safe_store` lies in using both layers together. You can use a broad semantic search to find a starting point, then use a precise graph query to explore the entities within that context, creating a deeply informed RAG prompt.
 
 ---
 
-## 🏁 Quick Start (Python Library)
+## 🚀 Imaginative Use Cases in Action
 
-This example shows `SafeStore` usage followed by `GraphStore` graph building and querying, reflecting the new, simplified API.
+#### 1. The Personal Knowledge Master
+*   **Vector Search Alone:** You ask, "What are the core principles of Stoicism?" `safe_store` retrieves paragraphs from your notes on Seneca and Marcus Aurelius. **Good.**
+*   **+ Knowledge Graph:** You then ask, "Show me the relationship between Seneca and Nero." The graph instantly returns a `TUTOR_OF` relationship—an explicit fact that vector search alone would never find. **Powerful.**
+
+#### 2. The Codebase Archaeologist
+*   **Vector Search Alone:** You search, "how to handle user authentication tokens." `safe_store` pulls up relevant code snippets that use JWT libraries and token validation logic. **Helpful.**
+*   **+ Knowledge Graph:** You then ask, "Which API endpoints use the `validate_token` function?" The graph directly shows `'/api/v1/profile' --[USES]--> 'validate_token'` and `'/api/v1/settings' --[USES]--> 'validate_token'`. This is an instant dependency map that saves hours of manual code tracing. **Game-changing.**
+
+#### 3. The AI-Powered Research Assistant
+*   **Vector Search Alone:** You query, "papers discussing protein folding using deep learning." `safe_store` finds several PDFs, including AlphaFold's seminal paper. **Effective.**
+*   **+ Knowledge Graph:** You follow up with, "Show me all the authors from DeepMind who co-authored papers with researchers from the University of Washington." The graph traverses affiliations and co-authorship links to reveal hidden collaborations across institutions. **Insightful.**
+
+---
+
+## 🏁 Quick Start Guide
+
+This single script demonstrates the complete, two-level workflow.
 
 ```python
 import safe_store
 from safe_store import GraphStore, LogLevel
-from lollms_client import LollmsClient # Example LLM client
+from lollms_client import LollmsClient
 from pathlib import Path
 import shutil
-from typing import Optional
 
-# --- 0. Configuration & LLM Setup ---
-DB_FILE = "quickstart_store.db"
+# --- 0. Configuration & Cleanup ---
+DB_FILE = "quickstart.db"
 DOC_DIR = Path("temp_docs_qs")
-
-# Cleanup previous run (optional)
 if DOC_DIR.exists(): shutil.rmtree(DOC_DIR)
-DOC_DIR.mkdir(exist_ok=True, parents=True)
+DOC_DIR.mkdir()
 Path(DB_FILE).unlink(missing_ok=True)
-Path(f"{DB_FILE}.lock").unlink(missing_ok=True)
 
-# LollmsClient setup (replace with your actual LLM server config)
-LC_CLIENT: Optional[LollmsClient] = None
-def init_llm():
-    global LC_CLIENT
+# --- 1. LLM Executor & Sample Document ---
+def llm_executor(prompt: str) -> str:
     try:
-        LC_CLIENT = LollmsClient()
-        print("LLM Client Initialized for GraphStore.")
-        return True
+        client = LollmsClient()
+        return client.generate_code(prompt, language="json", temperature=0.1) or ""
     except Exception as e:
-        print(f"LLM Client init failed: {e}. Graph features will not work.")
-        return False
+        raise ConnectionError(f"LLM call failed: {e}")
 
-# LLM Executor Callback for GraphStore
-def llm_executor(prompt_to_llm: str) -> str:
-    if not LC_CLIENT: raise ConnectionError("LLM Client not ready.")
-    response = LC_CLIENT.generate_code(prompt_to_llm, language="json", temperature=0.1, max_size=4096)
-    return response if response else ""
+doc_path = DOC_DIR / "doc.txt"
+doc_path.write_text("Dr. Aris Thorne is the CEO of QuantumLeap AI, a firm in Geneva.")
 
-if not init_llm():
-    print("Skipping GraphStore parts of Quick Start as LLM is not available.")
-
-# --- 1. Prepare Sample Document ---
-doc1_path = DOC_DIR / "ceo_info.txt"
-doc1_content = "Dr. Aris Thorne is the CEO of QuantumLeap AI, a company focusing on advanced AI research. QuantumLeap AI is based in Geneva."
-doc1_path.write_text(doc1_content)
-
-# --- 2. Use SafeStore for Vector Indexing ---
-print("\n--- SafeStore Operations ---")
-# Initialize the store with a single, dedicated vectorizer and chunking strategy
-store = safe_store.SafeStore(
-    db_path=DB_FILE,
-    vectorizer_name="st",
-    vectorizer_config={"model": "all-MiniLM-L6-v2"},
-    chunking_strategy='token', # This works because 'st' provides its own tokenizer
-    chunk_size=30,
-    log_level=LogLevel.INFO
-)
-
-doc_id_1 = -1
+# --- 2. Level 1: Semantic Search with SafeStore ---
+print("--- LEVEL 1: SEMANTIC SEARCH ---")
+store = safe_store.SafeStore(db_path=DB_FILE, vectorizer_name="st", log_level=LogLevel.INFO)
 with store:
-    # Add document - no need to specify vectorizer or chunking here
-    store.add_document(doc1_path)
-    docs = store.list_documents()
-    if docs: doc_id_1 = docs['doc_id']
-    print(f"Document '{doc1_path.name}' (ID: {doc_id_1}) indexed by SafeStore.")
-    
-    # Query using the instance's configured vectorizer
-    query_results = store.query("AI research in Geneva", top_k=1)
-    if query_results:
-        print(f"SafeStore query result for 'AI research in Geneva': {query_results['chunk_text'][:100]}...")
+    store.add_document(doc_path)
+    results = store.query("who leads the AI firm in Geneva?", top_k=1)
+    print(f"Semantic search result: '{results['chunk_text']}'")
 
-if LC_CLIENT and doc_id_1 != -1:
-    # --- 3. Use GraphStore to Build & Query Knowledge Graph ---
-    print("\n--- GraphStore Operations ---")
-    graph_store = GraphStore(
-        db_path=DB_FILE, # Use the same database
-        llm_executor_callback=llm_executor,
-        log_level=LogLevel.INFO
-    )
+# --- 3. Level 2: Knowledge Graph with GraphStore ---
+print("\n--- LEVEL 2: KNOWLEDGE GRAPH ---")
+ontology = "Extract People and Companies. A Person can be a CEO_OF a Company."
+try:
+    graph_store = GraphStore(store=store, llm_executor_callback=llm_executor, ontology=ontology)
     with graph_store:
-        print(f"Building graph for document ID: {doc_id_1}...")
-        graph_store.build_graph_for_document(doc_id_1)
-        print("Graph building for document complete.")
-
-        nl_query = "Who is the CEO of QuantumLeap AI and where is it based?"
-        print(f"\nGraphStore NLQ: \"{nl_query}\"")
+        graph_store.build_graph_for_all_documents()
+        graph_result = graph_store.query_graph("Who is the CEO of QuantumLeap AI?", output_mode="graph_only")
         
-        graph_data = graph_store.query_graph(nl_query, output_mode="graph_only")
-        if graph_data.get('nodes'): 
-            print(f"  Sample Node from NLQ result: {graph_data['nodes']['properties']}")
+        print("Graph query result:")
+        for rel in graph_result.get('relationships', []):
+            source = rel['source_node']['properties'].get('identifying_value')
+            target = rel['target_node']['properties'].get('identifying_value')
+            print(f"- Relationship: '{source}' --[{rel['type']}]--> '{target}'")
+except ConnectionError as e:
+    print(f"[SKIP] GraphStore part failed: {e}")
+
+store.close()
 ```
 
 ---
 
-## 🖥️ Web User Interface (Experimental)
+## ⚙️ Installation
 
-`safe_store` includes an experimental WebUI to upload documents and visualize the extracted knowledge graph.
-
-### Launching the WebUI
 ```bash
-safestore-webui
+pip install safe-store
 ```
-By default, it is accessible at `http://0.0.0.0:8000`.
+Install optional dependencies for the features you need:
+```bash
+# For Sentence Transformers (recommended for local use)
+pip install safe-store[sentence-transformers]
 
-### Configuring the WebUI
-The UI's behavior is controlled by `config.toml`, created in `.../site-packages/safe_store/webui/` on first run.
+# For API-based vectorizers
+pip install safe_store[openai,ollama,cohere]
 
-**Key `config.toml` settings for the `[safestore]` section:**
-```toml
-[safestore]
-db_file = "webui_store.db"
-doc_dir = "webui_safestore_docs"
+# For parsing PDF, DOCX, etc.
+pip install safe-store[parsing]
 
-# Define the single vectorizer for the WebUI's database instance
-vectorizer_name = "st"
-# Use a TOML inline table for the config dictionary
-vectorizer_config = '{model = "all-MiniLM-L6-v2"}' 
+# For encryption
+pip install safe-store[encryption]
 
-# Define chunking strategy
-chunk_size = 250
-chunk_overlap = 40
-chunking_strategy = "token" # 'st' provides a tokenizer, so this works
+# To install everything:
+pip install safe-store[all] 
 ```
-
 ---
 
-## 💡 Key Concepts
+## 💡 API Highlights
 
-### `SafeStore`
-*   **One Store, One Configuration**: When you create a `SafeStore` instance, you define the entire indexing pipeline for that database: the vectorizer, the chunking strategy, text cleaning, etc. This ensures all data is processed consistently.
-*   **Smart Token Chunking**: For remote vectorizers like Ollama or OpenAI that don't have a client-side tokenizer, you can still perform token-based chunking by providing a proxy tokenizer (e.g., `tiktoken`) via the `custom_tokenizer` parameter.
-*   **Context-Aware Chunks**: The `expand_before` and `expand_after` parameters allow you to store more context around each vectorized chunk, which is ideal for high-quality RAG.
+#### `SafeStore` (The Foundation)
+*   `__init__(db_path, vectorizer_name, ...)`: Creates or loads a database. The vectorizer is locked in at creation.
+*   `add_document(path, ...)`: Parses, chunks, vectorizes, and stores a document or an entire folder.
+*   `query(query_text, top_k, ...)`: Performs a semantic search and returns the most relevant text chunks for your RAG pipeline.
 
-### `GraphStore`
-*   Builds upon a `SafeStore` database to create a knowledge graph.
-*   **LLM Executor Callback**: You provide a simple function `(prompt: str) -> response: str`. `GraphStore` uses this to send prompts to your chosen LLM for graph extraction and querying.
+#### `GraphStore` (The Intelligence Layer)
+*   `__init__(store, llm_executor_callback, ontology)`: Creates the graph manager on an existing `SafeStore` instance.
+*   `build_graph_for_all_documents()`: Scans documents and uses an LLM to build the knowledge graph based on your ontology.
+*   `query_graph(natural_language_query, ...)`: Translates a question into a graph traversal, returning nodes, relationships, and/or the original source text.
+*   `add_node(...)`, `add_relationship(...)`: Manually edit the graph to add your own expert knowledge.
 
 ---
 
 ## 🤝 Contributing & License
 
-Contributions are welcome! Please open an issue or PR on [GitHub](https://github.com/ParisNeo/safe_store).
+Contributions are highly welcome! Please open an issue to discuss a new feature or submit a pull request on [GitHub](https://github.com/ParisNeo/safe_store).
+
 Licensed under Apache 2.0. See [LICENSE](LICENSE).
