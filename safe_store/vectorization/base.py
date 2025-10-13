@@ -39,3 +39,11 @@ class BaseVectorizer(ABC):
             A tokenizer object or None if no tokenizer is available client-side.
         """
         return None
+
+    @staticmethod
+    def list_models(**kwargs) -> List[str]:
+        """
+        Lists the available models for this vectorizer.
+        This method should be overridden by subclasses that support model listing.
+        """
+        return []

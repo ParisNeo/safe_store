@@ -1,3 +1,4 @@
+# safe_store/store.py
 import sqlite3
 import json
 from pathlib import Path
@@ -125,13 +126,47 @@ class SafeStore:
             self.name = "in_memory_store" if self._is_in_memory else Path(self.db_path).stem
 
     @classmethod
-    def list_available_models(cls, vectorizer_name: str, custom_vectorizers_path: Optional[str] = None, **kwargs) -> List[str]:
+    def list_available_vectorizers(cls, custom_vectorizers_path: Optional[str] = None) -> List[Dict[str, Any]]:
+        """
+        Scans and lists all available vectorizers, including their configurable parameters.
+        """
+        manager = VectorizationManager(custom_vectorizers_path=custom_vectorizers_path)
+        return manager.list_vectorizers()
+
+    @classmethod
+    def list_models(cls, vectorizer_name: str, custom_vectorizers_path: Optional[str] = None, **kwargs) -> List[str]:
+        """
+        Lists the available models for a specific vectorizer.
+
+        This method dynamically loads the specified vectorizer's module
+        and calls its `list_models` static method.
+
+        Args:
+            vectorizer_name: The name of the vectorizer (e.g., 'ollama', 'st').
+            custom_vectorizers_path: Optional path to a folder with custom vectorizers.
+            **kwargs: Additional keyword arguments to pass to the vectorizer's `list_models` method.
+
+        Returns:
+            A list of model name strings.
+
+        Raises:
+            SafeStoreError: If the vectorizer module cannot be found or an error occurs.
+        """
         try:
             module = load_vectorizer_module(vectorizer_name, custom_vectorizers_path)
-            if hasattr(module, 'list_available_models'):
-                return module.list_available_models(**kwargs)
+            
+            # Find the BaseVectorizer subclass in the module
+            VectorizerClass = None
+            if hasattr(module, 'class_name'):
+                VectorizerClass = getattr(module, module.class_name, None)
+
+            if VectorizerClass and issubclass(VectorizerClass, BaseVectorizer) and hasattr(VectorizerClass, 'list_models'):
+                return VectorizerClass.list_models(**kwargs)
             else:
-                ASCIIColors.warning(f"Vectorizer module '{vectorizer_name}' does not have a 'list_available_models' function.")
+                ASCIIColors.warning(f"Vectorizer module '{vectorizer_name}' does not have a valid 'list_models' static method or class setup.")
+                # Fallback to calling on the module if it's a function
+                if hasattr(module, 'list_models'):
+                    return module.list_models(**kwargs)
                 return []
         except (FileNotFoundError, ConfigurationError, VectorizationError) as e:
             raise e

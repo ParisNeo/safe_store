@@ -3,8 +3,8 @@ import numpy as np
 from typing import List, Optional, Dict, Any
 import os
 
-from ..base import BaseVectorizer
-from ...core.exceptions import ConfigurationError, VectorizationError
+from ...base import BaseVectorizer
+from ....core.exceptions import ConfigurationError, VectorizationError
 from ascii_colors import ASCIIColors
 
 class_name = "LollmsVectorizer"
@@ -186,3 +186,8 @@ class LollmsVectorizer(BaseVectorizer):
     @property
     def dtype(self) -> np.dtype:
         return self._dtype
+    
+    @staticmethod
+    def list_models(**kwargs) -> List[str]:
+        """Listing models is dependent on the lollms binding and not exposed via client yet."""
+        return []

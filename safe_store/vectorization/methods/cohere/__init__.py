@@ -2,8 +2,8 @@ import numpy as np
 from typing import List, Optional, Dict, Any
 import os
 
-from ..base import BaseVectorizer
-from ...core.exceptions import ConfigurationError, VectorizationError
+from ...base import BaseVectorizer
+from ....core.exceptions import ConfigurationError, VectorizationError
 from ascii_colors import ASCIIColors
 
 # each vectorizer must have a class name variable to be identified
@@ -19,7 +19,7 @@ def list_available_models(**kwargs) -> List[str]:
 try:
     import pipmaster as pm
     pm.ensure_packages(["cohere"]) # Ensure cohere is installed
-    import cohere
+    import safe_store.vectorization.methods.cohere as cohere
     _CohereAPIError = cohere.APIError
     _CohereConnectionError = cohere.ConnectionError
     _COHERE_AVAILABLE = True
@@ -195,3 +195,16 @@ class CohereVectorizer(BaseVectorizer):
     @property
     def dtype(self) -> np.dtype:
         return self._dtype
+
+    @staticmethod
+    def list_models(**kwargs) -> List[str]:
+        """Lists available embedding models from Cohere."""
+        return [
+            "embed-english-v3.0",
+            "embed-multilingual-v3.0",
+            "embed-english-light-v3.0",
+            "embed-multilingual-light-v3.0",
+            "embed-english-v2.0",
+            "embed-english-light-v2.0",
+            "embed-multilingual-v2.0",
+        ]

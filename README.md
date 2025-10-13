@@ -1,8 +1,8 @@
 # safe_store: Transform Your Digital Chaos into a Queryable Knowledge Base
 
-[![PyPI version](https://img_shields.io/pypi/v/safe_store.svg)](https://pypi.org/project/safe_store/)
-[![PyPI license](https://img_shields.io/pypi/l/safe_store.svg)](https://github.com/ParisNeo/safe_store/blob/main/LICENSE)
-[![PyPI pyversions](https://img_shields.io/pypi/pyversions/safe_store.svg)](https://pypi.org/project/safe_store/)
+[![PyPI version](https://img.shields.io/pypi/v/safe_store.svg)](https://pypi.org/project/safe_store/)
+[![PyPI license](https://img.shields.io/pypi/l/safe_store.svg)](https://github.com/ParisNeo/safe_store/blob/main/LICENSE)
+[![PyPI pyversions](https://img.shields.io/pypi/pyversions/safe_store.svg)](https://pypi.org/project/safe_store/)
 
 **`safe_store` is a Python library that turns your local folders of documents into a powerful, private, and intelligent knowledge base.** It achieves this by combining two powerful AI concepts into a single, seamless tool:
 
@@ -65,75 +65,183 @@ With just this, you have a powerful, private RAG system running on your local fi
 **The Next Dimension: From Passages to a Web of Knowledge**
 
 Semantic search is great for finding *relevant passages*, but it struggles with questions about *specific facts* and *relationships* scattered across multiple documents.
-*   It can find a document mentioning "Dr. Hinton" and another mentioning "backpropagation."
-*   It cannot easily answer: "Did Dr. Hinton *invent* backpropagation?"
 
-This is where the `GraphStore` comes in. It reads the text chunks you've already indexed and uses an LLM to build a knowledge graph of the key **instances** (like the person "Geoffrey Hinton") and their **relationships** (like `PIONEERED` the concept "Backpropagation").
-
-**Example: Upgrading Your RAG System with a Graph**
-
-```python
-from safe_store import GraphStore
-
-# Assume 'store' object from Level 1 already exists and is populated.
-# 1. Define an ontology to guide the LLM. It can be a simple string!
-ontology = """
-- Extract People, Concepts, and Companies.
-- A Person can be a PIONEER_OF a Concept.
-- A Person can WORK_FOR a Company.
-"""
-
-# 2. Create the GraphStore. It uses the same database and vectorizer.
-graph_store = GraphStore(store=store, llm_executor_callback=my_llm, ontology=ontology)
-
-# 3. Build the graph. This is a one-time process (per document).
-with graph_store:
-    graph_store.build_graph_for_all_documents()
-
-# 4. Now, ask a precise, structured question.
-graph_results = graph_store.query_graph(
-    "Who pioneered backpropagation and where did they work?",
-    output_mode="graph_only"
-)
-
-# The result is no longer just text, but a structured subgraph:
-# {
-#   "nodes": [
-#     {"label": "Person", "properties": {"identifying_value": "Geoffrey Hinton", ...}},
-#     {"label": "Concept", "properties": {"identifying_value": "Backpropagation", ...}},
-#     {"label": "Company", "properties": {"identifying_value": "Google", ...}}
-#   ],
-#   "relationships": [
-#     {"source": "Geoffrey Hinton", "type": "PIONEER_OF", "target": "Backpropagation"},
-#     {"source": "Geoffrey Hinton", "type": "WORK_FOR", "target": "Google"}
-#   ]
-# }
-```
-
-### The Magic: Combining Semantic and Graph Search
-The true power of `safe_store` lies in using both layers together. You can use a broad semantic search to find a starting point, then use a precise graph query to explore the entities within that context, creating a deeply informed RAG prompt.
+`GraphStore` complements this by building a structured knowledge graph of the key **instances** (like the person "Geoffrey Hinton") and their **relationships** (like `PIONEERED` the concept "Backpropagation"). This allows you to ask precise, factual questions.
 
 ---
 
-## 🚀 Imaginative Use Cases in Action
+## Dynamic Vectorizer Discovery & Configuration
 
-#### 1. The Personal Knowledge Master
-*   **Vector Search Alone:** You ask, "What are the core principles of Stoicism?" `safe_store` retrieves paragraphs from your notes on Seneca and Marcus Aurelius. **Good.**
-*   **+ Knowledge Graph:** You then ask, "Show me the relationship between Seneca and Nero." The graph instantly returns a `TUTOR_OF` relationship—an explicit fact that vector search alone would never find. **Powerful.**
+One of `safe_store`'s most powerful features is its ability to self-document. You don't need to guess which vectorizers are available or what parameters they need. You can discover everything at runtime.
 
-#### 2. The Codebase Archaeologist
-*   **Vector Search Alone:** You search, "how to handle user authentication tokens." `safe_store` pulls up relevant code snippets that use JWT libraries and token validation logic. **Helpful.**
-*   **+ Knowledge Graph:** You then ask, "Which API endpoints use the `validate_token` function?" The graph directly shows `'/api/v1/profile' --[USES]--> 'validate_token'` and `'/api/v1/settings' --[USES]--> 'validate_token'`. This is an instant dependency map that saves hours of manual code tracing. **Game-changing.**
+This makes it easy to experiment with different embedding models and build interactive tools that guide users through the setup process.
 
-#### 3. The AI-Powered Research Assistant
-*   **Vector Search Alone:** You query, "papers discussing protein folding using deep learning." `safe_store` finds several PDFs, including AlphaFold's seminal paper. **Effective.**
-*   **+ Knowledge Graph:** You follow up with, "Show me all the authors from DeepMind who co-authored papers with researchers from the University of Washington." The graph traverses affiliations and co-authorship links to reveal hidden collaborations across institutions. **Insightful.**
+### Step 1: Discovering Available Vectorizers
+
+The `SafeStore.list_available_vectorizers()` class method scans the library for all built-in and custom vectorizers and returns their complete configuration metadata.
+
+```python
+import safe_store
+import pprint
+
+# Get a list of all available vectorizer configurations
+available_vectorizers = safe_store.SafeStore.list_available_vectorizers()
+
+# Pretty-print the result to see what's available
+pprint.pprint(available_vectorizers)
+```
+This will produce a detailed output like this:
+```
+[{'author': 'ParisNeo',
+  'class_name': 'CohereVectorizer',
+  'creation_date': '2025-10-10',
+  'description': "A vectorizer that uses Cohere's API...",
+  'input_parameters': [{'default': 'embed-english-v3.0',
+                        'description': 'The name of the Cohere embedding model...',
+                        'mandatory': True,
+                        'name': 'model'},
+                       {'default': '',
+                        'description': 'Your Cohere API key...',
+                        'mandatory': False,
+                        'name': 'api_key'},
+                        ...],
+  'last_update_date': '2025-10-10',
+  'name': 'cohere',
+  'title': 'Cohere Vectorizer'},
+ {'author': 'ParisNeo',
+  'class_name': 'OllamaVectorizer',
+  'name': 'ollama',
+  'title': 'Ollama Vectorizer',
+  ...},
+  ...
+]
+```
+
+### Step 2: Listing Available Models for a Vectorizer
+
+Once you know which vectorizer you want to use, you can ask `safe_store` what specific models it supports. This is especially useful for API-based or local server-based vectorizers like `ollama`, which can have many different models available.
+
+```python
+import safe_store
+
+# Example: List all embedding models available from a running Ollama server
+try:
+    # This requires a running Ollama instance to succeed
+    ollama_models = safe_store.SafeStore.list_models("ollama")
+    print("Available Ollama embedding models:")
+    for model in ollama_models:
+        print(f"- {model}")
+except Exception as e:
+    print(f"Could not list Ollama models. Is the server running? Error: {e}")
+
+```
+
+### Step 3: Building an Interactive Configurator
+
+You can use this metadata to create an interactive setup script, guiding the user to choose and configure their desired vectorizer on the fly.
+
+**Full Interactive Example:**
+Copy and run this script. It will guide you through selecting and configuring a vectorizer, then initialize `SafeStore` with your choices.
+
+```python
+# interactive_setup.py
+import safe_store
+import pprint
+
+def interactive_vectorizer_setup():
+    """
+    An interactive CLI to guide the user through selecting and configuring a vectorizer.
+    """
+    print("--- Welcome to the safe_store Interactive Vectorizer Setup ---")
+    
+    # 1. List all available vectorizers
+    vectorizers = safe_store.SafeStore.list_available_vectorizers()
+    
+    print("\nAvailable Vectorizers:")
+    for i, vec in enumerate(vectorizers):
+        print(f"  [{i+1}] {vec['name']} - {vec.get('title', 'No Title')}")
+
+    # 2. Get user's choice
+    choice = -1
+    while choice < 0 or choice >= len(vectorizers):
+        try:
+            raw_choice = input(f"\nPlease select a vectorizer (1-{len(vectorizers)}): ")
+            choice = int(raw_choice) - 1
+            if not (0 <= choice < len(vectorizers)):
+                print("Invalid selection. Please try again.")
+        except ValueError:
+            print("Please enter a number.")
+
+    selected_vectorizer = vectorizers[choice]
+    selected_name = selected_vectorizer['name']
+    
+    print(f"\nYou have selected: {selected_name}")
+    print(f"Description: {selected_vectorizer.get('description', 'N/A').strip()}")
+
+    # 3. Dynamically build the configuration dictionary
+    vectorizer_config = {}
+    print("\nPlease provide the following configuration values (press Enter to use default):")
+    
+    params = selected_vectorizer.get('input_parameters', [])
+    if not params:
+        print("This vectorizer requires no special configuration.")
+    else:
+        for param in params:
+            param_name = param['name']
+            description = param.get('description', 'No description.')
+            default_value = param.get('default', None)
+            
+            prompt = f"- {param_name} ({description})"
+            if default_value is not None:
+                prompt += f" [default: {default_value}]: "
+            else:
+                prompt += ": "
+                
+            user_input = input(prompt)
+            
+            # Use user input if provided, otherwise use default
+            final_value = user_input if user_input else default_value
+            
+            # Simple type conversion for demonstration (can be expanded)
+            if final_value is not None:
+                if param.get('type') == 'int':
+                    vectorizer_config[param_name] = int(final_value)
+                elif param.get('type') == 'dict':
+                    # For simplicity, we don't parse dicts here, but a real app might use json.loads
+                    vectorizer_config[param_name] = final_value
+                else:
+                    vectorizer_config[param_name] = str(final_value)
+
+    # 4. Initialize SafeStore with the dynamically created configuration
+    print("\n--- Configuration Complete ---")
+    print(f"Vectorizer Name: '{selected_name}'")
+    print("Vectorizer Config:")
+    pprint.pprint(vectorizer_config)
+    
+    try:
+        print("\nInitializing SafeStore with your configuration...")
+        store = safe_store.SafeStore(
+            db_path=f"{selected_name}_store.db",
+            vectorizer_name=selected_name,
+            vectorizer_config=vectorizer_config
+        )
+        print("\n✅ SafeStore initialized successfully!")
+        print(f"Database file is at: {selected_name}_store.db")
+        store.close()
+    except Exception as e:
+        print(f"\n❌ Failed to initialize SafeStore: {e}")
+
+
+if __name__ == "__main__":
+    interactive_vectorizer_setup()
+```
+This script demonstrates how the self-documenting nature of `safe_store` enables you to build powerful, user-friendly applications on top of it.
 
 ---
 
 ## 🏁 Quick Start Guide
 
-This single script demonstrates the complete, two-level workflow.
+This example shows the end-to-end workflow: indexing a document, then building and querying a knowledge graph of its **instances** using a simple string-based ontology.
 
 ```python
 import safe_store
@@ -195,8 +303,7 @@ store.close()
 ```bash
 pip install safe-store
 ```
-Install optional dependencies for the features you need:
-```bash
+Install optional dependencies for the features you need:```bash
 # For Sentence Transformers (recommended for local use)
 pip install safe-store[sentence-transformers]
 

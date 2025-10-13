@@ -1,0 +1,24 @@
+title: OpenAI Vectorizer
+author: ParisNeo
+creation_date: 2025-10-10
+last_update_date: 2025-10-10
+class_name: OpenAIVectorizer
+description: >
+  A vectorizer that uses OpenAI's API to generate text embeddings.
+  Requires an OpenAI API key.
+input_parameters:
+  - name: model
+    type: str
+    description: "The name of the OpenAI embedding model to use."
+    mandatory: true
+    default: "text-embedding-3-small"
+  - name: api_key
+    type: str
+    description: "Your OpenAI API key. If not provided, the OPENAI_API_KEY environment variable will be used."
+    mandatory: false
+    default: ""
+  - name: base_url
+    type: str
+    description: "Optional custom base URL for the OpenAI API, for use with proxies or other compatible services."
+    mandatory: false
+    default: ""

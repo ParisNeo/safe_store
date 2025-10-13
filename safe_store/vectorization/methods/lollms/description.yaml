@@ -1,0 +1,24 @@
+title: Lollms Vectorizer
+author: ParisNeo
+creation_date: 2025-10-10
+last_update_date: 2025-10-10
+class_name: LollmsVectorizer
+description: >
+  A vectorizer that connects to any OpenAI-compatible API, such as a local Lollms
+  instance, for generating embeddings.
+input_parameters:
+  - name: model
+    type: str
+    description: "The name of the embedding model served by the Lollms instance."
+    mandatory: true
+    default: "nomic-embed-text"
+  - name: base_url
+    type: str
+    description: "The base URL of the OpenAI-compatible API endpoint."
+    mandatory: true
+    default: "http://localhost:9600"
+  - name: api_key
+    type: str
+    description: "The API key for the service. Often not required for local instances."
+    mandatory: false
+    default: "not_needed"

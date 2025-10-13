@@ -1,0 +1,20 @@
+title: TF-IDF Vectorizer
+author: ParisNeo
+creation_date: 2025-10-10
+last_update_date: 2025-10-10
+class_name: TfidfVectorizerWrapper
+description: >
+  A classic, local vectorizer based on Term Frequency-Inverse Document Frequency.
+  This vectorizer must be 'fit' on your data, so its performance is data-dependent.
+  It does not capture semantic meaning like deep learning models.
+input_parameters:
+  - name: name
+    type: str
+    description: "A unique name to identify this specific fitted TF-IDF model within the database."
+    mandatory: true
+    default: "default_tfidf"
+  - name: params
+    type: dict
+    description: "Optional dictionary of parameters to pass to the underlying scikit-learn TfidfVectorizer, such as 'ngram_range' or 'max_features'."
+    mandatory: false
+    default: {}

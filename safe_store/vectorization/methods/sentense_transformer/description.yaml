@@ -1,0 +1,14 @@
+title: Sentence Transformers Vectorizer
+author: ParisNeo
+creation_date: 2025-10-10
+last_update_date: 2025-10-10
+class_name: STVectorizer
+description: >
+  A local vectorizer that uses models from the sentence-transformers library.
+  Models are downloaded and run directly on your machine.
+input_parameters:
+  - name: model
+    type: str
+    description: "The name of the Sentence Transformer model to use from the Hugging Face Hub."
+    mandatory: true
+    default: "all-MiniLM-L6-v2"

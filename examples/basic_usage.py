@@ -63,6 +63,19 @@ def prepare_documents(doc_dir="temp_docs_basic"):
 
 # --- Main Script ---
 if __name__ == "__main__":
+    # --- Discover and Print Available Vectorizers ---
+    print_header("Discovering Available Vectorizers")
+    available_vectorizers = safe_store.SafeStore.list_available_vectorizers()
+    for vec in available_vectorizers:
+        print(f"\n- Vectorizer: {vec['name']} ({vec.get('title', 'No Title')})")
+        print(f"  Description: {vec.get('description', 'N/A').strip()}")
+        if vec.get('input_parameters'):
+            print("  Parameters:")
+            for param in vec['input_parameters']:
+                default_val = f" (default: {param['default']})" if 'default' in param else ""
+                mandatory_flag = "[MANDATORY]" if param.get('mandatory') else "[OPTIONAL]"
+                print(f"    - {param['name']}: {param.get('description', 'N/A')} {mandatory_flag}{default_val}")
+
     DOC_DIR = Path("temp_docs_basic")
     prepare_documents(DOC_DIR)
 
@@ -132,7 +145,7 @@ if __name__ == "__main__":
         print_header(f"Ollama Example with Custom Tokenizer (DB: {db_file_ollama})")
         cleanup_db_files(db_file_ollama)
         try:
-            available_models = safe_store.SafeStore.list_available_models("ollama")
+            available_models = safe_store.SafeStore.list_models("ollama")
             print(f"  Found Ollama models: {available_models}")
             if ollama_config["model"] not in available_models:
                  print(f"  [SKIP] Model '{ollama_config['model']}' not found in Ollama.")

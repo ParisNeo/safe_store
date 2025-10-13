@@ -80,3 +80,17 @@ class STVectorizer(BaseVectorizer):
     @property
     def dtype(self) -> np.dtype:
         return self._dtype
+
+    @staticmethod
+    def list_models(**kwargs) -> List[str]:
+        """
+        Returns a list of popular SentenceTransformer models.
+        This is not an exhaustive list from an API but a curated selection.
+        """
+        return [
+            "all-MiniLM-L6-v2",
+            "all-mpnet-base-v2",
+            "paraphrase-multilingual-MiniLM-L12-v2",
+            "distiluse-base-multilingual-cased-v1",
+            "all-roberta-large-v1"
+        ]

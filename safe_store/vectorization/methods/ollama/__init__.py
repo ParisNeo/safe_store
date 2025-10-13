@@ -1,7 +1,7 @@
 import numpy as np
 from typing import List, Optional, Dict, Any
-from ..base import BaseVectorizer
-from ...core.exceptions import ConfigurationError, VectorizationError
+from ...base import BaseVectorizer
+from ....core.exceptions import ConfigurationError, VectorizationError
 from ascii_colors import ASCIIColors
 
 # each vectorizer must have a class name variable to be identified
@@ -132,3 +132,16 @@ class OllamaVectorizer(BaseVectorizer):
     @property
     def dtype(self) -> np.dtype:
         return self._dtype
+
+    @staticmethod
+    def list_models(**kwargs) -> List[str]:
+        """Lists available models from the running Ollama instance."""
+        try:
+            response = ollama.list()
+            # The structure from ollama.list() is a dict with a 'models' key
+            # which is a list of dicts, each with a 'name' key.
+            return [model.model for model in response.models]
+        except ollama.RequestError as e:
+            raise VectorizationError("Could not connect to the Ollama server. Please ensure it is running.") from e
+        except Exception as e:
+            raise VectorizationError(f"An unexpected error occurred while listing Ollama models: {e}") from e

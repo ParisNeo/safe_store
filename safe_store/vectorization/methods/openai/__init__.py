@@ -3,8 +3,8 @@ import numpy as np
 from typing import List, Optional, Dict, Any
 import os # For accessing environment variables like OPENAI_API_KEY
 
-from ..base import BaseVectorizer
-from ...core.exceptions import ConfigurationError, VectorizationError
+from ...base import BaseVectorizer
+from ....core.exceptions import ConfigurationError, VectorizationError
 from ascii_colors import ASCIIColors
 
 # each vectorizer must have a class name variable to be identified
@@ -268,3 +268,12 @@ class OpenAIVectorizer(BaseVectorizer):
     def dtype(self) -> np.dtype:
         """Returns the numpy dtype of the vectors (typically np.float32)."""
         return self._dtype
+
+    @staticmethod
+    def list_models(**kwargs) -> List[str]:
+        """Returns a list of recommended OpenAI embedding models."""
+        return [
+            "text-embedding-3-small",
+            "text-embedding-3-large",
+            "text-embedding-ada-002",
+        ]

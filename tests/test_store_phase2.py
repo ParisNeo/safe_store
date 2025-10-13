@@ -14,7 +14,7 @@ from safe_store.core import db
 from safe_store.core.exceptions import (
     ConfigurationError, VectorizationError, DatabaseError, QueryError, SafeStoreError, FileHandlingError
 )
-from safe_store.vectorization.methods.tfidf import TfidfVectorizerWrapper
+from safe_store.vectorization.methods.tf_idf import TfidfVectorizerWrapper
 from safe_store.vectorization.manager import VectorizationManager
 
 # --- REMOVE Availability Checks and Mock Fixtures ---

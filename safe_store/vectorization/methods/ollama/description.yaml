@@ -1,0 +1,19 @@
+title: Ollama Vectorizer
+author: ParisNeo
+creation_date: 2025-10-10
+last_update_date: 2025-10-10
+class_name: OllamaVectorizer
+description: >
+  A vectorizer that uses a local Ollama instance to generate text embeddings.
+  Requires a running Ollama server.
+input_parameters:
+  - name: model
+    type: str
+    description: "The name of the embedding model to use from your Ollama server (e.g., 'nomic-embed-text')."
+    mandatory: true
+    default: ""
+  - name: host
+    type: str
+    description: "The URL of the Ollama server. If not provided, it defaults to http://localhost:11434 or the OLLAMA_HOST environment variable."
+    mandatory: false
+    default: ""

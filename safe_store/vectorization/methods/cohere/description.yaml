@@ -1,0 +1,30 @@
+title: Cohere Vectorizer
+author: ParisNeo
+creation_date: 2025-10-10
+last_update_date: 2025-10-10
+class_name: CohereVectorizer
+description: >
+  A vectorizer that uses Cohere's API to generate text embeddings.
+  Requires a Cohere API key, which can be provided via the 'api_key' parameter
+  or the COHERE_API_KEY environment variable.
+input_parameters:
+  - name: model
+    type: str
+    description: "The name of the Cohere embedding model to use."
+    mandatory: true
+    default: "embed-english-v3.0"
+  - name: api_key
+    type: str
+    description: "Your Cohere API key. If not provided, the COHERE_API_KEY environment variable will be used."
+    mandatory: false
+    default: ""
+  - name: input_type
+    type: str
+    description: "The type of input being embedded, e.g., 'search_document' or 'search_query'."
+    mandatory: false
+    default: "search_document"
+  - name: truncate
+    type: str
+    description: "The truncation strategy for inputs longer than the model's context window ('NONE', 'START', 'END')."
+    mandatory: false
+    default: "END"
