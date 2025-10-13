@@ -2,7 +2,7 @@ import numpy as np
 from typing import List, Optional, Dict, Any
 from ...base import BaseVectorizer
 from ....core.exceptions import ConfigurationError, VectorizationError
-from ascii_colors import ASCIIColors
+from ascii_colors import ASCIIColors, trace_exception
 
 # each vectorizer must have a class name variable to be identified
 class_name="OllamaVectorizer"
@@ -70,7 +70,7 @@ class OllamaVectorizer(BaseVectorizer):
 
         ASCIIColors.info(f"Initializing Ollama client. Model: {self.model_name}, Host: {self.host or 'default'}")
         try:
-            self.client: ollama.Client = ollama.Client(host=self.host)
+            self.client: ollama.Client = ollama.Client(host=self.host.strip())
 
             # Test connection and get embedding dimension
             test_prompt = "hello world"
@@ -89,10 +89,13 @@ class OllamaVectorizer(BaseVectorizer):
             ASCIIColors.info(f"Ollama model '{self.model_name}' ready. Dimension: {self._dim}")
 
         except _OllamaResponseError as e:
+            trace_exception(e)
             raise VectorizationError(f"Ollama API error for model '{self.model_name}': {e.error}") from e
         except _OllamaRequestError as e:
+            trace_exception(e)
             raise VectorizationError(f"Ollama request error connecting to host '{self.host or 'default'}': {e}") from e
         except Exception as e:
+            trace_exception(e)
             raise VectorizationError(f"Failed to initialize Ollama vectorizer '{self.model_name}': {e}") from e
 
     def vectorize(self, texts: List[str]) -> np.ndarray:
