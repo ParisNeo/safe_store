@@ -239,6 +239,60 @@ This script demonstrates how the self-documenting nature of `safe_store` enables
 
 ---
 
+## Core Concepts for Advanced RAG
+
+### Understanding Tokenization for Chunking
+`safe_store` can chunk your documents based on character count (`character` strategy) or token count (`token` strategy). Using the `token` strategy is often more effective as it aligns better with how Large Language Models (LLMs) process text.
+
+When you select `chunking_strategy='token'`, `safe_store` intelligently handles tokenization:
+
+1.  **Vectorizer's Native Tokenizer:** If the chosen vectorizer (like a local `sentence-transformers` model) has its own tokenizer, `safe_store` will use it. This is the most accurate method, as the chunking tokens will perfectly match the vectorizer's tokens.
+
+2.  **Fallback to `tiktoken`:** Some vectorizers, especially those accessed via an API (like OpenAI or Cohere), do not expose their tokenizer for local use. In these cases, `safe_store` uses `tiktoken` (specifically the `cl100k_base` model) as a reliable fallback. `tiktoken` is the tokenizer used by modern OpenAI models and provides a very close approximation for many other models, ensuring your chunks are sized correctly for optimal performance.
+
+You can also specify a custom tokenizer during `SafeStore` initialization if you have specific needs.
+
+### Enriching Your Data with Metadata
+Metadata is extra information about your documents that provides crucial context. You can attach a dictionary of key-value pairs to any document you add to `safe_store`. This metadata is then automatically used to enrich the search results, leading to more accurate and context-aware answers in your RAG pipeline.
+
+**How to Add Metadata:**
+Simply pass a dictionary to the `metadata` parameter when adding content.
+
+```python
+# Example of adding a document with metadata
+doc_info = {
+    "title": "Quantum Entanglement in Nanostructures",
+    "author": "Dr. Alice Smith",
+    "year": 2024,
+    "topic": "Quantum Physics"
+}
+
+with store:
+    store.add_document(
+        "path/to/research_paper.txt",
+        metadata=doc_info
+    )
+```
+
+**How Metadata is Used:**
+When you perform a `query`, `safe_store` finds the most relevant text chunks. Before returning a chunk, it automatically prepends the metadata of the source document to the chunk's text.
+
+This means the context you feed into your LLM is not just the raw text, but a richer snippet that looks like this:
+
+```text
+--- Document Context ---
+Title: Quantum Entanglement in Nanostructures
+Author: Dr. Alice Smith
+Year: 2024
+Topic: Quantum Physics
+------------------------
+
+...the actual text from the document chunk begins here, discussing the specifics of entanglement in nanostructures...
+```
+This "just-in-time" context injection dramatically improves the LLM's ability to understand the source and relevance of the information, leading to better-quality responses without any extra work on your part.
+
+---
+
 ## 🏁 Quick Start Guide
 
 This example shows the end-to-end workflow: indexing a document, then building and querying a knowledge graph of its **instances** using a simple string-based ontology.

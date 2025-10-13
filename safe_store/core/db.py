@@ -56,8 +56,12 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     try:
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS documents (
-            doc_id INTEGER PRIMARY KEY AUTOINCREMENT, file_path TEXT UNIQUE NOT NULL, file_hash TEXT,
-            full_text TEXT, metadata TEXT, added_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+            doc_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_path TEXT UNIQUE NOT NULL,
+            file_hash TEXT,
+            metadata BLOB,
+            is_encrypted INTEGER DEFAULT 0 NOT NULL,
+            added_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
         );""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_doc_file_path ON documents (file_path);")
         
@@ -115,11 +119,11 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         raise DatabaseError(f"Schema initialization error: {e}") from e
 
 # --- Original SafeStore CRUD Functions ---
-def add_document_record(conn: sqlite3.Connection, file_path: str, full_text: str, file_hash: Optional[str] = None, metadata: Optional[str] = None) -> int:
-    sql = "INSERT INTO documents (file_path, file_hash, full_text, metadata) VALUES (?, ?, ?, ?)"
+def add_document_record(conn: sqlite3.Connection, file_path: str, file_hash: Optional[str] = None, metadata: Optional[bytes] = None, is_encrypted: bool = False) -> int:
+    sql = "INSERT INTO documents (file_path, file_hash, metadata, is_encrypted) VALUES (?, ?, ?, ?)"
     cursor = conn.cursor()
     try:
-        cursor.execute(sql, (file_path, file_hash, full_text, metadata))
+        cursor.execute(sql, (file_path, file_hash, metadata, 1 if is_encrypted else 0))
         doc_id = cursor.lastrowid
         if doc_id is None: raise DatabaseError(f"Failed to get lastrowid for document '{file_path}'.")
         return doc_id

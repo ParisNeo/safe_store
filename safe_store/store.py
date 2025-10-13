@@ -192,11 +192,11 @@ class SafeStore:
                         "but is a close approximation."
                     )
                 else:
-                    raise ConfigurationError(
-                        f"Chunking strategy is 'token', but the '{self.vectorizer_name}' vectorizer does not provide a client-side tokenizer. "
-                        "To resolve this, either set `chunking_strategy='character'` or provide a `custom_tokenizer` "
-                        "(e.g., `custom_tokenizer={'name': 'tiktoken', 'model': 'cl100k_base'}`)."
+                    ASCIIColors.warning(
+                        f"Vectorizer '{self.vectorizer_name}' does not provide a client-side tokenizer. "
+                        "Defaulting to 'tiktoken' for token-based chunking. This is a common choice for OpenAI-compatible models."
                     )
+                    self.tokenizer_for_chunking = get_tokenizer({"name": "tiktoken", "model": "cl100k_base"})
 
             stored_info_json = db.get_store_metadata(self.conn, "vectorizer_info")
             
@@ -351,11 +351,29 @@ class SafeStore:
             full_text = content_loader()
             cleaned_text = self.text_cleaner(full_text)
             
+            # Prepare metadata for storage
+            metadata_blob: Optional[bytes] = None
+            if metadata:
+                metadata_json = json.dumps(metadata)
+                if self.encryptor.is_enabled:
+                    metadata_blob = self.encryptor.encrypt(metadata_json)
+                else:
+                    metadata_blob = metadata_json.encode('utf-8')
+
             doc_id = existing_doc_id
             if doc_id is None:
-                doc_id = db.add_document_record(self.conn, content_id, cleaned_text, current_hash, json.dumps(metadata) if metadata else None)
+                doc_id = db.add_document_record(
+                    self.conn,
+                    file_path=content_id,
+                    file_hash=current_hash,
+                    metadata=metadata_blob,
+                    is_encrypted=self.encryptor.is_enabled
+                )
             else:
-                cursor.execute("UPDATE documents SET file_hash=?, full_text=?, metadata=? WHERE doc_id=?", (current_hash, cleaned_text, json.dumps(metadata) if metadata else None, doc_id))
+                cursor.execute(
+                    "UPDATE documents SET file_hash=?, metadata=?, is_encrypted=? WHERE doc_id=?",
+                    (current_hash, metadata_blob, 1 if self.encryptor.is_enabled else 0, doc_id)
+                )
 
             chunks_data = chunking.generate_chunks(
                 text=cleaned_text,
@@ -366,13 +384,16 @@ class SafeStore:
                 expand_after=self.expand_after,
                 tokenizer=self.tokenizer_for_chunking
             )
+            
+            # Filter out chunks where the vectorization text is empty or just whitespace
+            chunks_data = [chunk for chunk in chunks_data if chunk[0] and chunk[0].strip()]
+
             if not chunks_data:
                 self.conn.commit(); return
 
             vector_texts = [item[0] for item in chunks_data]
             storage_texts = [item[1] for item in chunks_data]
             
-            # --- FIX: Use duck typing to check for fit capability, removing the specific import ---
             if hasattr(self.vectorizer, 'fit') and hasattr(self.vectorizer, '_fitted') and not self.vectorizer._fitted:
                 self.vectorizer.fit(vector_texts)
                 if hasattr(self.vectorizer, 'get_params_to_store'):
@@ -392,7 +413,7 @@ class SafeStore:
         except Exception as e:
             if self.conn and self.conn.in_transaction: self.conn.rollback()
             raise SafeStoreError(f"Transaction failed for '{content_id}': {e}") from e
-
+        
     def query(
         self,
         query_text: str,
@@ -427,7 +448,13 @@ class SafeStore:
             top_chunk_ids, top_scores = chunk_ids_passing[top_indices], scores_passing[top_indices]
 
             placeholders = ','.join('?' * len(top_chunk_ids))
-            sql = f"SELECT c.chunk_id, c.chunk_text, c.start_pos, c.end_pos, c.is_encrypted, d.file_path, d.metadata FROM chunks c JOIN documents d ON c.doc_id = d.doc_id WHERE c.chunk_id IN ({placeholders})"
+            sql = f"""
+                SELECT c.chunk_id, c.chunk_text, c.start_pos, c.end_pos,
+                       c.is_encrypted AS chunk_is_encrypted, d.file_path,
+                       d.metadata AS doc_metadata, d.is_encrypted AS doc_is_encrypted
+                FROM chunks c JOIN documents d ON c.doc_id = d.doc_id
+                WHERE c.chunk_id IN ({placeholders})
+            """
             
             details_map = {}
             original_factory = self.conn.text_factory
@@ -436,22 +463,49 @@ class SafeStore:
             self.conn.text_factory = original_factory
             
             for row in details_raw:
-                chunk_id, text_data, start, end, is_enc, path, meta = row
+                chunk_id, chunk_text_data, start, end, chunk_is_enc, path, doc_meta_data, doc_is_enc = row
                 
-                if is_enc:
+                chunk_text: str
+                if chunk_is_enc:
                     if self.encryptor.is_enabled:
-                        try:
-                            text = self.encryptor.decrypt(text_data)
-                        except EncryptionError:
-                            text = "[Encrypted - Decryption Failed]"
-                    else:
-                        text = "[Encrypted - Key Unavailable]"
+                        try: chunk_text = self.encryptor.decrypt(chunk_text_data)
+                        except EncryptionError: chunk_text = "[Encrypted Chunk - Decryption Failed]"
+                    else: chunk_text = "[Encrypted Chunk - Key Unavailable]"
                 else:
-                    text = text_data.decode('utf-8')
+                    chunk_text = chunk_text_data.decode('utf-8')
                 
+                doc_metadata_text = ""
+                meta_dict = None
+                if doc_meta_data:
+                    meta_bytes = doc_meta_data
+                    meta_json_str: Optional[str] = None
+                    if doc_is_enc:
+                        if self.encryptor.is_enabled:
+                            try: meta_json_str = self.encryptor.decrypt(meta_bytes)
+                            except EncryptionError: meta_dict = {"error": "Failed to decrypt document metadata"}
+                        else: meta_dict = {"error": "Encrypted metadata but key is unavailable"}
+                    else:
+                        meta_json_str = meta_bytes.decode('utf-8')
+                    
+                    if meta_json_str:
+                        try: meta_dict = json.loads(meta_json_str)
+                        except json.JSONDecodeError: meta_dict = {"error": "Could not parse metadata JSON"}
+                
+                if isinstance(meta_dict, dict) and "error" not in meta_dict:
+                    doc_metadata_text += "--- Document Context ---\n"
+                    for k, v in meta_dict.items():
+                        doc_metadata_text += f"{str(k).title()}: {str(v)}\n"
+                    doc_metadata_text += "------------------------\n\n"
+
+                final_chunk_text = doc_metadata_text + chunk_text
                 path_str = path.decode('utf-8')
-                meta_dict = json.loads(meta.decode('utf-8')) if meta else None
-                details_map[chunk_id] = {"chunk_text": text, "start_pos": start, "end_pos": end, "file_path": path_str, "metadata": meta_dict}
+                details_map[chunk_id] = {
+                    "chunk_text": final_chunk_text,
+                    "start_pos": start,
+                    "end_pos": end,
+                    "file_path": path_str,
+                    "document_metadata": meta_dict
+                }
             
             ordered_results = []
             for cid, s in zip(top_chunk_ids, top_scores):
@@ -496,8 +550,38 @@ class SafeStore:
             self._ensure_connection()
             assert self.conn is not None
             docs = []
-            for r in self.conn.execute("SELECT doc_id, file_path, file_hash, added_timestamp, metadata FROM documents"):
-                 docs.append({"doc_id": r[0], "file_path": r[1], "file_hash": r[2], "added_timestamp": r[3], "metadata": json.loads(r[4]) if r[4] else None})
+            original_factory = self.conn.text_factory
+            self.conn.text_factory = bytes
+            rows = self.conn.execute("SELECT doc_id, file_path, file_hash, added_timestamp, metadata, is_encrypted FROM documents").fetchall()
+            self.conn.text_factory = original_factory
+
+            for r in rows:
+                doc_id, file_path_bytes, file_hash_bytes, ts, meta_blob, is_enc = r
+                
+                meta_dict = None
+                if meta_blob:
+                    if is_enc:
+                        if self.encryptor.is_enabled:
+                            try:
+                                meta_json = self.encryptor.decrypt(meta_blob)
+                                meta_dict = json.loads(meta_json)
+                            except (EncryptionError, json.JSONDecodeError):
+                                meta_dict = {"error": "Failed to decrypt or parse metadata"}
+                        else:
+                            meta_dict = {"error": "Encrypted metadata but key unavailable"}
+                    else:
+                        try:
+                            meta_dict = json.loads(meta_blob.decode('utf-8'))
+                        except json.JSONDecodeError:
+                            meta_dict = {"error": "Failed to parse metadata"}
+
+                docs.append({
+                    "doc_id": doc_id,
+                    "file_path": file_path_bytes.decode('utf-8'),
+                    "file_hash": file_hash_bytes.decode('utf-8') if file_hash_bytes else None,
+                    "added_timestamp": ts,
+                    "metadata": meta_dict
+                })
             return docs
 
     def vectorize_text(self, text_to_vectorize: str):
