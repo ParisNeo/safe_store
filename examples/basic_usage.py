@@ -101,6 +101,25 @@ if __name__ == "__main__":
                     res = results_st[0]
                     print(f"  Query Result: Score={res['similarity_percent']:.2f}%, Text='{res['chunk_text'][:60]}...'")
                 
+                # NEW: Demonstrate vectorizing with metadata
+                print("\n  Demonstrating vectorization with metadata...")
+                store_st.add_text(
+                    unique_id="metadata_vectorization_test",
+                    text="This text is about oranges and lemons.",
+                    metadata={"topic": "citrus fruits", "author": "test"},
+                    vectorize_with_metadata=True, # This is the new option
+                    force_reindex=True
+                )
+                # This query should be more similar to the metadata ("citrus") than the other documents.
+                results_meta = store_st.query("information about citrus", top_k=1)
+                if results_meta:
+                    res = results_meta[0]
+                    print(f"  Querying with metadata context ('citrus'): Score={res['similarity_percent']:.2f}%, Path='{res['file_path']}'")
+                    if res['file_path'] == 'metadata_vectorization_test':
+                        print("  SUCCESS: The most relevant result came from the document with vectorized metadata.")
+                    else:
+                        print("  NOTE: The top result was not the one with vectorized metadata, which might happen with some models.")
+
                 print("\n  Demonstrating file update...")
                 (DOC_DIR / "update_later.txt").write_text("This content is new and improved for re-indexing.")
                 store_st.add_document(DOC_DIR / "update_later.txt", force_reindex=True)

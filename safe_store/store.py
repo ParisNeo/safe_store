@@ -308,7 +308,13 @@ class SafeStore:
         hasher.update(text.encode("utf-8"))
         return hasher.hexdigest()
 
-    def add_document(self, file_path: Union[str, Path], metadata: Optional[Dict[str, Any]] = None, force_reindex: bool = False):
+    def add_document(
+        self,
+        file_path: Union[str, Path],
+        metadata: Optional[Dict[str, Any]] = None,
+        force_reindex: bool = False,
+        vectorize_with_metadata: bool = False
+    ):
         with self._instance_lock, self._optional_file_lock_context(f"add_document: {Path(file_path).name}"):
             self._ensure_connection()
             self._add_content_impl(
@@ -316,10 +322,18 @@ class SafeStore:
                 content_loader=lambda: parser.parse_document(file_path),
                 hash_loader=lambda: self._get_file_hash(Path(file_path)),
                 metadata=metadata,
-                force_reindex=force_reindex
+                force_reindex=force_reindex,
+                vectorize_with_metadata=vectorize_with_metadata
             )
 
-    def add_text(self, unique_id: str, text: str, metadata: Optional[Dict[str, Any]] = None, force_reindex: bool = False):
+    def add_text(
+        self,
+        unique_id: str,
+        text: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        force_reindex: bool = False,
+        vectorize_with_metadata: bool = False
+    ):
         with self._instance_lock, self._optional_file_lock_context(f"add_text: {unique_id}"):
             self._ensure_connection()
             self._add_content_impl(
@@ -327,10 +341,11 @@ class SafeStore:
                 content_loader=lambda: text,
                 hash_loader=lambda: self._get_text_hash(text),
                 metadata=metadata,
-                force_reindex=force_reindex
+                force_reindex=force_reindex,
+                vectorize_with_metadata=vectorize_with_metadata
             )
 
-    def _add_content_impl(self, content_id, content_loader, hash_loader, metadata, force_reindex):
+    def _add_content_impl(self, content_id, content_loader, hash_loader, metadata, force_reindex, vectorize_with_metadata):
         assert self.conn and self.vectorizer is not None
         
         current_hash = hash_loader()
@@ -394,6 +409,13 @@ class SafeStore:
             vector_texts = [item[0] for item in chunks_data]
             storage_texts = [item[1] for item in chunks_data]
             
+            if vectorize_with_metadata and metadata:
+                metadata_string = "--- Document Context ---\n"
+                for k, v in metadata.items():
+                    metadata_string += f"{str(k).title()}: {str(v)}\n"
+                metadata_string += "------------------------\n\n"
+                vector_texts = [metadata_string + text for text in vector_texts]
+
             if hasattr(self.vectorizer, 'fit') and hasattr(self.vectorizer, '_fitted') and not self.vectorizer._fitted:
                 self.vectorizer.fit(vector_texts)
                 if hasattr(self.vectorizer, 'get_params_to_store'):
@@ -588,3 +610,148 @@ class SafeStore:
         self._ensure_connection()
         assert self.vectorizer is not None
         return self.vectorizer.vectorize([text_to_vectorize])
+
+    def get_chunk_by_id(self, chunk_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves the details of a single chunk by its ID, including text and metadata.
+
+        Args:
+            chunk_id: The unique identifier of the chunk.
+
+        Returns:
+            A dictionary containing chunk details ('chunk_id', 'chunk_text', 'file_path', 
+            'document_metadata'), or None if not found.
+        """
+        with self._instance_lock, self._optional_file_lock_context(f"get_chunk_by_id: {chunk_id}"):
+            self._ensure_connection()
+            assert self.conn is not None
+            
+            row = db.get_chunk_raw_details_by_id(self.conn, chunk_id)
+            if not row:
+                return None
+
+            # Unpack the raw row from the database
+            _, chunk_text_data, chunk_is_enc, path_bytes, doc_meta_data, doc_is_enc = row
+
+            # Decrypt chunk text if necessary
+            chunk_text: str
+            if chunk_is_enc:
+                if self.encryptor.is_enabled:
+                    try: chunk_text = self.encryptor.decrypt(chunk_text_data)
+                    except EncryptionError: chunk_text = "[Encrypted Chunk - Decryption Failed]"
+                else: chunk_text = "[Encrypted Chunk - Key Unavailable]"
+            else:
+                chunk_text = chunk_text_data.decode('utf-8')
+
+            # Decrypt and parse document metadata if necessary
+            meta_dict = None
+            if doc_meta_data:
+                if doc_is_enc:
+                    if self.encryptor.is_enabled:
+                        try:
+                            meta_json = self.encryptor.decrypt(doc_meta_data)
+                            meta_dict = json.loads(meta_json)
+                        except (EncryptionError, json.JSONDecodeError):
+                            meta_dict = {"error": "Failed to decrypt or parse metadata"}
+                    else:
+                        meta_dict = {"error": "Encrypted metadata but key unavailable"}
+                else:
+                    try: meta_dict = json.loads(doc_meta_data.decode('utf-8'))
+                    except json.JSONDecodeError: meta_dict = {"error": "Failed to parse metadata"}
+
+            return {
+                "chunk_id": chunk_id,
+                "chunk_text": chunk_text,
+                "file_path": path_bytes.decode('utf-8'),
+                "document_metadata": meta_dict
+            }
+
+    def export_point_cloud(self, output_format: Literal['json_str', 'dict', 'csv'] = 'json_str') -> Union[str, List[Dict[str, Any]]]:
+        """
+        Exports all vectorized chunks as a 2D point cloud using PCA.
+
+        This method is useful for visualizing the semantic relationships between chunks.
+        Each point in the cloud represents a chunk and includes its chunk ID,
+        document title, and associated metadata.
+
+        Args:
+            output_format: The desired output format.
+                           - 'json_str': A JSON string (default).
+                           - 'dict': A Python list of dictionaries.
+                           - 'csv': A CSV formatted string.
+
+        Returns:
+            The point cloud data in the specified format.
+        
+        Raises:
+            ConfigurationError: If 'scikit-learn' or 'pandas' is not installed.
+            SafeStoreError: If there are no vectors in the store to export.
+        """
+        try:
+            from sklearn.decomposition import PCA
+            import pandas as pd
+        except ImportError:
+            raise ConfigurationError("The 'export_point_cloud' feature requires 'scikit-learn' and 'pandas'. Install them with: pip install scikit-learn pandas")
+
+        with self._instance_lock, self._optional_file_lock_context("export_point_cloud"):
+            self._ensure_connection()
+            assert self.conn and self.vectorizer is not None
+
+            all_data = db.get_all_vectors_with_doc_info(self.conn)
+            if not all_data:
+                raise SafeStoreError("No vectors found in the store to export.")
+
+            chunk_ids, vectors, doc_paths, doc_metadatas = [], [], [], []
+            
+            vectorizer_details = self.get_vectorization_details()
+            if not vectorizer_details:
+                raise SafeStoreError("Could not retrieve vectorizer details from the database.")
+            dtype_str = vectorizer_details["dtype"]
+
+            for row in all_data:
+                chunk_id, vector_blob, path_bytes, meta_blob, is_enc = row
+                chunk_ids.append(chunk_id)
+                vectors.append(db.reconstruct_vector(vector_blob, dtype_str))
+                doc_paths.append(path_bytes.decode('utf-8'))
+                
+                meta_dict = None
+                if meta_blob:
+                    if is_enc:
+                        if self.encryptor.is_enabled:
+                            try:
+                                meta_json = self.encryptor.decrypt(meta_blob)
+                                meta_dict = json.loads(meta_json)
+                            except (EncryptionError, json.JSONDecodeError):
+                                meta_dict = {"error": "decryption_failed"}
+                        else:
+                            meta_dict = {"error": "key_unavailable"}
+                    else:
+                        try: meta_dict = json.loads(meta_blob.decode('utf-8'))
+                        except json.JSONDecodeError: meta_dict = {"error": "parsing_failed"}
+                doc_metadatas.append(meta_dict or {})
+            
+            X = np.array(vectors)
+            pca = PCA(n_components=2, random_state=42)
+            X_2d = pca.fit_transform(X)
+
+            point_cloud_data = []
+            for i, chunk_id in enumerate(chunk_ids):
+                point_cloud_data.append({
+                    "x": float(X_2d[i, 0]),
+                    "y": float(X_2d[i, 1]),
+                    "chunk_id": int(chunk_id),
+                    "document_title": Path(doc_paths[i]).name,
+                    "document_path": doc_paths[i],
+                    "metadata": doc_metadatas[i]
+                })
+
+            if output_format == 'dict':
+                return point_cloud_data
+            elif output_format == 'csv':
+                df = pd.DataFrame(point_cloud_data)
+                if any(d['metadata'] for d in point_cloud_data):
+                    meta_df = pd.json_normalize([d['metadata'] for d in point_cloud_data]).add_prefix('meta_')
+                    df = pd.concat([df.drop('metadata', axis=1), meta_df], axis=1)
+                return df.to_csv(index=False)
+            else: # 'json_str' is the default
+                return json.dumps(point_cloud_data)

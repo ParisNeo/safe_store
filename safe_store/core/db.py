@@ -420,3 +420,33 @@ def merge_nodes_db(conn, source_node_id, target_node_id):
         conn.execute("DELETE FROM graph_nodes WHERE node_id = ?", (source_node_id,))
     except sqlite3.Error as e:
         raise GraphDBError(f"DB error merging node {source_node_id} into {target_node_id}: {e}") from e
+
+def get_chunk_raw_details_by_id(conn: sqlite3.Connection, chunk_id: int) -> Optional[Tuple]:
+    """Fetches raw details for a single chunk by its ID, returning bytes for text/blobs."""
+    sql = """
+        SELECT c.chunk_id, c.chunk_text, c.is_encrypted, d.file_path, d.metadata, d.is_encrypted
+        FROM chunks c
+        JOIN documents d ON c.doc_id = d.doc_id
+        WHERE c.chunk_id = ?
+    """
+    original_factory = conn.text_factory
+    conn.text_factory = bytes
+    cursor = conn.cursor()
+    row = cursor.execute(sql, (chunk_id,)).fetchone()
+    conn.text_factory = original_factory
+    return row
+
+def get_all_vectors_with_doc_info(conn: sqlite3.Connection) -> List[Tuple]:
+    """Fetches all vectors along with their chunk_id and document details, returning bytes."""
+    sql = """
+        SELECT v.chunk_id, v.vector_data, d.file_path, d.metadata, d.is_encrypted AS doc_is_encrypted
+        FROM vectors v
+        JOIN chunks c ON v.chunk_id = c.chunk_id
+        JOIN documents d ON c.doc_id = d.doc_id
+    """
+    original_factory = conn.text_factory
+    conn.text_factory = bytes
+    cursor = conn.cursor()
+    results = cursor.execute(sql).fetchall()
+    conn.text_factory = original_factory
+    return results
