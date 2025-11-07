@@ -8,11 +8,6 @@
 - Every node's `properties` object **MUST** contain an `identifying_value`. This is a unique name or identifier for the entity (e.g., "John Doe", "Acme Corporation") and is used to link relationships.
 - Format the output as a single JSON object inside a markdown code block.
 
----
-**Ontology Schema (You MUST adhere to this strictly):**
-{ontology_schema}
----
-
 **User Guidance (Follow these additional instructions within the ontology's constraints):**
 {user_guidance}
 ---

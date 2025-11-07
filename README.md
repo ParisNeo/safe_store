@@ -443,7 +443,7 @@ When you select `chunking_strategy='token'`, `safe_store` intelligently handles 
 You can also specify a custom tokenizer during `SafeStore` initialization if you have specific needs.
 
 ### Enriching Your Data with Metadata
-Metadata is extra information about your documents that provides crucial context. You can attach a dictionary of key-value pairs to any document you add to `safe_store`. This metadata is then automatically used to enrich the search results, leading to more accurate and context-aware answers in your RAG pipeline.
+Metadata is extra information about your documents that provides crucial context. You can attach a dictionary of key-value pairs to any document you add to `safe_store`.
 
 **How to Add Metadata:**
 Simply pass a dictionary to the `metadata` parameter when adding content.
@@ -464,22 +464,46 @@ with store:
     )
 ```
 
-**How Metadata is Used:**
-When you perform a `query`, `safe_store` finds the most relevant text chunks. Before returning a chunk, it automatically prepends the metadata of the source document to the chunk's text.
+**How Metadata is Used in Queries:**
+When you perform a `query`, the document's metadata is returned in two ways for maximum flexibility:
 
-This means the context you feed into your LLM is not just the raw text, but a richer snippet that looks like this:
+1.  **As a structured dictionary:** The `document_metadata` field contains the parsed metadata, which your application can use for filtering, logging, or display purposes.
+2.  **Prepended to the `chunk_text`:** A human-readable version of the metadata is automatically added to the beginning of the returned `chunk_text`. This "just-in-time" context injection dramatically improves an LLM's ability to understand the source and relevance of the information, leading to better-quality responses without any extra work on your part.
 
-```text
---- Document Context ---
-Title: Quantum Entanglement in Nanostructures
-Author: Dr. Alice Smith
-Year: 2024
-Topic: Quantum Physics
-------------------------
-
-...the actual text from the document chunk begins here, discussing the specifics of entanglement in nanostructures...
+A query result object looks like this:
+```json
+[
+  {
+    "chunk_id": 123,
+    "similarity_percent": 95.4,
+    "file_path": "/path/to/research_paper.txt",
+    "document_metadata": {
+      "title": "Quantum Entanglement in Nanostructures",
+      "author": "Dr. Alice Smith",
+      "year": 2024,
+      "topic": "Quantum Physics"
+    },
+    "chunk_text": "--- Document Context ---\\nTitle: Quantum Entanglement in Nanostructures\\nAuthor: Dr. Alice Smith\\nYear: 2024\\nTopic: Quantum Physics\\n------------------------\\n\\n...the actual text from the document chunk begins here..."
+  }
+]
 ```
-This "just-in-time" context injection dramatically improves the LLM's ability to understand the source and relevance of the information, leading to better-quality responses without any extra work on your part.
+
+### Reconstructing Original Content
+After indexing, you may need to retrieve the full, original text of a document as it was processed by `safe_store`. The `reconstruct_document_text` method does this by fetching and reassembling all of a document's stored chunks.
+
+```python
+# Assuming 'store' is an initialized SafeStore instance
+# with "path/to/research_paper.txt" already added.
+full_text = store.reconstruct_document_text("path/to/research_paper.txt")
+
+if full_text:
+    print("--- Reconstructed Text ---")
+    print(full_text[:500] + "...")
+
+# Note: If a chunk_overlap was used during indexing, the reconstructed text
+# will contain these repeated, overlapping segments. This method provides a
+# raw reassembly of the stored data.
+```
 
 ### Pre-processing Chunks on the Fly with `chunk_processor`
 For advanced RAG, you might need to transform the text of a chunk *before* it's vectorized and stored. The `chunk_processor` is a powerful hook that lets you do exactly that.
@@ -634,6 +658,7 @@ pip install safe-store[all]
 *   `add_document(path, ...)`: Parses, chunks, vectorizes, and stores a document or an entire folder.
 *   `query(query_text, top_k, ...)`: Performs a semantic search and returns the most relevant text chunks for your RAG pipeline.
 *   `get_chunk_by_id(chunk_id)`: Retrieves the full text and metadata for a specific chunk by its ID.
+*   `reconstruct_document_text(file_path)`: Reassembles and returns the full, original text of a document by joining its stored chunks.
 *   `export_point_cloud()`: Exports all vectors as a 2D point cloud for visualization, using PCA for dimensionality reduction.
 
 #### `GraphStore` (The Intelligence Layer)

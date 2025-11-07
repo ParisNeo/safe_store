@@ -150,8 +150,7 @@ class GraphStore:
             ASCIIColors.info("Using ontology-aware prompt for graph extraction.")
             return template.format(
                 chunk_text=chunk_text,
-                ontology_schema=ontology_schema,
-                user_guidance=user_guidance
+                user_guidance=("" if not ontology_schema else "Ontology:\n"+ontology_schema+"\nGuidance:\n") + user_guidance
             )
         else:
             template = self.graph_extraction_prompt_template

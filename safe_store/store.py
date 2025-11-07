@@ -322,7 +322,7 @@ class SafeStore:
         vectorize_with_metadata: bool = False,
         chunk_processor: Optional[Callable[[str, Dict[str, Any]], str]] = None
     ):
-        with self._instance_lock, self._optional_file_lock_context(f"add_document: {Path(file_path).name}"):
+        with self._instance_lock:
             self._ensure_connection()
             self._add_content_impl(
                 content_id=str(Path(file_path).resolve()),
@@ -343,7 +343,7 @@ class SafeStore:
         vectorize_with_metadata: bool = False,
         chunk_processor: Optional[Callable[[str, Dict[str, Any]], str]] = None
     ):
-        with self._instance_lock, self._optional_file_lock_context(f"add_text: {unique_id}"):
+        with self._instance_lock:
             self._ensure_connection()
             self._add_content_impl(
                 content_id=unique_id,
@@ -356,104 +356,116 @@ class SafeStore:
             )
 
     def _add_content_impl(self, content_id, content_loader, hash_loader, metadata, force_reindex, vectorize_with_metadata, chunk_processor):
+        """
+        Orchestrates adding content by separating non-DB-locking heavy processing
+        from the final, locked database write transaction.
+        """
         assert self.conn and self.vectorizer is not None
         
+        # --- Phase 1: Quick check if update is needed (Short DB lock) ---
         current_hash = hash_loader()
-        cursor = self.conn.cursor()
-
-        try:
-            cursor.execute("BEGIN")
-            res = cursor.execute("SELECT doc_id, file_hash FROM documents WHERE file_path = ?", (content_id,)).fetchone()
+        with self._optional_file_lock_context(f"checking document status for {content_id}"):
+            self._ensure_connection()
+            assert self.conn is not None
+            res = self.conn.execute("SELECT doc_id, file_hash FROM documents WHERE file_path = ?", (content_id,)).fetchone()
             existing_doc_id, existing_hash = res if res else (None, None)
 
             if not force_reindex and existing_hash == current_hash and existing_doc_id:
-                if cursor.execute("SELECT 1 FROM vectors v JOIN chunks c ON v.chunk_id = c.chunk_id WHERE c.doc_id = ? LIMIT 1", (existing_doc_id,)).fetchone():
-                    self.conn.commit(); return
+                if self.conn.execute("SELECT 1 FROM vectors v JOIN chunks c ON v.chunk_id = c.chunk_id WHERE c.doc_id = ? LIMIT 1", (existing_doc_id,)).fetchone():
+                    ASCIIColors.info(f"'{content_id}' is already up-to-date. Skipping.")
+                    return
 
+        # --- Phase 2: Heavy processing (No DB lock) ---
+        # This part can be slow (file I/O, parsing, vectorization)
+        ASCIIColors.info(f"Processing '{content_id}' for indexing...")
+        full_text = content_loader()
+        cleaned_text = self.text_cleaner(full_text)
+        
+        chunks_data = chunking.generate_chunks(
+            text=cleaned_text, strategy=self.chunking_strategy, chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap, expand_before=self.expand_before,
+            expand_after=self.expand_after, tokenizer=self.tokenizer_for_chunking
+        )
+
+        if chunk_processor:
+            processed_chunks_data = []
+            doc_metadata = metadata or {}
+            for vector_text, storage_text in chunks_data:
+                processed_text = chunk_processor(vector_text, doc_metadata)
+                if processed_text and isinstance(processed_text, str):
+                    processed_chunks_data.append((processed_text, processed_text))
+            chunks_data = processed_chunks_data
+
+        chunks_data = [chunk for chunk in chunks_data if chunk[0] and chunk[0].strip()]
+
+        if not chunks_data:
+            ASCIIColors.warning(f"No valid chunks generated for '{content_id}'. Deleting if it exists.")
             if existing_doc_id:
-                cursor.execute("DELETE FROM chunks WHERE doc_id = ?", (existing_doc_id,))
+                self.delete_document_by_id(existing_doc_id)
+            return
 
-            full_text = content_loader()
-            cleaned_text = self.text_cleaner(full_text)
-            
-            # Prepare metadata for storage
-            metadata_blob: Optional[bytes] = None
-            if metadata:
-                metadata_json = json.dumps(metadata)
-                if self.encryptor.is_enabled:
-                    metadata_blob = self.encryptor.encrypt(metadata_json)
+        vector_texts = [item[0] for item in chunks_data]
+        storage_texts = [item[1] for item in chunks_data]
+        
+        if vectorize_with_metadata and metadata:
+            metadata_string = "--- Document Context ---\n"
+            for k, v in metadata.items(): metadata_string += f"{str(k).title()}: {str(v)}\n"
+            metadata_string += "------------------------\n\n"
+            vector_texts = [metadata_string + text for text in vector_texts]
+
+        if hasattr(self.vectorizer, 'fit') and hasattr(self.vectorizer, '_fitted') and not self.vectorizer._fitted:
+            self.vectorizer.fit(vector_texts)
+            if hasattr(self.vectorizer, 'get_params_to_store'):
+                with self._optional_file_lock_context("updating vectorizer params"):
+                    self._ensure_connection()
+                    assert self.conn is not None
+                    try:
+                        self.conn.execute("BEGIN")
+                        stored_info_json = db.get_store_metadata(self.conn, "vectorizer_info") or '{}'
+                        stored_info = json.loads(stored_info_json)
+                        stored_info["dim"] = self.vectorizer.dim
+                        stored_info["params"] = self.vectorizer.get_params_to_store()
+                        db.set_store_metadata(self.conn, "vectorizer_info", json.dumps(stored_info))
+                        self.conn.commit()
+                    except Exception as e:
+                        if self.conn and self.conn.in_transaction: self.conn.rollback()
+                        raise DatabaseError("Failed to store updated vectorizer params") from e
+
+        vectors = self.vectorizer.vectorize(vector_texts)
+
+        # --- Phase 3: Write to DB (Transaction with lock) ---
+        with self._optional_file_lock_context(f"writing document {content_id} to DB"):
+            self._ensure_connection()
+            assert self.conn is not None
+            try:
+                self.conn.execute("BEGIN")
+                
+                res = self.conn.execute("SELECT doc_id FROM documents WHERE file_path = ?", (content_id,)).fetchone()
+                doc_id = res[0] if res else None
+                
+                metadata_blob: Optional[bytes] = None
+                if metadata:
+                    metadata_json = json.dumps(metadata)
+                    metadata_blob = self.encryptor.encrypt(metadata_json) if self.encryptor.is_enabled else metadata_json.encode('utf-8')
+                
+                if doc_id:
+                    self.conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
+                    self.conn.execute("UPDATE documents SET file_hash=?, metadata=?, is_encrypted=? WHERE doc_id=?",
+                                     (current_hash, metadata_blob, 1 if self.encryptor.is_enabled else 0, doc_id))
                 else:
-                    metadata_blob = metadata_json.encode('utf-8')
+                    doc_id = db.add_document_record(self.conn, file_path=content_id, file_hash=current_hash,
+                                                     metadata=metadata_blob, is_encrypted=self.encryptor.is_enabled)
+                
+                for i, storage_text in enumerate(storage_texts):
+                    text_to_store = self.encryptor.encrypt(storage_text) if self.encryptor.is_enabled else storage_text
+                    chunk_id = db.add_chunk_record(self.conn, doc_id, text_to_store, 0, 0, i, is_encrypted=self.encryptor.is_enabled)
+                    db.add_vector_record(self.conn, chunk_id, np.ascontiguousarray(vectors[i], dtype=self.vectorizer.dtype))
 
-            doc_id = existing_doc_id
-            if doc_id is None:
-                doc_id = db.add_document_record(
-                    self.conn,
-                    file_path=content_id,
-                    file_hash=current_hash,
-                    metadata=metadata_blob,
-                    is_encrypted=self.encryptor.is_enabled
-                )
-            else:
-                cursor.execute(
-                    "UPDATE documents SET file_hash=?, metadata=?, is_encrypted=? WHERE doc_id=?",
-                    (current_hash, metadata_blob, 1 if self.encryptor.is_enabled else 0, doc_id)
-                )
-
-            chunks_data = chunking.generate_chunks(
-                text=cleaned_text,
-                strategy=self.chunking_strategy,
-                chunk_size=self.chunk_size,
-                chunk_overlap=self.chunk_overlap,
-                expand_before=self.expand_before,
-                expand_after=self.expand_after,
-                tokenizer=self.tokenizer_for_chunking
-            )
-
-            if chunk_processor:
-                processed_chunks_data = []
-                doc_metadata = metadata or {}
-                for vector_text, _ in chunks_data:
-                    processed_text = chunk_processor(vector_text, doc_metadata)
-                    if processed_text and isinstance(processed_text, str):
-                        processed_chunks_data.append((processed_text, processed_text))
-                chunks_data = processed_chunks_data
-            
-            # Filter out chunks where the vectorization text is empty or just whitespace
-            chunks_data = [chunk for chunk in chunks_data if chunk[0] and chunk[0].strip()]
-
-            if not chunks_data:
-                self.conn.commit(); return
-
-            vector_texts = [item[0] for item in chunks_data]
-            storage_texts = [item[1] for item in chunks_data]
-            
-            if vectorize_with_metadata and metadata:
-                metadata_string = "--- Document Context ---\n"
-                for k, v in metadata.items():
-                    metadata_string += f"{str(k).title()}: {str(v)}\n"
-                metadata_string += "------------------------\n\n"
-                vector_texts = [metadata_string + text for text in vector_texts]
-
-            if hasattr(self.vectorizer, 'fit') and hasattr(self.vectorizer, '_fitted') and not self.vectorizer._fitted:
-                self.vectorizer.fit(vector_texts)
-                if hasattr(self.vectorizer, 'get_params_to_store'):
-                    stored_info = json.loads(db.get_store_metadata(self.conn, "vectorizer_info") or '{}')
-                    stored_info["dim"] = self.vectorizer.dim
-                    stored_info["params"] = self.vectorizer.get_params_to_store()
-                    db.set_store_metadata(self.conn, "vectorizer_info", json.dumps(stored_info))
-            
-            vectors = self.vectorizer.vectorize(vector_texts)
-            
-            for i, storage_text in enumerate(storage_texts):
-                text_to_store = self.encryptor.encrypt(storage_text) if self.encryptor.is_enabled else storage_text
-                chunk_id = db.add_chunk_record(self.conn, doc_id, text_to_store, 0, 0, i, is_encrypted=self.encryptor.is_enabled)
-                db.add_vector_record(self.conn, chunk_id, np.ascontiguousarray(vectors[i], dtype=self.vectorizer.dtype))
-
-            self.conn.commit()
-        except Exception as e:
-            if self.conn and self.conn.in_transaction: self.conn.rollback()
-            raise SafeStoreError(f"Transaction failed for '{content_id}': {e}") from e
+                self.conn.commit()
+                ASCIIColors.success(f"Successfully indexed '{content_id}'.")
+            except Exception as e:
+                if self.conn and self.conn.in_transaction: self.conn.rollback()
+                raise SafeStoreError(f"Database transaction failed for '{content_id}': {e}") from e
         
     def query(
         self,
@@ -461,16 +473,21 @@ class SafeStore:
         top_k: int = 5,
         min_similarity_percent: float = 0.0
     ) -> List[Dict[str, Any]]:
-        with self._instance_lock, self._optional_file_lock_context("query"):
+        with self._instance_lock:
+            # --- Phase 1: Vectorize query (No lock) ---
             self._ensure_connection()
             assert self.conn and self.vectorizer is not None
-
             query_vector = self.vectorizer.vectorize([query_text])[0]
-            cursor = self.conn.cursor()
             
-            all_vectors_data = cursor.execute("SELECT v.chunk_id, v.vector_data FROM vectors v").fetchall()
+            # --- Phase 2: Fetch all vectors (Short lock) ---
+            with self._optional_file_lock_context("query - fetch vectors"):
+                self._ensure_connection()
+                assert self.conn is not None
+                all_vectors_data = self.conn.execute("SELECT v.chunk_id, v.vector_data FROM vectors v").fetchall()
+            
             if not all_vectors_data: return []
 
+            # --- Phase 3: Compute similarity (No lock) ---
             chunk_ids, vector_blobs = zip(*all_vectors_data)
             candidate_vectors = np.array([db.reconstruct_vector(blob, self.vectorizer.dtype.name) for blob in vector_blobs])
 
@@ -478,55 +495,58 @@ class SafeStore:
             score_threshold = (min_similarity_percent / 50.0) - 1.0
             pass_mask = scores >= score_threshold
             
-            scores_passing = scores[pass_mask]
-            if len(scores_passing) == 0: return []
+            if not np.any(pass_mask): return []
                 
+            scores_passing = scores[pass_mask]
             chunk_ids_passing = np.array(chunk_ids)[pass_mask]
             
             k = min(top_k, len(scores_passing)) if top_k > 0 else len(scores_passing)
             top_indices = np.argsort(scores_passing)[::-1][:k]
-            
             top_chunk_ids, top_scores = chunk_ids_passing[top_indices], scores_passing[top_indices]
 
-            placeholders = ','.join('?' * len(top_chunk_ids))
-            sql = f"""
-                SELECT c.chunk_id, c.chunk_text, c.start_pos, c.end_pos,
-                       c.is_encrypted AS chunk_is_encrypted, d.file_path,
-                       d.metadata AS doc_metadata, d.is_encrypted AS doc_is_encrypted
-                FROM chunks c JOIN documents d ON c.doc_id = d.doc_id
-                WHERE c.chunk_id IN ({placeholders})
-            """
-            
-            details_map = {}
-            original_factory = self.conn.text_factory
-            self.conn.text_factory = bytes
-            details_raw = cursor.execute(sql, tuple(top_chunk_ids.tolist())).fetchall()
-            self.conn.text_factory = original_factory
-            
+            # --- Phase 4: Fetch details for top chunks (Short lock) ---
+            with self._optional_file_lock_context("query - fetch details"):
+                self._ensure_connection()
+                assert self.conn is not None
+                placeholders = ','.join('?' * len(top_chunk_ids))
+                sql = f"""
+                    SELECT c.chunk_id, c.chunk_text, c.start_pos, c.end_pos,
+                           c.is_encrypted AS chunk_is_encrypted, d.file_path,
+                           d.metadata AS doc_metadata, d.is_encrypted AS doc_is_encrypted
+                    FROM chunks c JOIN documents d ON c.doc_id = d.doc_id
+                    WHERE c.chunk_id IN ({placeholders})
+                """
+                
+                details_map = {}
+                original_factory = self.conn.text_factory
+                self.conn.text_factory = bytes
+                details_raw = self.conn.execute(sql, tuple(top_chunk_ids.tolist())).fetchall()
+                self.conn.text_factory = original_factory
+
+            # --- Phase 5: Process details (No lock) ---
             for row in details_raw:
                 chunk_id, chunk_text_data, start, end, chunk_is_enc, path, doc_meta_data, doc_is_enc = row
                 
                 chunk_text: str
                 if chunk_is_enc:
+                    chunk_text = "[Encrypted Chunk - Decryption Failed]"
                     if self.encryptor.is_enabled:
                         try: chunk_text = self.encryptor.decrypt(chunk_text_data)
-                        except EncryptionError: chunk_text = "[Encrypted Chunk - Decryption Failed]"
+                        except EncryptionError: pass
                     else: chunk_text = "[Encrypted Chunk - Key Unavailable]"
                 else:
                     chunk_text = chunk_text_data.decode('utf-8')
                 
-                doc_metadata_text = ""
-                meta_dict = None
+                doc_metadata_text, meta_dict = "", None
                 if doc_meta_data:
-                    meta_bytes = doc_meta_data
                     meta_json_str: Optional[str] = None
                     if doc_is_enc:
+                        meta_dict = {"error": "Encrypted metadata but key is unavailable"}
                         if self.encryptor.is_enabled:
-                            try: meta_json_str = self.encryptor.decrypt(meta_bytes)
+                            try: meta_json_str = self.encryptor.decrypt(doc_meta_data)
                             except EncryptionError: meta_dict = {"error": "Failed to decrypt document metadata"}
-                        else: meta_dict = {"error": "Encrypted metadata but key is unavailable"}
                     else:
-                        meta_json_str = meta_bytes.decode('utf-8')
+                        meta_json_str = doc_meta_data.decode('utf-8')
                     
                     if meta_json_str:
                         try: meta_dict = json.loads(meta_json_str)
@@ -534,18 +554,12 @@ class SafeStore:
                 
                 if isinstance(meta_dict, dict) and "error" not in meta_dict:
                     doc_metadata_text += "--- Document Context ---\n"
-                    for k, v in meta_dict.items():
-                        doc_metadata_text += f"{str(k).title()}: {str(v)}\n"
+                    for k, v in meta_dict.items(): doc_metadata_text += f"{str(k).title()}: {str(v)}\n"
                     doc_metadata_text += "------------------------\n\n"
 
-                final_chunk_text = doc_metadata_text + chunk_text
-                path_str = path.decode('utf-8')
                 details_map[chunk_id] = {
-                    "chunk_text": final_chunk_text,
-                    "start_pos": start,
-                    "end_pos": end,
-                    "file_path": path_str,
-                    "document_metadata": meta_dict
+                    "chunk_text": doc_metadata_text + chunk_text, "start_pos": start, "end_pos": end,
+                    "file_path": path.decode('utf-8'), "document_metadata": meta_dict
                 }
             
             ordered_results = []
@@ -630,6 +644,55 @@ class SafeStore:
         assert self.vectorizer is not None
         return self.vectorizer.vectorize([text_to_vectorize])
 
+    def reconstruct_document_text(self, file_path: Union[str, Path]) -> Optional[str]:
+        """
+        Reconstructs the content of a document by fetching and joining its chunks.
+        Note: If a `chunk_overlap` was used during indexing, the reconstructed
+        text will contain repeated, overlapping segments. This method provides a
+        raw reassembly of the stored data.
+        
+        Args:
+            file_path: The unique ID or file path of the document to reconstruct.
+
+        Returns:
+            The reconstructed text as a single string, or None if not found.
+        """
+        _path_or_id = str(Path(file_path).resolve() if isinstance(file_path, Path) else file_path)
+        
+        with self._instance_lock, self._optional_file_lock_context(f"reconstruct_document: {_path_or_id}"):
+            self._ensure_connection()
+            assert self.conn is not None
+
+            doc_id = db.get_document_id_by_path(self.conn, _path_or_id)
+            if doc_id is None:
+                ASCIIColors.warning(f"Document not found for reconstruction: '{_path_or_id}'")
+                return None
+            
+            sql = "SELECT chunk_text, is_encrypted FROM chunks WHERE doc_id = ? ORDER BY chunk_seq ASC"
+            original_factory = self.conn.text_factory
+            self.conn.text_factory = bytes
+            cursor = self.conn.cursor()
+            rows = cursor.execute(sql, (doc_id,)).fetchall()
+            self.conn.text_factory = original_factory
+
+            if not rows:
+                return ""
+
+            decrypted_chunks = []
+            for chunk_text_data, is_enc in rows:
+                if is_enc:
+                    if self.encryptor.is_enabled:
+                        try:
+                            decrypted_chunks.append(self.encryptor.decrypt(chunk_text_data))
+                        except EncryptionError:
+                            decrypted_chunks.append("[Encrypted Chunk - Decryption Failed]")
+                    else:
+                        decrypted_chunks.append("[Encrypted Chunk - Key Unavailable]")
+                else:
+                    decrypted_chunks.append(chunk_text_data.decode('utf-8'))
+            
+            return "\n".join(decrypted_chunks)
+
     def get_chunk_by_id(self, chunk_id: int) -> Optional[Dict[str, Any]]:
         """
         Retrieves the details of a single chunk by its ID, including text and metadata.
@@ -688,43 +751,28 @@ class SafeStore:
     def export_point_cloud(self, output_format: Literal['json_str', 'dict', 'csv'] = 'json_str') -> Union[str, List[Dict[str, Any]]]:
         """
         Exports all vectorized chunks as a 2D point cloud using PCA.
-
-        This method is useful for visualizing the semantic relationships between chunks.
-        Each point in the cloud represents a chunk and includes its chunk ID,
-        document title, and associated metadata.
-
-        Args:
-            output_format: The desired output format.
-                           - 'json_str': A JSON string (default).
-                           - 'dict': A Python list of dictionaries.
-                           - 'csv': A CSV formatted string.
-
-        Returns:
-            The point cloud data in the specified format.
-        
-        Raises:
-            ConfigurationError: If 'scikit-learn' or 'pandas' is not installed.
-            SafeStoreError: If there are no vectors in the store to export.
         """
         try:
             from sklearn.decomposition import PCA
             import pandas as pd
         except ImportError:
-            raise ConfigurationError("The 'export_point_cloud' feature requires 'scikit-learn' and 'pandas'. Install them with: pip install scikit-learn pandas")
+            raise ConfigurationError("'export_point_cloud' requires 'scikit-learn' and 'pandas'. Install with: pip install scikit-learn pandas")
 
-        with self._instance_lock, self._optional_file_lock_context("export_point_cloud"):
-            self._ensure_connection()
-            assert self.conn and self.vectorizer is not None
+        with self._instance_lock:
+            # --- Phase 1: Fetch all data from DB (Short Lock) ---
+            with self._optional_file_lock_context("export_point_cloud - fetch data"):
+                self._ensure_connection()
+                assert self.conn and self.vectorizer is not None
+                all_data = db.get_all_vectors_with_doc_info(self.conn)
+                vectorizer_details = self.get_vectorization_details()
 
-            all_data = db.get_all_vectors_with_doc_info(self.conn)
             if not all_data:
                 raise SafeStoreError("No vectors found in the store to export.")
-
-            chunk_ids, vectors, doc_paths, doc_metadatas = [], [], [], []
-            
-            vectorizer_details = self.get_vectorization_details()
             if not vectorizer_details:
                 raise SafeStoreError("Could not retrieve vectorizer details from the database.")
+
+            # --- Phase 2: Process data (No Lock) ---
+            chunk_ids, vectors, doc_paths, doc_metadatas = [], [], [], []
             dtype_str = vectorizer_details["dtype"]
 
             for row in all_data:
@@ -737,13 +785,9 @@ class SafeStore:
                 if meta_blob:
                     if is_enc:
                         if self.encryptor.is_enabled:
-                            try:
-                                meta_json = self.encryptor.decrypt(meta_blob)
-                                meta_dict = json.loads(meta_json)
-                            except (EncryptionError, json.JSONDecodeError):
-                                meta_dict = {"error": "decryption_failed"}
-                        else:
-                            meta_dict = {"error": "key_unavailable"}
+                            try: meta_dict = json.loads(self.encryptor.decrypt(meta_blob))
+                            except (EncryptionError, json.JSONDecodeError): meta_dict = {"error": "decryption_failed"}
+                        else: meta_dict = {"error": "key_unavailable"}
                     else:
                         try: meta_dict = json.loads(meta_blob.decode('utf-8'))
                         except json.JSONDecodeError: meta_dict = {"error": "parsing_failed"}
@@ -753,16 +797,10 @@ class SafeStore:
             pca = PCA(n_components=2, random_state=42)
             X_2d = pca.fit_transform(X)
 
-            point_cloud_data = []
-            for i, chunk_id in enumerate(chunk_ids):
-                point_cloud_data.append({
-                    "x": float(X_2d[i, 0]),
-                    "y": float(X_2d[i, 1]),
-                    "chunk_id": int(chunk_id),
-                    "document_title": Path(doc_paths[i]).name,
-                    "document_path": doc_paths[i],
-                    "metadata": doc_metadatas[i]
-                })
+            point_cloud_data = [{
+                "x": float(X_2d[i, 0]), "y": float(X_2d[i, 1]), "chunk_id": int(chunk_id),
+                "document_title": Path(doc_paths[i]).name, "document_path": doc_paths[i], "metadata": doc_metadatas[i]
+            } for i, chunk_id in enumerate(chunk_ids)]
 
             if output_format == 'dict':
                 return point_cloud_data
@@ -772,5 +810,5 @@ class SafeStore:
                     meta_df = pd.json_normalize([d['metadata'] for d in point_cloud_data]).add_prefix('meta_')
                     df = pd.concat([df.drop('metadata', axis=1), meta_df], axis=1)
                 return df.to_csv(index=False)
-            else: # 'json_str' is the default
+            else:
                 return json.dumps(point_cloud_data)
