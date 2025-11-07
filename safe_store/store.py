@@ -1,4 +1,3 @@
-# safe_store/store.py
 import sqlite3
 import json
 from pathlib import Path
@@ -294,8 +293,15 @@ class SafeStore:
         self.close()
 
     def _ensure_connection(self) -> None:
-        if self._is_closed or self.conn is None or not hasattr(self, 'vectorizer'):
-            raise ConnectionError("Database connection is closed or vectorizer not initialized.")
+        """
+        Ensures the connection to the database is active. If the connection
+        is closed, it attempts to reconnect and re-initialize the store.
+        This method is designed to be called from within a method that already
+        holds the instance lock.
+        """
+        if self._is_closed or self.conn is None:
+            self._connect_and_initialize()
+            self._initialize_and_verify_vectorizer()
 
     def _get_file_hash(self, file_path: Path) -> str:
         hasher = self._file_hasher()
@@ -313,7 +319,8 @@ class SafeStore:
         file_path: Union[str, Path],
         metadata: Optional[Dict[str, Any]] = None,
         force_reindex: bool = False,
-        vectorize_with_metadata: bool = False
+        vectorize_with_metadata: bool = False,
+        chunk_processor: Optional[Callable[[str, Dict[str, Any]], str]] = None
     ):
         with self._instance_lock, self._optional_file_lock_context(f"add_document: {Path(file_path).name}"):
             self._ensure_connection()
@@ -323,7 +330,8 @@ class SafeStore:
                 hash_loader=lambda: self._get_file_hash(Path(file_path)),
                 metadata=metadata,
                 force_reindex=force_reindex,
-                vectorize_with_metadata=vectorize_with_metadata
+                vectorize_with_metadata=vectorize_with_metadata,
+                chunk_processor=chunk_processor
             )
 
     def add_text(
@@ -332,7 +340,8 @@ class SafeStore:
         text: str,
         metadata: Optional[Dict[str, Any]] = None,
         force_reindex: bool = False,
-        vectorize_with_metadata: bool = False
+        vectorize_with_metadata: bool = False,
+        chunk_processor: Optional[Callable[[str, Dict[str, Any]], str]] = None
     ):
         with self._instance_lock, self._optional_file_lock_context(f"add_text: {unique_id}"):
             self._ensure_connection()
@@ -342,10 +351,11 @@ class SafeStore:
                 hash_loader=lambda: self._get_text_hash(text),
                 metadata=metadata,
                 force_reindex=force_reindex,
-                vectorize_with_metadata=vectorize_with_metadata
+                vectorize_with_metadata=vectorize_with_metadata,
+                chunk_processor=chunk_processor
             )
 
-    def _add_content_impl(self, content_id, content_loader, hash_loader, metadata, force_reindex, vectorize_with_metadata):
+    def _add_content_impl(self, content_id, content_loader, hash_loader, metadata, force_reindex, vectorize_with_metadata, chunk_processor):
         assert self.conn and self.vectorizer is not None
         
         current_hash = hash_loader()
@@ -399,6 +409,15 @@ class SafeStore:
                 expand_after=self.expand_after,
                 tokenizer=self.tokenizer_for_chunking
             )
+
+            if chunk_processor:
+                processed_chunks_data = []
+                doc_metadata = metadata or {}
+                for vector_text, _ in chunks_data:
+                    processed_text = chunk_processor(vector_text, doc_metadata)
+                    if processed_text and isinstance(processed_text, str):
+                        processed_chunks_data.append((processed_text, processed_text))
+                chunks_data = processed_chunks_data
             
             # Filter out chunks where the vectorization text is empty or just whitespace
             chunks_data = [chunk for chunk in chunks_data if chunk[0] and chunk[0].strip()]

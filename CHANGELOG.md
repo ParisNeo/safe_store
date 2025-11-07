@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.5] - 2025-11-06
+
+### Added
+
+*   **Custom Chunk Processing:** Introduced an optional `chunk_processor` callable to the `add_document` and `add_text` methods. This function `(chunk_text: str, metadata: dict) -> str` allows for on-the-fly transformation of chunk content before it is vectorized and stored. This enables advanced RAG workflows like summarization, keyword injection, or reformatting.
+*   Updated `examples/basic_usage.py` to include a demonstration of the new `chunk_processor` feature.
+
+### Changed
+
+*   **Query Result Structure:** The dictionary returned for each result in the `query()` method now distinctly provides both `document_metadata` (the raw dictionary) and `chunk_text` (which includes the prepended metadata context). This offers greater flexibility by giving access to both the ready-to-use fused text for RAG prompts and the separate, structured metadata for application logic.
+*   **Documentation (`README.md`):** Updated the "Core Concepts for Advanced RAG" section to explain and provide an example for the new `chunk_processor` functionality.
+
+## [2.6.0] - 2025-10-20
+
+### Added
+
+*   **Public API Exports:** Exposed core exceptions, `LogLevel`, and utility functions like `parse_document` directly under the `safe_store` namespace in `__init__.py` for easier user access and import.
+
+### Changed
+
+*   **Internal Refactoring:** Minor refactoring in the `store.py` module to improve code clarity and maintainability around the content addition pipeline.
+*   **Project Version:** Bumped version to `2.6.0`.
+
+## [2.5.0] - 2025-09-15
+
+### Added
+
+*   **Metadata-Aware Vectorization:** Added a `vectorize_with_metadata` boolean parameter to `add_document` and `add_text`. When `True`, the document's metadata is prepended to each chunk *before* vectorization, enriching the semantic meaning of the resulting vector. The stored chunk text remains unchanged.
+
+### Fixed
+
+*   Corrected an issue where an empty chunk list could cause an error during vectorization instead of being gracefully skipped.
+
+## [2.4.0] - 2025-08-22
+
+### Added
+
+*   **Point Cloud Visualization Export:** Implemented the `export_point_cloud()` method in `SafeStore`. This feature performs PCA on all vectors in the store and exports the 2D coordinates along with metadata, enabling visualization of semantic clusters.
+*   Added `examples/point_cloud_and_api.py`, a complete, runnable example that demonstrates how to use `export_point_cloud` to power an interactive web-based visualization with an API for inspecting chunks.
+
+### Changed
+
+*   **Dependencies:** `scikit-learn` and `pandas` are now optional dependencies required for the `export_point_cloud` feature.
+
+## [2.3.0] - 2025-07-30
+
+### Changed
+
+*   **Vectorizer Manager Refactor:** The `VectorizationManager` now uses a more robust dynamic module loading system (`importlib`) to discover and instantiate both built-in and custom vectorizers, reducing hardcoded paths.
+*   **Custom Vectorizers:** The process for adding custom vectorizers is now standardized: create a folder with `__init__.py` and `description.yaml`.
+
+### Fixed
+
+*   Fixed a bug where the `st` vectorizer alias was pointing to a misspelled folder name (`sentense_transformer` instead of `sentence_transformer`). The alias now correctly points to the right location, ensuring Sentence Transformer models load correctly.
+
+## [2.1.0] - 2025-06-10
+
+### Changed
+
+*   **Graph Query Performance:** Optimized the graph traversal logic in `GraphStore.query_graph` by improving the underlying SQL queries for fetching neighbor nodes, reducing the number of database calls.
+
+### Fixed
+
+*   Resolved an issue in `GraphStore` where entity fusion could fail on documents containing complex JSON-like strings, by improving the robustness of the JSON parsing from the LLM response.
+*   Fixed a bug where `GraphStore.build_graph_for_all_documents` would not correctly resume if interrupted.
+
 ## [2.0.0] - 2025-05-16 
 
 
