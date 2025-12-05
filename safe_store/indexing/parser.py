@@ -6,6 +6,8 @@ import os
 import pipmaster as pm
 # Import specific custom exceptions
 from ..core.exceptions import ParsingError, FileHandlingError, ConfigurationError
+# Mimetypes
+import mimetypes
 
 # Protocols remain unchanged, add type hints
 from typing import Protocol, runtime_checkable, BinaryIO, TextIO
