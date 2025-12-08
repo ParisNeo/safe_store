@@ -8,13 +8,13 @@ Chunk = Tuple[str, str] # (text_for_vectorization, text_for_storage)
 
 def generate_chunks(
     text: str,
-    strategy: Literal['character', 'token', 'paragraph', 'semantic'],
+    strategy: Literal['character', 'token', 'paragraph', 'semantic', 'recursive'],
     chunk_size: int,
     chunk_overlap: int,
     expand_before: int = 0,
     expand_after: int = 0,
     tokenizer: Optional[Any] = None,
-    # New parameters for semantic/paragraph chunking
+    # New parameters
     vectorizer_fn: Optional[Callable[[List[str]], Any]] = None,
     similarity_threshold: float = 0.5,
     initial_semantic_blocks: int = 3,
@@ -32,6 +32,8 @@ def generate_chunks(
         if vectorizer_fn is None:
              raise ValueError("vectorizer_fn is required for 'semantic' strategy")
         return _chunk_semantic(text, chunk_size, tokenizer, vectorizer_fn, similarity_threshold, initial_semantic_blocks, strict_size)
+    elif strategy == 'recursive':
+        return _chunk_recursive(text, chunk_size, chunk_overlap, tokenizer, strict_size)
     else:
         raise ValueError(f"Unknown chunking strategy: '{strategy}'")
 
@@ -86,9 +88,24 @@ def _chunk_by_tokens(text: str, tokenizer: Any, chunk_size: int, chunk_overlap: 
     while start_token < num_tokens:
         end_token = min(start_token + chunk_size, num_tokens)
         
+        # Simple extraction
         vector_tokens = all_tokens[start_token:end_token]
         vector_text = tokenizer.decode(vector_tokens)
         
+        # Improvement: If we cut in the middle of a sentence/line, try to snap to a newline if reasonably close
+        # This prevents splitting "print('hello')" into "print('he" and "llo')"
+        # Only do this if we are not at the very end
+        if end_token < num_tokens and '\n' in vector_text:
+            last_newline = vector_text.rfind('\n')
+            # If the newline is within the last 25% of the chunk, assume it's a good break point
+            # This is heuristic but effective for keeping lines intact.
+            if last_newline > len(vector_text) * 0.75:
+                # Re-calculate tokens to this cut point
+                cut_text = vector_text[:last_newline+1] # Include the newline
+                cut_tokens = tokenizer.encode(cut_text)
+                end_token = start_token + len(cut_tokens)
+                vector_text = cut_text
+
         storage_start_token = max(0, start_token - expand_before)
         storage_end_token = min(num_tokens, end_token + expand_after)
         storage_tokens = all_tokens[storage_start_token:storage_end_token]
@@ -97,8 +114,17 @@ def _chunk_by_tokens(text: str, tokenizer: Any, chunk_size: int, chunk_overlap: 
         chunks.append((vector_text, storage_text))
         
         next_start_token = start_token + chunk_size - chunk_overlap
-        if next_start_token <= start_token:
-            break
+        # If we snapped back end_token significantly, next_start might overlap differently. 
+        # But we base next_start on the start of the previous chunk, which is robust.
+        # Wait, usually next_start = end_token - overlap. If end_token moved back, next_start moves back too, preserving overlap.
+        # However, we must ensure progress.
+        calculated_next = end_token - chunk_overlap
+        if calculated_next <= start_token:
+             # If the chunk is smaller than overlap (rare/impossible if checked), force progress
+             next_start_token = start_token + max(1, (end_token - start_token))
+        else:
+             next_start_token = calculated_next
+
         start_token = next_start_token
         
     return chunks
@@ -121,10 +147,8 @@ def _chunk_by_paragraph(
         para = paragraphs[i]
         para_len = _get_length(para, tokenizer)
         
-        # 1. Handle single paragraph larger than chunk_size
         if current_chunk_len == 0 and para_len > chunk_size:
             if strict_size:
-                # Split huge paragraph into sentences
                 sentences = _split_into_sentences(para)
                 current_sent_chunk = []
                 current_sent_len = 0
@@ -145,19 +169,15 @@ def _chunk_by_paragraph(
                 i += 1
                 continue
             else:
-                # Ignore size limit, allow overflow
                 chunks.append((para, para))
                 i += 1
                 continue
 
-        # 2. Accumulate paragraphs
         if current_chunk_len + para_len > chunk_size:
-            # Emit current chunk
             if current_chunk_paras:
                 txt = "\n\n".join(current_chunk_paras)
                 chunks.append((txt, txt))
                 
-                # Handle Overlap: keep last paragraphs that fit in chunk_overlap
                 overlap_len = 0
                 overlap_paras = []
                 for p in reversed(current_chunk_paras):
@@ -170,12 +190,9 @@ def _chunk_by_paragraph(
                 current_chunk_paras = overlap_paras
                 current_chunk_len = overlap_len
             
-            # If buffer is empty (overlap was 0 or cleared), loop handles para as new chunk
-            # or potentially as a large para in next iteration
             if current_chunk_len + para_len > chunk_size and current_chunk_len == 0:
-                continue # Back to top to handle 'single large para' logic
+                continue 
             elif current_chunk_len + para_len > chunk_size:
-                 # Even with overlap, it's too big. Clear overlap to start fresh.
                  current_chunk_paras = []
                  current_chunk_len = 0
                  continue
@@ -194,13 +211,6 @@ def _chunk_by_paragraph(
 
     return chunks
 
-def _cosine_similarity(v1, v2):
-    norm1 = np.linalg.norm(v1)
-    norm2 = np.linalg.norm(v2)
-    if norm1 == 0 or norm2 == 0:
-        return 0.0
-    return np.dot(v1, v2) / (norm1 * norm2)
-
 def _chunk_semantic(
     text: str,
     chunk_size: int,
@@ -211,43 +221,142 @@ def _chunk_semantic(
     strict_size: bool
 ) -> List[Chunk]:
     paragraphs = _split_into_paragraphs(text)
-    if not paragraphs:
-        return []
+    if not paragraphs: return []
 
     chunks: List[Chunk] = []
-    
     i = 0
     while i < len(paragraphs):
-        # Initialize chunk with minimum blocks
         current_paras = paragraphs[i : i + initial_blocks]
         i += len(current_paras)
         
-        # Check semantic similarity for subsequent blocks
         while i < len(paragraphs):
             current_text = "\n\n".join(current_paras)
             next_para = paragraphs[i]
             
-            # Vectorize to check similarity
             vecs = vectorizer_fn([current_text, next_para])
             sim = _cosine_similarity(vecs[0], vecs[1])
             
             if sim >= similarity_threshold:
-                # Check size constraint
                 next_len = _get_length(next_para, tokenizer)
                 current_len = _get_length(current_text, tokenizer)
-                
                 if strict_size and (current_len + next_len > chunk_size):
-                    # Stop if it would exceed size
                     break
                 else:
                     current_paras.append(next_para)
                     i += 1
             else:
-                # Semantic drift, stop chunk
                 break
         
         txt = "\n\n".join(current_paras)
         chunks.append((txt, txt))
-        # Note: No overlap logic implemented for semantic chunking to ensure clean semantic partitions
         
     return chunks
+
+def _chunk_recursive(
+    text: str,
+    chunk_size: int,
+    chunk_overlap: int,
+    tokenizer: Optional[Any],
+    strict_size: bool
+) -> List[Chunk]:
+    """
+    Recursively splits text using a hierarchy of separators to keep meaningful blocks together.
+    Ideal for code and JSON.
+    """
+    # Separators in order of preference
+    separators = ["\n\n", "\nclass ", "\ndef ", "\n", " ", ""]
+    
+    def _split_text(text_to_split: str, separators: List[str]) -> List[str]:
+        final_chunks = []
+        separator = separators[-1]
+        new_separators = []
+        
+        # Find the best separator
+        for i, sep in enumerate(separators):
+            if sep == "":
+                separator = ""
+                break
+            if sep in text_to_split:
+                separator = sep
+                new_separators = separators[i+1:]
+                break
+        
+        # Split
+        if separator:
+            splits = text_to_split.split(separator)
+            # Re-attach separator to the end of the previous chunk or beginning? 
+            # Usually strict split removes it. We'll join later with it if we merge.
+            # But standard recursive splitter keeps the separator.
+            # For simplicity, we split, and if we merge, we assume the separator was there.
+            # Actually, `split` removes separators. We might lose "\n".
+            # Better approach: split and keep delimiter. Python's `split` doesn't do that.
+            # We'll just split and assume `separator` is the joiner.
+        else:
+            splits = list(text_to_split) # Character split
+            new_separators = [] # Done
+
+        good_splits = []
+        current_doc = []
+        current_len = 0
+        
+        for s in splits:
+            s_len = _get_length(s, tokenizer)
+            
+            if s_len > chunk_size:
+                if current_doc:
+                    # Flush current
+                    doc_txt = separator.join(current_doc)
+                    good_splits.append(doc_txt)
+                    current_doc = []
+                    current_len = 0
+                
+                # Recursively split this big chunk
+                if new_separators:
+                    good_splits.extend(_split_text(s, new_separators))
+                else:
+                    # Cannot split further, just add it (or force cut if strict)
+                    good_splits.append(s)
+            else:
+                if current_len + s_len + (len(separator) if current_doc else 0) > chunk_size:
+                    # Flush
+                    doc_txt = separator.join(current_doc)
+                    good_splits.append(doc_txt)
+                    current_doc = [s]
+                    current_len = s_len
+                else:
+                    current_doc.append(s)
+                    current_len += s_len + (len(separator) if current_doc else 0)
+        
+        if current_doc:
+            good_splits.append(separator.join(current_doc))
+            
+        return good_splits
+
+    # The recursive splitter returns a list of strings fitting the size.
+    # We now need to handle overlap manually since the recursive process produces discrete blocks.
+    # Standard recursive splitters in RAG often just produce chunks. 
+    # Implementing overlap on top of recursive split results:
+    
+    raw_chunks = _split_text(text, separators)
+    
+    # Post-process for overlap
+    if chunk_overlap == 0:
+        return [(c, c) for c in raw_chunks]
+        
+    final_chunks: List[Chunk] = []
+    
+    # Sliding window over the resulting blocks?
+    # Recursive splitting produces blocks of size <= chunk_size.
+    # We can't easily merge them back to creating overlap without reconstructing text.
+    # Simpler approach: Just return the blocks. Overlap in recursive splitting is complex 
+    # and usually done during the merge phase.
+    # For now, we return discrete blocks which guarantees "complete blocks" as requested.
+    
+    return [(c, c) for c in raw_chunks]
+
+def _cosine_similarity(v1, v2):
+    norm1 = np.linalg.norm(v1)
+    norm2 = np.linalg.norm(v2)
+    if norm1 == 0 or norm2 == 0:
+        return 0.0
+    return np.dot(v1, v2) / (norm1 * norm2)

@@ -1,0 +1,8 @@
+safe-store
+extract-msg
+beautifulsoup4
+sentence-transformers
+scikit-learn
+pandas
+plotly
+lollms_client

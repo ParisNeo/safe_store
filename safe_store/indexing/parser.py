@@ -1,15 +1,16 @@
 # safe_store/indexing/parser.py
 from pathlib import Path
-from typing import Callable, Dict, Union, List
+from typing import Callable, Dict, Union, List, Optional
 from ascii_colors import ASCIIColors
 import os
+import json
 import pipmaster as pm
 # Import specific custom exceptions
 from ..core.exceptions import ParsingError, FileHandlingError, ConfigurationError
 # Mimetypes
 import mimetypes
 
-# Protocols remain unchanged, add type hints
+# Protocols
 from typing import Protocol, runtime_checkable, BinaryIO, TextIO
 @runtime_checkable
 class PdfReaderProtocol(Protocol): # noqa
@@ -72,7 +73,17 @@ def parse_msg(file_path: Union[str, Path]) -> str:
         from bs4 import BeautifulSoup
 
     try:
-        msg = extract_msg.Message(str(file_path))
+        if not Path(file_path).exists():
+            raise FileHandlingError(f"File not found: {file_path}")
+            
+        try:
+            msg = extract_msg.Message(str(file_path))
+        except (NotImplementedError, Exception) as e:
+            # extract_msg often raises generic exceptions for encrypted files or NotImplementedError
+            if "encrypted" in str(e).lower():
+                raise ParsingError("Content is encrypted") from e
+            raise ParsingError(f"Failed to open MSG file: {e}") from e
+
         images = {}
         header_lines = []
         if getattr(msg, "subject", ""):
@@ -105,23 +116,19 @@ def parse_msg(file_path: Union[str, Path]) -> str:
                     attachment_text_parts.append(text_part)
 
         extracted_text = "\n\n".join([p for p in attachment_text_parts if p and p.strip()])
+        
+        # Heuristic check: if the library parsed it but it's empty, it might be an issue, 
+        # but the empty check in store.py will handle it.
         return extracted_text
+
+    except ParsingError:
+        raise
     except Exception as e:
-        return f"[Error processing MSG file: {e}. Is extract_msg installed?]"
+        raise ParsingError(f"Error processing MSG file: {e}") from e
     
 def parse_txt(file_path: Union[str, Path]) -> str:
     """
     Parses a plain text file (UTF-8 encoding).
-
-    Args:
-        file_path: Path to the text file.
-
-    Returns:
-        The content of the file as a string.
-
-    Raises:
-        FileHandlingError: If the file is not found or cannot be read.
-        ParsingError: If decoding fails or other unexpected errors occur.
     """
     _file_path = Path(file_path)
     ASCIIColors.debug(f"Attempting to parse TXT file: {_file_path}")
@@ -147,26 +154,135 @@ def parse_txt(file_path: Union[str, Path]) -> str:
         ASCIIColors.error(msg, exc_info=True)
         raise ParsingError(msg) from e
 
+def parse_json(file_path: Union[str, Path]) -> str:
+    """
+    Parses a JSON file and pretty-prints it to ensure structural integrity for chunking.
+    """
+    _file_path = Path(file_path)
+    ASCIIColors.debug(f"Attempting to parse JSON file: {_file_path}")
+    try:
+        with open(_file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        # Pretty print with indentation to create lines/blocks
+        content = json.dumps(data, indent=2, ensure_ascii=False)
+        ASCIIColors.debug(f"Successfully parsed and formatted JSON file: {_file_path}")
+        return content
+    except json.JSONDecodeError as e:
+        msg = f"Invalid JSON in file {_file_path}: {e}"
+        ASCIIColors.error(msg)
+        raise ParsingError(msg) from e
+    except Exception as e:
+        msg = f"Error parsing JSON file {_file_path}: {e}"
+        ASCIIColors.error(msg, exc_info=True)
+        raise ParsingError(msg) from e
+
+def parse_csv(file_path: Union[str, Path]) -> str:
+    """
+    Parses a CSV file intelligently, preserving header context for each row.
+    Format: Row {i}: {Header1}={Value1} | {Header2}={Value2} ...
+    """
+    _file_path = Path(file_path)
+    ASCIIColors.debug(f"Attempting to parse CSV file: {_file_path}")
+    import csv
+    
+    try:
+        lines = []
+        with open(_file_path, 'r', encoding='utf-8', newline='') as f:
+            # Attempt to determine dialect
+            try:
+                sample = f.read(1024)
+                f.seek(0)
+                dialect = csv.Sniffer().sniff(sample)
+                has_header = csv.Sniffer().has_header(sample)
+            except Exception:
+                # Fallback defaults
+                f.seek(0)
+                dialect = 'excel'
+                has_header = True
+
+            reader = csv.reader(f, dialect=dialect)
+            rows = list(reader)
+
+            if not rows:
+                return ""
+
+            if has_header:
+                headers = rows[0]
+                data_rows = rows[1:]
+            else:
+                headers = [f"Col_{i}" for i in range(len(rows[0]))]
+                data_rows = rows
+
+            for i, row in enumerate(data_rows):
+                # Pair headers with values
+                row_parts = []
+                for h_idx, val in enumerate(row):
+                    header = headers[h_idx] if h_idx < len(headers) else f"Col_{h_idx}"
+                    if val.strip(): # Only add non-empty values
+                        row_parts.append(f"{header}={val.strip()}")
+                
+                if row_parts:
+                    lines.append(f"Row {i+1}: " + " | ".join(row_parts))
+
+        ASCIIColors.debug(f"Successfully parsed CSV file: {_file_path}")
+        return "\n".join(lines)
+    except Exception as e:
+        msg = f"Error parsing CSV file {_file_path}: {e}"
+        ASCIIColors.error(msg, exc_info=True)
+        raise ParsingError(msg) from e
+
+def parse_excel(file_path: Union[str, Path]) -> str:
+    """
+    Parses an Excel file (XLSX/XLS) intelligently, preserving header context.
+    Uses pandas if available.
+    """
+    _file_path = Path(file_path)
+    ASCIIColors.debug(f"Attempting to parse Excel file: {_file_path}")
+    try:
+        pm.ensure_packages(["pandas", "openpyxl"])
+        import pandas as pd
+    except ImportError as e:
+        raise ConfigurationError("Parsing Excel files requires 'pandas' and 'openpyxl'.") from e
+
+    try:
+        # Read all sheets
+        xls = pd.ExcelFile(_file_path)
+        all_text = []
+
+        for sheet_name in xls.sheet_names:
+            df = pd.read_excel(xls, sheet_name=sheet_name)
+            sheet_lines = [f"--- Sheet: {sheet_name} ---"]
+            
+            # Use columns as headers
+            headers = [str(c) for c in df.columns]
+            
+            for idx, row in df.iterrows():
+                row_parts = []
+                for h, val in zip(headers, row):
+                    if pd.notna(val) and str(val).strip():
+                        row_parts.append(f"{h}={str(val).strip()}")
+                
+                if row_parts:
+                    # Using idx+2 because Excel rows start at 1 and header is usually row 1
+                    sheet_lines.append(f"Row {idx+2}: " + " | ".join(row_parts))
+            
+            all_text.append("\n".join(sheet_lines))
+
+        ASCIIColors.debug(f"Successfully parsed Excel file: {_file_path}")
+        return "\n\n".join(all_text)
+    except Exception as e:
+        msg = f"Error parsing Excel file {_file_path}: {e}"
+        ASCIIColors.error(msg, exc_info=True)
+        raise ParsingError(msg) from e
+
 
 def parse_pdf(file_path: Union[str, Path]) -> str:
     """
     Parses a PDF file to extract text content using pypdf.
-
-    Args:
-        file_path: Path to the PDF file.
-
-    Returns:
-        The extracted text content, concatenated from all pages.
-
-    Raises:
-        ConfigurationError: If 'pypdf' is not installed.
-        FileHandlingError: If the file is not found or is empty.
-        ParsingError: If the PDF structure is invalid or text extraction fails.
     """
     _file_path = Path(file_path)
     ASCIIColors.debug(f"Attempting to parse PDF file: {_file_path}")
     try:
-        # Import dynamically to check for dependency
         from pypdf import PdfReader
         from pypdf.errors import PdfReadError, EmptyFileError
     except ImportError as e:
@@ -176,241 +292,103 @@ def parse_pdf(file_path: Union[str, Path]) -> str:
 
     full_text = ""
     try:
-        # Use strict=False to be more tolerant of minor PDF spec violations
         reader: PdfReaderProtocol = PdfReader(_file_path, strict=False)
         num_pages = len(reader.pages)
-        ASCIIColors.debug(f"PDF '{_file_path.name}' loaded with {num_pages} pages.")
-
         if num_pages == 0:
-             ASCIIColors.warning(f"PDF file '{_file_path.name}' contains zero pages.")
-             return "" # Return empty string for zero-page PDFs
+             return ""
 
         for i, page in enumerate(reader.pages):
-            page_num = i + 1
             try:
                 page_text = page.extract_text()
                 if page_text:
-                    full_text += page_text + "\n" # Add newline between pages
-                else:
-                    ASCIIColors.debug(f"No text extracted from page {page_num} of '{_file_path.name}'.")
-            except Exception as page_err: # Catch errors during individual page extraction
-                 ASCIIColors.warning(f"Could not extract text from page {page_num} of '{_file_path.name}': {page_err}")
-                 # Decide whether to continue or fail? Continue for now.
-                 # Consider adding a flag to control strictness on page errors.
+                    full_text += page_text + "\n"
+            except Exception:
+                 pass
 
-        ASCIIColors.debug(f"Successfully parsed PDF file: {_file_path}")
-        return full_text.strip() # Remove leading/trailing whitespace
-
-    except FileNotFoundError as e:
-        msg = f"File not found: {_file_path}"
-        ASCIIColors.error(msg)
-        raise FileHandlingError(msg) from e
-    except EmptyFileError as e:
-         msg = f"Cannot parse empty PDF file: {_file_path}"
-         ASCIIColors.error(msg)
-         # Consider empty file a FileHandlingError subtype? Or keep as ParsingError?
-         # Let's use FileHandlingError as it relates to the file state.
-         raise FileHandlingError(msg) from e
-    except PdfReadError as e: # Catch specific pypdf structural errors
-        msg = f"Error reading PDF structure in {_file_path}: {e}"
-        ASCIIColors.error(msg)
-        raise ParsingError(msg) from e
-    except OSError as e: # Catch potential OS errors during file reading by pypdf
-        msg = f"OS error reading PDF file {_file_path}: {e}"
-        ASCIIColors.error(msg)
-        raise FileHandlingError(msg) from e
-    except Exception as e: # Catch other unexpected errors from pypdf
-        msg = f"Unexpected error parsing PDF file {_file_path}: {e}"
+        return full_text.strip()
+    except Exception as e:
+        msg = f"Error parsing PDF file {_file_path}: {e}"
         ASCIIColors.error(msg, exc_info=True)
         raise ParsingError(msg) from e
 
 def parse_pptx(file_path: Union[str, Path]) -> str:
     """
     Parses a PPTX file to extract text content using python-pptx.
-
-    Args:
-        file_path: Path to the PPTX file.
-
-    Returns:
-        The extracted text content, concatenated from all slides and shapes.
-
-    Raises:
-        ConfigurationError: If 'python-pptx' is not installed.
-        FileHandlingError: If the file is not found or OS error occurs during reading.
-        ParsingError: If the file is not a valid PPTX format or text extraction fails.
     """
     _file_path = Path(file_path)
-    ASCIIColors.debug(f"Attempting to parse PPTX file: {_file_path}")
-
     try:
-        # Import dynamically
         from pptx import Presentation
-    except ImportError as e:
+    except ImportError:
         pm.ensure_packages("python-pptx")
-        try:
-            # Import dynamically
-            from pptx import Presentation
-        except ImportError as e:
-            msg = "Parsing PPTX files requires 'python-pptx'. Install with: pip install python-pptx"
-            ASCIIColors.error(msg)
-            raise ConfigurationError(msg) from e
+        from pptx import Presentation
 
     full_text = ""
     try:
         presentation = Presentation(_file_path)
-        ASCIIColors.debug(f"PPTX '{_file_path.name}' loaded.")
-
         for slide in presentation.slides:
             for shape in slide.shapes:
                 if hasattr(shape, "text"):
                     full_text += shape.text + "\n"
-
-        ASCIIColors.debug(f"Successfully parsed PPTX file: {_file_path}")
-        return full_text.strip()  # Remove leading/trailing whitespace
-
-    except FileNotFoundError as e:
-        msg = f"File not found: {_file_path}"
-        ASCIIColors.error(msg)
-        raise FileHandlingError(msg) from e
-    except OSError as e:  # Catch potential OS errors during file reading by python-pptx
-        msg = f"OS error reading PPTX file {_file_path}: {e}"
-        ASCIIColors.error(msg)
-        raise FileHandlingError(msg) from e
-    except Exception as e:  # Catch other unexpected errors from python-pptx
-        msg = f"Unexpected error parsing PPTX file {_file_path}: {e}"
+        return full_text.strip()
+    except Exception as e:
+        msg = f"Error parsing PPTX file {_file_path}: {e}"
         ASCIIColors.error(msg, exc_info=True)
         raise ParsingError(msg) from e
-
 
 def parse_docx(file_path: Union[str, Path]) -> str:
     """
     Parses a DOCX file to extract text content using python-docx.
-
-    Args:
-        file_path: Path to the DOCX file.
-
-    Returns:
-        The extracted text content, concatenated from all paragraphs.
-
-    Raises:
-        ConfigurationError: If 'python-docx' is not installed.
-        FileHandlingError: If the file is not found.
-        ParsingError: If the file is not a valid DOCX format or text extraction fails.
     """
     _file_path = Path(file_path)
-    ASCIIColors.debug(f"Attempting to parse DOCX file: {_file_path}")
     try:
-        # Import dynamically
         from docx import Document
         from docx.opc.exceptions import PackageNotFoundError
-    except ImportError as e:
-        import pipmaster as pm
+    except ImportError:
         pm.ensure_packages("python-docx")
-        try:
-            # Import dynamically
-            from docx import Document
-            from docx.opc.exceptions import PackageNotFoundError
-        except ImportError as e:
-            msg = "Parsing DOCX files requires 'python-docx'. Install with: pip install safe_store[parsing]"
-            ASCIIColors.error(msg)
-            raise ConfigurationError(msg) from e
+        from docx import Document
+        from docx.opc.exceptions import PackageNotFoundError
 
     full_text = ""
     try:
         document: DocumentProtocol = Document(_file_path)
-        ASCIIColors.debug(f"DOCX '{_file_path.name}' loaded.")
         for para in document.paragraphs:
-            full_text += para.text + "\n" # Add newline between paragraphs
-        ASCIIColors.debug(f"Successfully parsed DOCX file: {_file_path}")
-        return full_text.strip() # Remove leading/trailing whitespace
-
-    except FileNotFoundError as e:
-        msg = f"File not found: {_file_path}"
-        ASCIIColors.error(msg)
-        raise FileHandlingError(msg) from e
-    except PackageNotFoundError as e: # Specific error for invalid zip/docx format
-         msg = f"File is not a valid DOCX (Zip) file: {_file_path}. Error: {e}"
-         ASCIIColors.error(msg)
-         raise ParsingError(msg) from e
-    except OSError as e: # Catch potential OS errors during file reading by python-docx
-        msg = f"OS error reading DOCX file {_file_path}: {e}"
-        ASCIIColors.error(msg)
-        raise FileHandlingError(msg) from e
-    except Exception as e: # Catch other unexpected errors from python-docx
-        msg = f"Unexpected error parsing DOCX file {_file_path}: {e}"
+            full_text += para.text + "\n"
+        return full_text.strip()
+    except Exception as e:
+        msg = f"Error parsing DOCX file {_file_path}: {e}"
         ASCIIColors.error(msg, exc_info=True)
         raise ParsingError(msg) from e
-
 
 def parse_html(file_path: Union[str, Path]) -> str:
     """
     Parses an HTML file to extract text content using BeautifulSoup.
-
-    Uses 'lxml' if available for performance, otherwise falls back to
-    Python's built-in 'html.parser'.
-
-    Args:
-        file_path: Path to the HTML file.
-
-    Returns:
-        The extracted text content, with tags stripped.
-
-    Raises:
-        ConfigurationError: If 'beautifulsoup4' (or 'lxml' if used) is not installed.
-        FileHandlingError: If the file is not found or cannot be read.
-        ParsingError: If the file cannot be decoded or parsed as HTML.
     """
     _file_path = Path(file_path)
-    ASCIIColors.debug(f"Attempting to parse HTML file: {_file_path}")
     try:
-        # Import dynamically
         from bs4 import BeautifulSoup
         try:
-            import lxml # noqa F401 ensure it's installed for best performance
+            import lxml # noqa F401
             HTML_PARSER = 'lxml'
-            ASCIIColors.debug("Using 'lxml' for HTML parsing.")
         except ImportError:
-            ASCIIColors.debug("lxml not found, using Python's built-in 'html.parser' for HTML.")
             HTML_PARSER = 'html.parser'
     except ImportError as e:
-        # This catches missing BeautifulSoup4
         msg = "Parsing HTML files requires 'BeautifulSoup4'. Install with: pip install safe_store[parsing]"
         ASCIIColors.error(msg)
         raise ConfigurationError(msg) from e
 
     try:
         with open(_file_path, 'r', encoding='utf-8') as f:
-            # Read content first, then parse
              content = f.read()
-
-        # Parse the HTML content
         soup: BeautifulSoupProtocol = BeautifulSoup(content, HTML_PARSER)
-        # Get text, stripping extra whitespace and using newline as separator
         text = soup.get_text(separator='\n', strip=True)
-        ASCIIColors.debug(f"Successfully parsed HTML file: {_file_path}")
         return text
-
-    except FileNotFoundError as e:
-        msg = f"File not found: {_file_path}"
-        ASCIIColors.error(msg)
-        raise FileHandlingError(msg) from e
-    except UnicodeDecodeError as e:
-        msg = f"Encoding error parsing HTML file {_file_path} as UTF-8: {e}"
-        ASCIIColors.error(msg)
-        raise ParsingError(msg) from e
-    except OSError as e:
-        msg = f"OS error reading HTML file {_file_path}: {e}"
-        ASCIIColors.error(msg)
-        raise FileHandlingError(msg) from e
-    except Exception as e: # Catch potential BeautifulSoup errors or other issues
+    except Exception as e:
         msg = f"Error parsing HTML file {_file_path}: {e}"
         ASCIIColors.error(msg, exc_info=True)
         raise ParsingError(msg) from e
 
 
 # --- Dispatcher Function ---
-
-# Define a type hint for the parser functions
 ParserFunc = Callable[[Union[str, Path]], str]
 
 # Map extensions to parser functions
@@ -419,137 +397,67 @@ parser_map: Dict[str, ParserFunc] = {
     '.pdf': parse_pdf,
     '.docx': parse_docx,
     '.html': parse_html,
-    '.htm': parse_html, # Treat .htm the same as .html
+    '.htm': parse_html,
     '.pptx': parse_pptx,
-    
-    # Outlook messages
     '.msg': parse_msg,
 
+    # Data & Structured
+    '.csv': parse_csv,
+    '.json': parse_json,
+    '.xlsx': parse_excel,
+    '.xls': parse_excel,
+
     # --- General Text & Document Formats ---
-    '.md': parse_txt,        # Markdown
-    '.rst': parse_txt,       # reStructuredText
-    '.tex': parse_txt,       # LaTeX source
-    '.rtf': parse_txt,       # Rich Text Format (basic text extraction)
-    '.log': parse_txt,       # Log files
-    '.text': parse_txt,      # Generic text
-    '.me': parse_txt,        # Often README files
-    '.org': parse_txt,       # Emacs Org-mode
+    '.md': parse_txt,
+    '.rst': parse_txt,
+    '.tex': parse_txt,
+    '.rtf': parse_txt,
+    '.log': parse_txt,
+    '.text': parse_txt,
+    '.me': parse_txt,
+    '.org': parse_txt,
 
-    # --- Data Serialization Formats (parsed as raw text) ---
-    # If structured parsing is needed, dedicated parsers would be better.
-    # For now, we treat them as text sources.
-    '.json': parse_txt,      # JavaScript Object Notation
-    '.xml': parse_txt,       # Extensible Markup Language
-    '.csv': parse_txt,       # Comma-Separated Values
-    '.tsv': parse_txt,       # Tab-Separated Values
-    '.yaml': parse_txt,      # YAML Ain't Markup Language
-    '.yml': parse_txt,       # YAML Ain't Markup Language (alternative)
-    '.sql': parse_txt,       # SQL scripts
-    '.graphql': parse_txt,   # GraphQL query language
-    '.gql': parse_txt,       # GraphQL query language (alternative)
+    # --- Configs ---
+    '.xml': parse_txt,
+    '.tsv': parse_txt, # Should eventually use parse_csv logic with delimiter
+    '.yaml': parse_txt,
+    '.yml': parse_txt,
+    '.sql': parse_txt,
+    '.graphql': parse_txt,
+    '.gql': parse_txt,
+    '.ini': parse_txt,
+    '.cfg': parse_txt,
+    '.conf': parse_txt,
+    '.toml': parse_txt,
+    '.env': parse_txt,
+    '.properties': parse_txt,
+    '.dockerfile': parse_txt,
+    'dockerfile': parse_txt,
+    '.gitattributes': parse_txt,
+    '.gitconfig': parse_txt,
+    '.gitignore': parse_txt,
 
-    # --- Configuration Files ---
-    '.ini': parse_txt,       # INI configuration
-    '.cfg': parse_txt,       # Configuration file
-    '.conf': parse_txt,      # Configuration file
-    '.toml': parse_txt,      # Tom's Obvious, Minimal Language
-    '.env': parse_txt,       # Environment variables (e.g., .env files)
-    '.properties': parse_txt,# Java properties files
-    '. Htaccess': parse_txt, # Apache configuration (note: often no prefix dot in map)
-    '.dockerfile': parse_txt,# Docker configuration
-    'dockerfile': parse_txt, # Docker configuration (common naming)
-    '.gitattributes': parse_txt, # Git attributes
-    '.gitconfig': parse_txt,   # Git configuration
-    '.gitignore': parse_txt,   # Git ignore patterns
-
-    # --- Programming Language Source Code ---
-    # Scripting Languages
-    '.py': parse_txt,        # Python
-    '.pyw': parse_txt,       # Python (GUI, no console)
-    '.js': parse_txt,        # JavaScript
-    '.mjs': parse_txt,       # ECMAScript modules
-    '.cjs': parse_txt,       # CommonJS modules
-    '.ts': parse_txt,        # TypeScript
-    '.tsx': parse_txt,       # TypeScript with JSX (React)
-    '.rb': parse_txt,        # Ruby
-    '.pl': parse_txt,        # Perl
-    '.pm': parse_txt,        # Perl Module
-    '.php': parse_txt,       # PHP
-    '.phtml': parse_txt,     # PHP templating
-    '.sh': parse_txt,        # Shell script (Bourne, Bash, etc.)
-    '.bash': parse_txt,      # Bash script
-    '.zsh': parse_txt,       # Zsh script
-    '.fish': parse_txt,      # Fish shell script
-    '.ps1': parse_txt,       # PowerShell
-    '.psm1': parse_txt,      # PowerShell Module
-    '.psd1': parse_txt,      # PowerShell Data File
-    '.lua': parse_txt,       # Lua
-    '.r': parse_txt,         # R language
-    '.tcl': parse_txt,       # TCL
-    '.dart': parse_txt,      # Dart
-
-    # Compiled Languages (Source)
-    '.c': parse_txt,         # C
-    '.h': parse_txt,         # C/C++ Header
-    '.cpp': parse_txt,       # C++
-    '.cxx': parse_txt,       # C++ (alternative)
-    '.cc': parse_txt,        # C++ (alternative)
-    '.hpp': parse_txt,       # C++ Header
-    '.hxx': parse_txt,       # C++ Header (alternative)
-    '.cs': parse_txt,        # C#
-    '.java': parse_txt,      # Java
-    '.go': parse_txt,        # Go
-    '.rs': parse_txt,        # Rust
-    '.swift': parse_txt,     # Swift
-    '.kt': parse_txt,        # Kotlin
-    '.kts': parse_txt,       # Kotlin Script
-    '.scala': parse_txt,     # Scala
-    '.m': parse_txt,         # Objective-C or MATLAB (source is text)
-    '.mm': parse_txt,        # Objective-C++
-    '.f': parse_txt,         # Fortran
-    '.for': parse_txt,       # Fortran
-    '.f90': parse_txt,       # Fortran 90
-    '.f95': parse_txt,       # Fortran 95
-    '.pas': parse_txt,       # Pascal
-    '.d': parse_txt,         # D language
-    '.vb': parse_txt,        # Visual Basic .NET
-    '.vbs': parse_txt,       # VBScript
-
-    # Web Development & Templating (beyond just HTML)
-    '.css': parse_txt,       # Cascading Style Sheets
-    '.scss': parse_txt,      # Sass CSS preprocessor
-    '.sass': parse_txt,      # Sass CSS preprocessor (indented syntax)
-    '.less': parse_txt,      # Less CSS preprocessor
-    '.styl': parse_txt,      # Stylus CSS preprocessor
-    '.jsx': parse_txt,       # JavaScript XML (React)
-    '.vue': parse_txt,       # Vue.js single-file components
-    '.svelte': parse_txt,    # Svelte components
-    '.ejs': parse_txt,       # Embedded JavaScript templates
-    '.hbs': parse_txt,       # Handlebars templates
-    '.mustache': parse_txt,  # Mustache templates
-    '.jinja': parse_txt,     # Jinja templates (Python)
-    '.jinja2': parse_txt,    # Jinja2 templates
-    '.twig': parse_txt,      # Twig templates (PHP)
-    '.erb': parse_txt,       # Embedded Ruby (Rails templates)
-    '.jsp': parse_txt,       # JavaServer Pages
-    '.asp': parse_txt,       # Active Server Pages (classic)
-    '.aspx': parse_txt,      # ASP.NET Web Forms
-
-    # Other/Assembly/Specialized
-    '.asm': parse_txt,       # Assembly language
-    '.s': parse_txt,         # Assembly language (common on Unix)
-    '.bat': parse_txt,       # Batch file (Windows)
-    '.cmd': parse_txt,       # Command script (Windows NT)
-    '.vhd': parse_txt,       # VHDL (Hardware description language)
-    '.vhdl': parse_txt,      # VHDL
-    '.sv': parse_txt,        # SystemVerilog
-    '.bib': parse_txt,       # BibTeX bibliography file
-    '.srt': parse_txt,       # SubRip Subtitle file
-    '.sub': parse_txt,       # Subtitle file
-    '.vtt': parse_txt,       # WebVTT Subtitle file
-    '.po': parse_txt,        # Portable Object (localization)
-    '.pot': parse_txt,       # Portable Object Template (localization)
-    '.strings': parse_txt,   # iOS/macOS localization strings        
+    # --- Programming Languages (Source is text) ---
+    '.py': parse_txt, '.pyw': parse_txt, '.js': parse_txt, '.mjs': parse_txt,
+    '.cjs': parse_txt, '.ts': parse_txt, '.tsx': parse_txt, '.rb': parse_txt,
+    '.pl': parse_txt, '.pm': parse_txt, '.php': parse_txt, '.phtml': parse_txt,
+    '.sh': parse_txt, '.bash': parse_txt, '.zsh': parse_txt, '.fish': parse_txt,
+    '.ps1': parse_txt, '.psm1': parse_txt, '.psd1': parse_txt, '.lua': parse_txt,
+    '.r': parse_txt, '.tcl': parse_txt, '.dart': parse_txt, '.c': parse_txt,
+    '.h': parse_txt, '.cpp': parse_txt, '.cxx': parse_txt, '.cc': parse_txt,
+    '.hpp': parse_txt, '.hxx': parse_txt, '.cs': parse_txt, '.java': parse_txt,
+    '.go': parse_txt, '.rs': parse_txt, '.swift': parse_txt, '.kt': parse_txt,
+    '.kts': parse_txt, '.scala': parse_txt, '.m': parse_txt, '.mm': parse_txt,
+    '.f': parse_txt, '.for': parse_txt, '.f90': parse_txt, '.f95': parse_txt,
+    '.pas': parse_txt, '.d': parse_txt, '.vb': parse_txt, '.vbs': parse_txt,
+    '.css': parse_txt, '.scss': parse_txt, '.sass': parse_txt, '.less': parse_txt,
+    '.styl': parse_txt, '.jsx': parse_txt, '.vue': parse_txt, '.svelte': parse_txt,
+    '.ejs': parse_txt, '.hbs': parse_txt, '.mustache': parse_txt, '.jinja': parse_txt,
+    '.jinja2': parse_txt, '.twig': parse_txt, '.erb': parse_txt, '.jsp': parse_txt,
+    '.asp': parse_txt, '.aspx': parse_txt, '.asm': parse_txt, '.s': parse_txt,
+    '.bat': parse_txt, '.cmd': parse_txt, '.vhd': parse_txt, '.vhdl': parse_txt,
+    '.sv': parse_txt, '.bib': parse_txt, '.srt': parse_txt, '.sub': parse_txt,
+    '.vtt': parse_txt, '.po': parse_txt, '.pot': parse_txt, '.strings': parse_txt,
 }
 
 SAFE_STORE_SUPPORTED_FILE_EXTENSIONS = list(parser_map.keys())
@@ -557,49 +465,28 @@ SAFE_STORE_SUPPORTED_FILE_EXTENSIONS = list(parser_map.keys())
 def parse_document(file_path: Union[str, Path]) -> str:
     """
     Parses a document based on its file extension.
-
-    Dispatches to the appropriate parser (.txt, .pdf, .docx, .html/.htm).
-
-    Args:
-        file_path: Path to the document file.
-
-    Returns:
-        The extracted text content of the document.
-
-    Raises:
-        FileHandlingError: If the input path is not a file.
-        ConfigurationError: If the file extension is unsupported.
-        ParsingError: If the dispatched parser encounters an error.
     """
     _file_path = Path(file_path)
     if not _file_path.is_file():
         msg = f"Input path is not a file: {_file_path}"
         ASCIIColors.error(msg)
-        raise FileHandlingError(msg) # Use specific error
+        raise FileHandlingError(msg)
 
     extension = _file_path.suffix.lower()
     ASCIIColors.debug(f"Dispatching parser for extension '{extension}' on file: {_file_path.name}")
-
-
 
     parser_func = parser_map.get(extension)
 
     if parser_func:
         try:
-            # Call the appropriate parser function
             return parser_func(_file_path)
         except (ConfigurationError, FileHandlingError, ParsingError) as e:
-             # Re-raise specific known errors directly
              raise e
         except Exception as e:
-             # Wrap unexpected errors from the specific parser
-             msg = f"Unexpected error during parsing dispatch for {_file_path.name} (extension '{extension}'): {e}"
+             msg = f"Unexpected error during parsing dispatch for {_file_path.name}: {e}"
              ASCIIColors.error(msg, exc_info=True)
-             # Wrap in ParsingError as it occurred during the parsing stage
              raise ParsingError(msg) from e
     else:
-        # Handle unsupported file type
-        msg = f"Unsupported file type extension: '{extension}' for file: {_file_path}. No parser available."
+        msg = f"Unsupported file type extension: '{extension}' for file: {_file_path}."
         ASCIIColors.warning(msg)
-        # Use ConfigurationError for unsupported type, as it's a setup/config issue
         raise ConfigurationError(msg)

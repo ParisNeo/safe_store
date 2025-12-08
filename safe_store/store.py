@@ -44,7 +44,7 @@ class SafeStore:
         custom_vectorizers_path: Optional[str] = None,
         chunk_size: int = 384,
         chunk_overlap: int = 50,
-        chunking_strategy: Literal['character', 'token', 'paragraph', 'semantic'] = 'token',
+        chunking_strategy: Literal['character', 'token', 'paragraph', 'semantic', 'recursive'] = 'token',
         custom_tokenizer: Optional[Dict[str, Any]] = None,
         expand_before: int = 0,
         expand_after: int = 0,
@@ -128,21 +128,13 @@ class SafeStore:
 
     @classmethod
     def list_available_vectorizers(cls, custom_vectorizers_path: Optional[str] = None) -> List[Dict[str, Any]]:
-        """
-        Scans and lists all available vectorizers, including their configurable parameters.
-        """
         manager = VectorizationManager(custom_vectorizers_path=custom_vectorizers_path)
         return manager.list_vectorizers()
 
     @classmethod
     def list_models(cls, vectorizer_name: str, custom_vectorizers_path: Optional[str] = None, **kwargs) -> List[str]:
-        """
-        Lists the available models for a specific vectorizer.
-        """
         try:
             module = load_vectorizer_module(vectorizer_name, custom_vectorizers_path)
-            
-            # Find the BaseVectorizer subclass in the module
             VectorizerClass = None
             if hasattr(module, 'class_name'):
                 VectorizerClass = getattr(module, module.class_name, None)
@@ -151,7 +143,6 @@ class SafeStore:
                 return VectorizerClass.list_models(**kwargs)
             else:
                 ASCIIColors.warning(f"Vectorizer module '{vectorizer_name}' does not have a valid 'list_models' static method or class setup.")
-                # Fallback to calling on the module if it's a function
                 if hasattr(module, 'list_models'):
                     return module.list_models(**kwargs)
                 return []
@@ -166,8 +157,7 @@ class SafeStore:
             
             self.vectorizer = self.vectorizer_manager.get_vectorizer(self.vectorizer_name, self.vectorizer_config)
 
-            # Ensure tokenizer is available for token, paragraph, and semantic strategies if sizing is needed
-            if self.chunking_strategy in ['token', 'paragraph', 'semantic']:
+            if self.chunking_strategy in ['token', 'paragraph', 'semantic', 'recursive']:
                 tokenizer = self.vectorizer.get_tokenizer()
                 if tokenizer is not None:
                     self.tokenizer_for_chunking = tokenizer
@@ -305,10 +295,15 @@ class SafeStore:
         vectorize_with_metadata: bool = True,
         chunk_processor: Optional[Callable[[str, Dict[str, Any]], str]] = None,
         skip_chunking: bool = False
-    ):
+    ) -> Dict[str, int]:
+        """
+        Adds a document to the store.
+        Returns:
+            Dict[str, int]: {"num_chunks_added": int, "num_chunks_ignored": int}
+        """
         with self._instance_lock:
             self._ensure_connection()
-            self._add_content_impl(
+            return self._add_content_impl(
                 content_id=str(Path(file_path).resolve()),
                 content_loader=lambda: parser.parse_document(file_path),
                 hash_loader=lambda: self._get_file_hash(Path(file_path)),
@@ -328,10 +323,15 @@ class SafeStore:
         vectorize_with_metadata: bool = True,
         chunk_processor: Optional[Callable[[str, Dict[str, Any]], str]] = None,
         skip_chunking: bool = False
-    ):
+    ) -> Dict[str, int]:
+        """
+        Adds raw text to the store.
+        Returns:
+            Dict[str, int]: {"num_chunks_added": int, "num_chunks_ignored": int}
+        """
         with self._instance_lock:
             self._ensure_connection()
-            self._add_content_impl(
+            return self._add_content_impl(
                 content_id=unique_id,
                 content_loader=lambda: text,
                 hash_loader=lambda: self._get_text_hash(text),
@@ -342,15 +342,15 @@ class SafeStore:
                 skip_chunking=skip_chunking
             )
 
-    def _add_content_impl(self, content_id, content_loader, hash_loader, metadata, force_reindex, vectorize_with_metadata, chunk_processor, skip_chunking):
-        """
-        Orchestrates adding content by separating non-DB-locking heavy processing
-        from the final, locked database write transaction.
-        """
+    def _add_content_impl(self, content_id, content_loader, hash_loader, metadata, force_reindex, vectorize_with_metadata, chunk_processor, skip_chunking) -> Dict[str, int]:
         assert self.conn and self.vectorizer is not None
         
-        # --- Phase 1: Quick check if update is needed (Short DB lock) ---
-        current_hash = hash_loader()
+        try:
+            current_hash = hash_loader()
+        except (OSError, FileNotFoundError) as e:
+            ASCIIColors.warning(f"File '{content_id}' is empty or not readable. Error: {e}")
+            return {"num_chunks_added": 0, "num_chunks_ignored": 0}
+
         with self._optional_file_lock_context(f"checking document status for {content_id}"):
             self._ensure_connection()
             assert self.conn is not None
@@ -360,17 +360,37 @@ class SafeStore:
             if not force_reindex and existing_hash == current_hash and existing_doc_id:
                 if self.conn.execute("SELECT 1 FROM vectors v JOIN chunks c ON v.chunk_id = c.chunk_id WHERE c.doc_id = ? LIMIT 1", (existing_doc_id,)).fetchone():
                     ASCIIColors.info(f"'{content_id}' is already up-to-date. Skipping.")
-                    return
+                    return {"num_chunks_added": 0, "num_chunks_ignored": 0}
 
-        # --- Phase 2: Heavy processing (No DB lock) ---
-        # This part can be slow (file I/O, parsing, vectorization)
         ASCIIColors.info(f"Processing '{content_id}' for indexing...")
-        full_text = content_loader()
+        
+        try:
+            full_text = content_loader()
+        except ConfigurationError:
+            ASCIIColors.warning(f"Unknown file format for '{content_id}'. Skipping.")
+            return {"num_chunks_added": 0, "num_chunks_ignored": 0}
+        except ParsingError as e:
+            if "encrypted" in str(e).lower():
+                ASCIIColors.warning(f"File '{content_id}' content is encrypted. Skipping.")
+                return {"num_chunks_added": 0, "num_chunks_ignored": 0}
+            ASCIIColors.warning(f"File '{content_id}' is empty or not readable. Error: {e}")
+            return {"num_chunks_added": 0, "num_chunks_ignored": 0}
+        except (FileHandlingError, OSError) as e:
+            ASCIIColors.warning(f"File '{content_id}' is empty or not readable. Error: {e}")
+            return {"num_chunks_added": 0, "num_chunks_ignored": 0}
+        except Exception as e:
+             ASCIIColors.error(f"Unexpected error processing '{content_id}': {e}")
+             return {"num_chunks_added": 0, "num_chunks_ignored": 0}
+
+        if not full_text or not full_text.strip():
+             ASCIIColors.warning(f"File '{content_id}' is empty or not readable.")
+             return {"num_chunks_added": 0, "num_chunks_ignored": 0}
+
         cleaned_text = self.text_cleaner(full_text)
         
+        raw_chunks_data = []
         if skip_chunking:
             storage_text = cleaned_text
-            # Prepare vector text by cropping if necessary
             if self.tokenizer_for_chunking:
                 tokens = self.tokenizer_for_chunking.encode(cleaned_text)
                 if len(tokens) > self.chunk_size:
@@ -384,9 +404,9 @@ class SafeStore:
                      vector_text = cleaned_text[:self.chunk_size]
                 else:
                      vector_text = cleaned_text
-            chunks_data = [(vector_text, storage_text)]
+            raw_chunks_data = [(vector_text, storage_text)]
         else:
-            chunks_data = chunking.generate_chunks(
+            raw_chunks_data = chunking.generate_chunks(
                 text=cleaned_text, 
                 strategy=self.chunking_strategy, 
                 chunk_size=self.chunk_size,
@@ -398,25 +418,28 @@ class SafeStore:
                 **self.chunking_kwargs
             )
 
+        processed_chunks_data = []
         if chunk_processor:
-            processed_chunks_data = []
             doc_metadata = metadata or {}
-            for vector_text, storage_text in chunks_data:
+            for vector_text, storage_text in raw_chunks_data:
                 processed_text = chunk_processor(vector_text, doc_metadata)
-                if processed_text and isinstance(processed_text, str):
-                    processed_chunks_data.append((processed_text, processed_text))
-            chunks_data = processed_chunks_data
+                # Keep tuple structure even if processed
+                processed_chunks_data.append((processed_text, processed_text))
+        else:
+            processed_chunks_data = raw_chunks_data
 
-        chunks_data = [chunk for chunk in chunks_data if chunk[0] and chunk[0].strip()]
+        # Filter valid chunks and count ignored
+        valid_chunks_data = [chunk for chunk in processed_chunks_data if chunk[0] and chunk[0].strip()]
+        num_ignored = len(processed_chunks_data) - len(valid_chunks_data)
 
-        if not chunks_data:
+        if not valid_chunks_data:
             ASCIIColors.warning(f"No valid chunks generated for '{content_id}'. Deleting if it exists.")
             if existing_doc_id:
                 self.delete_document_by_id(existing_doc_id)
-            return
+            return {"num_chunks_added": 0, "num_chunks_ignored": num_ignored}
 
-        vector_texts = [item[0] for item in chunks_data]
-        storage_texts = [item[1] for item in chunks_data]
+        vector_texts = [item[0] for item in valid_chunks_data]
+        storage_texts = [item[1] for item in valid_chunks_data]
         
         if vectorize_with_metadata and metadata:
             metadata_string = "--- Document Context ---\n"
@@ -444,7 +467,6 @@ class SafeStore:
 
         vectors = self.vectorizer.vectorize(vector_texts)
 
-        # --- Phase 3: Write to DB (Transaction with lock) ---
         with self._optional_file_lock_context(f"writing document {content_id} to DB"):
             self._ensure_connection()
             assert self.conn is not None
@@ -473,7 +495,9 @@ class SafeStore:
                     db.add_vector_record(self.conn, chunk_id, np.ascontiguousarray(vectors[i], dtype=self.vectorizer.dtype))
 
                 self.conn.commit()
-                ASCIIColors.success(f"Successfully indexed '{content_id}'.")
+                ASCIIColors.success(f"Successfully indexed '{content_id}'. Added {len(valid_chunks_data)} chunks, ignored {num_ignored}.")
+                return {"num_chunks_added": len(valid_chunks_data), "num_chunks_ignored": num_ignored}
+
             except Exception as e:
                 if self.conn and self.conn.in_transaction: self.conn.rollback()
                 raise SafeStoreError(f"Database transaction failed for '{content_id}': {e}") from e
