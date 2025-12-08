@@ -655,7 +655,7 @@ pip install safe-store[all]
 
 #### `SafeStore` (The Foundation)
 *   `__init__(db_path, vectorizer_name, ...)`: Creates or loads a database. The vectorizer is locked in at creation.
-*   `add_document(path, ...)`: Parses, chunks, vectorizes, and stores a document or an entire folder.
+*   `add_document(path, ..., skip_chunking=False)`: Parses, optionally chunks, vectorizes, and stores a document. If `skip_chunking` is True, the document is stored as a single chunk (vector text is cropped to limits if needed, but full text is stored).
 *   `query(query_text, top_k, ...)`: Performs a semantic search and returns the most relevant text chunks for your RAG pipeline.
 *   `get_chunk_by_id(chunk_id)`: Retrieves the full text and metadata for a specific chunk by its ID.
 *   `reconstruct_document_text(file_path)`: Reassembles and returns the full, original text of a document by joining its stored chunks.

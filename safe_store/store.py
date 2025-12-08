@@ -44,7 +44,7 @@ class SafeStore:
         custom_vectorizers_path: Optional[str] = None,
         chunk_size: int = 384,
         chunk_overlap: int = 50,
-        chunking_strategy: Literal['character', 'token'] = 'token',
+        chunking_strategy: Literal['character', 'token', 'paragraph', 'semantic'] = 'token',
         custom_tokenizer: Optional[Dict[str, Any]] = None,
         expand_before: int = 0,
         expand_after: int = 0,
@@ -55,7 +55,8 @@ class SafeStore:
         log_level: LogLevel = LogLevel.INFO,
         lock_timeout: int = DEFAULT_LOCK_TIMEOUT,
         encryption_key: Optional[str] = None,
-        cache_folder: Optional[str] = None
+        cache_folder: Optional[str] = None,
+        chunking_kwargs: Optional[Dict[str, Any]] = None
     ):
         ASCIIColors.set_log_level(log_level)
 
@@ -68,6 +69,7 @@ class SafeStore:
         self.expand_before = expand_before
         self.expand_after = expand_after
         self.text_cleaner = get_cleaner(text_cleaner)
+        self.chunking_kwargs = chunking_kwargs or {}
         
         self.name = name
         self.description = description
@@ -136,20 +138,6 @@ class SafeStore:
     def list_models(cls, vectorizer_name: str, custom_vectorizers_path: Optional[str] = None, **kwargs) -> List[str]:
         """
         Lists the available models for a specific vectorizer.
-
-        This method dynamically loads the specified vectorizer's module
-        and calls its `list_models` static method.
-
-        Args:
-            vectorizer_name: The name of the vectorizer (e.g., 'ollama', 'st').
-            custom_vectorizers_path: Optional path to a folder with custom vectorizers.
-            **kwargs: Additional keyword arguments to pass to the vectorizer's `list_models` method.
-
-        Returns:
-            A list of model name strings.
-
-        Raises:
-            SafeStoreError: If the vectorizer module cannot be found or an error occurs.
         """
         try:
             module = load_vectorizer_module(vectorizer_name, custom_vectorizers_path)
@@ -178,7 +166,8 @@ class SafeStore:
             
             self.vectorizer = self.vectorizer_manager.get_vectorizer(self.vectorizer_name, self.vectorizer_config)
 
-            if self.chunking_strategy == 'token':
+            # Ensure tokenizer is available for token, paragraph, and semantic strategies if sizing is needed
+            if self.chunking_strategy in ['token', 'paragraph', 'semantic']:
                 tokenizer = self.vectorizer.get_tokenizer()
                 if tokenizer is not None:
                     self.tokenizer_for_chunking = tokenizer
@@ -193,7 +182,7 @@ class SafeStore:
                 else:
                     ASCIIColors.warning(
                         f"Vectorizer '{self.vectorizer_name}' does not provide a client-side tokenizer. "
-                        "Defaulting to 'tiktoken' for token-based chunking. This is a common choice for OpenAI-compatible models."
+                        "Defaulting to 'tiktoken' for accurate sizing. This is a common choice for OpenAI-compatible models."
                     )
                     self.tokenizer_for_chunking = get_tokenizer({"name": "tiktoken", "model": "cl100k_base"})
 
@@ -293,12 +282,6 @@ class SafeStore:
         self.close()
 
     def _ensure_connection(self) -> None:
-        """
-        Ensures the connection to the database is active. If the connection
-        is closed, it attempts to reconnect and re-initialize the store.
-        This method is designed to be called from within a method that already
-        holds the instance lock.
-        """
         if self._is_closed or self.conn is None:
             self._connect_and_initialize()
             self._initialize_and_verify_vectorizer()
@@ -319,8 +302,9 @@ class SafeStore:
         file_path: Union[str, Path],
         metadata: Optional[Dict[str, Any]] = None,
         force_reindex: bool = False,
-        vectorize_with_metadata: bool = False,
-        chunk_processor: Optional[Callable[[str, Dict[str, Any]], str]] = None
+        vectorize_with_metadata: bool = True,
+        chunk_processor: Optional[Callable[[str, Dict[str, Any]], str]] = None,
+        skip_chunking: bool = False
     ):
         with self._instance_lock:
             self._ensure_connection()
@@ -331,7 +315,8 @@ class SafeStore:
                 metadata=metadata,
                 force_reindex=force_reindex,
                 vectorize_with_metadata=vectorize_with_metadata,
-                chunk_processor=chunk_processor
+                chunk_processor=chunk_processor,
+                skip_chunking=skip_chunking
             )
 
     def add_text(
@@ -340,8 +325,9 @@ class SafeStore:
         text: str,
         metadata: Optional[Dict[str, Any]] = None,
         force_reindex: bool = False,
-        vectorize_with_metadata: bool = False,
-        chunk_processor: Optional[Callable[[str, Dict[str, Any]], str]] = None
+        vectorize_with_metadata: bool = True,
+        chunk_processor: Optional[Callable[[str, Dict[str, Any]], str]] = None,
+        skip_chunking: bool = False
     ):
         with self._instance_lock:
             self._ensure_connection()
@@ -352,10 +338,11 @@ class SafeStore:
                 metadata=metadata,
                 force_reindex=force_reindex,
                 vectorize_with_metadata=vectorize_with_metadata,
-                chunk_processor=chunk_processor
+                chunk_processor=chunk_processor,
+                skip_chunking=skip_chunking
             )
 
-    def _add_content_impl(self, content_id, content_loader, hash_loader, metadata, force_reindex, vectorize_with_metadata, chunk_processor):
+    def _add_content_impl(self, content_id, content_loader, hash_loader, metadata, force_reindex, vectorize_with_metadata, chunk_processor, skip_chunking):
         """
         Orchestrates adding content by separating non-DB-locking heavy processing
         from the final, locked database write transaction.
@@ -381,11 +368,35 @@ class SafeStore:
         full_text = content_loader()
         cleaned_text = self.text_cleaner(full_text)
         
-        chunks_data = chunking.generate_chunks(
-            text=cleaned_text, strategy=self.chunking_strategy, chunk_size=self.chunk_size,
-            chunk_overlap=self.chunk_overlap, expand_before=self.expand_before,
-            expand_after=self.expand_after, tokenizer=self.tokenizer_for_chunking
-        )
+        if skip_chunking:
+            storage_text = cleaned_text
+            # Prepare vector text by cropping if necessary
+            if self.tokenizer_for_chunking:
+                tokens = self.tokenizer_for_chunking.encode(cleaned_text)
+                if len(tokens) > self.chunk_size:
+                    ASCIIColors.warning(f"Document '{content_id}' exceeds chunk_size ({self.chunk_size}). Cropping vector text, but storing full content.")
+                    vector_text = self.tokenizer_for_chunking.decode(tokens[:self.chunk_size])
+                else:
+                    vector_text = cleaned_text
+            else:
+                if len(cleaned_text) > self.chunk_size:
+                     ASCIIColors.warning(f"Document '{content_id}' exceeds chunk_size ({self.chunk_size}). Cropping vector text, but storing full content.")
+                     vector_text = cleaned_text[:self.chunk_size]
+                else:
+                     vector_text = cleaned_text
+            chunks_data = [(vector_text, storage_text)]
+        else:
+            chunks_data = chunking.generate_chunks(
+                text=cleaned_text, 
+                strategy=self.chunking_strategy, 
+                chunk_size=self.chunk_size,
+                chunk_overlap=self.chunk_overlap, 
+                expand_before=self.expand_before,
+                expand_after=self.expand_after, 
+                tokenizer=self.tokenizer_for_chunking,
+                vectorizer_fn=self.vectorizer.vectorize if self.chunking_strategy == 'semantic' else None,
+                **self.chunking_kwargs
+            )
 
         if chunk_processor:
             processed_chunks_data = []
@@ -647,15 +658,6 @@ class SafeStore:
     def reconstruct_document_text(self, file_path: Union[str, Path]) -> Optional[str]:
         """
         Reconstructs the content of a document by fetching and joining its chunks.
-        Note: If a `chunk_overlap` was used during indexing, the reconstructed
-        text will contain repeated, overlapping segments. This method provides a
-        raw reassembly of the stored data.
-        
-        Args:
-            file_path: The unique ID or file path of the document to reconstruct.
-
-        Returns:
-            The reconstructed text as a single string, or None if not found.
         """
         _path_or_id = str(Path(file_path).resolve() if isinstance(file_path, Path) else file_path)
         
@@ -694,16 +696,6 @@ class SafeStore:
             return "\n".join(decrypted_chunks)
 
     def get_chunk_by_id(self, chunk_id: int) -> Optional[Dict[str, Any]]:
-        """
-        Retrieves the details of a single chunk by its ID, including text and metadata.
-
-        Args:
-            chunk_id: The unique identifier of the chunk.
-
-        Returns:
-            A dictionary containing chunk details ('chunk_id', 'chunk_text', 'file_path', 
-            'document_metadata'), or None if not found.
-        """
         with self._instance_lock, self._optional_file_lock_context(f"get_chunk_by_id: {chunk_id}"):
             self._ensure_connection()
             assert self.conn is not None
