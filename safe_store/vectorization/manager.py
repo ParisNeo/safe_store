@@ -32,6 +32,38 @@ class VectorizationManager:
         config_str = json.dumps(config, sort_keys=True, separators=(',', ':'))
         return f"{vectorizer_name}:{config_str}"
 
+
+    @staticmethod
+    def _create_vectorizer_ascii_infos(vectorizer_name: str, config: Optional[Dict[str, Any]]) -> str:
+        lines = []
+
+        lines.append(ASCIIColors.bold(ASCIIColors.magenta("════════════════════════════════════════"), emit=False))
+        lines.append(ASCIIColors.bold(ASCIIColors.magenta("  VECTORISER INFORMATION"), emit=False))
+        lines.append(ASCIIColors.bold(ASCIIColors.magenta("════════════════════════════════════════", emit=False), emit=False))
+        lines.append("")
+
+        lines.append(
+            f"{ASCIIColors.cyan('Name')} : "
+            f"{ASCIIColors.bold(ASCIIColors.green(vectorizer_name, emit=False),emit=False)}"
+        )
+
+        if config:
+            lines.append("")
+            lines.append(ASCIIColors.yellow("Configuration:"))
+            lines.append(ASCIIColors.orange("──────────────",emit=False))
+
+            pretty_config = json.dumps(config, indent=2, sort_keys=True)
+            for line in pretty_config.splitlines():
+                lines.append(ASCIIColors.blue(line,emit=False))
+        else:
+            lines.append("")
+            lines.append(ASCIIColors.red("No configuration provided.",emit=False))
+
+        lines.append("")
+        lines.append(ASCIIColors.bold(ASCIIColors.magenta("════════════════════════════════════════",emit=False),emit=False))
+
+        return "\n".join(lines)
+
     def list_vectorizers(self) -> List[Dict[str, Any]]:
         """Scans for available vectorizers and returns their metadata from description.yaml."""
         vectorizers = []
@@ -80,7 +112,7 @@ class VectorizationManager:
         if unique_name in self._cache:
             return self._cache[unique_name]
 
-        ASCIIColors.info(f"Initializing vectorizer: {unique_name}")
+        ASCIIColors.info(f"Initializing vectorizer:\n{self._create_vectorizer_ascii_infos(vectorizer_name, vectorizer_config)}")
         config_for_init = vectorizer_config or {}
 
         try:
