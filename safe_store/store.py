@@ -600,7 +600,7 @@ class SafeStore:
             ordered_results = []
             for cid, s in zip(top_chunk_ids, top_scores):
                 res = details_map.get(cid, {})
-                res.update({"chunk_id": cid, "similarity_score": float(s), "similarity_percent": round(((s + 1) / 2) * 100, 2)})
+                res.update({"chunk_id": cid, "similarity_score": float(s), "similarity_percent": float(round(((s + 1) / 2) * 100, 2))})
                 ordered_results.append(res)
             return ordered_results
 

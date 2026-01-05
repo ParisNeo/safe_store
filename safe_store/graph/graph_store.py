@@ -352,7 +352,8 @@ class GraphStore:
         self, doc_id: int, guidance: Optional[str] = None, progress_callback: Optional[ProgressCallback] = None, llm_retries: int = 1
     ) -> None:
         with self.store._instance_lock, self.store._optional_file_lock_context(f"build_graph_for_document: {doc_id}"):
-            chunk_ids = [row[0] for row in self.conn.execute("SELECT chunk_id FROM chunks WHERE doc_id = ? AND graph_processed_at IS NULL", (doc_id,)).fetchall()]
+            # AND graph_processed_at IS NULL
+            chunk_ids = [row[0] for row in self.conn.execute("SELECT chunk_id FROM chunks WHERE doc_id = ?", (doc_id,)).fetchall()]
             if not chunk_ids:
                 ASCIIColors.info(f"No unprocessed chunks found for document {doc_id}.")
                 if progress_callback: progress_callback(1.0, "No new chunks to process.")
