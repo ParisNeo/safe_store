@@ -7,7 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Optional, Callable, Dict, List, Any, Tuple, TYPE_CHECKING, Set
 
-from ascii_colors import ASCIIColors
+from ascii_colors import ASCIIColors, trace_exception
 from ..core import db
 from ..core.exceptions import (
     DatabaseError, ConfigurationError, GraphDBError, GraphProcessingError, LLMCallbackError,
@@ -363,9 +363,20 @@ class GraphStore:
             try:
                 self.conn.execute("BEGIN")
                 for i, chunk_id in enumerate(chunk_ids):
-                    self._process_chunk_for_graph_impl(chunk_id, guidance, llm_retries)
+                    # Robust error handling per chunk
+                    savepoint_name = f"sp_doc_chunk_{chunk_id}"
+                    try:
+                        self.conn.execute(f"SAVEPOINT {savepoint_name}")
+                        self._process_chunk_for_graph_impl(chunk_id, guidance, llm_retries)
+                        self.conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+                    except Exception as e:
+                        self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                        ASCIIColors.error(f"Failed to process chunk {chunk_id} for document {doc_id}. Skipping.")
+                        trace_exception(e)
+                    
                     if progress_callback: progress_callback((i + 1) / len(chunk_ids), f"Processed chunk {i + 1}/{len(chunk_ids)}.")
                 
+                # Mark all examined chunks as processed, even if they failed (to avoid infinite loops)
                 db.mark_chunks_graph_processed(self.conn, chunk_ids)
                 self.conn.commit()
                 if progress_callback: progress_callback(1.0, "Graph building complete.")
@@ -373,7 +384,7 @@ class GraphStore:
             except Exception as e:
                 if self.conn.in_transaction: self.conn.rollback()
                 if progress_callback: progress_callback(1.0, f"Error: {e}")
-                ASCIIColors.error(f"Error building graph for document {doc_id}: {e}")
+                ASCIIColors.error(f"Critical error building graph for document {doc_id}: {e}")
                 raise GraphProcessingError(f"Failed to build graph for document {doc_id}") from e
 
     def build_graph_for_all_documents(
@@ -392,18 +403,31 @@ class GraphStore:
             while True:
                 chunk_ids_batch = [r[0] for r in self.conn.execute("SELECT chunk_id FROM chunks WHERE graph_processed_at IS NULL LIMIT ?", (batch_size_chunks,)).fetchall()]
                 if not chunk_ids_batch: break
+                
                 try:
                     self.conn.execute("BEGIN")
                     for chunk_id in chunk_ids_batch:
-                        self._process_chunk_for_graph_impl(chunk_id, llm_retries=llm_retries)
+                        # Robust error handling per chunk within batch
+                        savepoint_name = f"sp_chunk_{chunk_id}"
+                        try:
+                            self.conn.execute(f"SAVEPOINT {savepoint_name}")
+                            self._process_chunk_for_graph_impl(chunk_id, llm_retries=llm_retries)
+                            self.conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
+                        except Exception as e:
+                            self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
+                            ASCIIColors.error(f"Failed to process chunk {chunk_id} in batch. Skipping.")
+                            trace_exception(e)
+                    
+                    # Mark all batch chunks as processed to ensure forward progress
                     db.mark_chunks_graph_processed(self.conn, chunk_ids_batch)
                     self.conn.commit()
+                    
                     processed += len(chunk_ids_batch)
                     ASCIIColors.info(f"Processed batch of {len(chunk_ids_batch)}. Total processed: {processed}/{total_unprocessed}")
                     if progress_callback: progress_callback(processed / total_unprocessed, f"Processed {processed}/{total_unprocessed} chunks.")
                 except Exception as e:
                     if self.conn.in_transaction: self.conn.rollback()
-                    raise GraphProcessingError("Failed during batch processing.") from e
+                    raise GraphProcessingError("Critical failure during batch processing.") from e
             ASCIIColors.success("Finished building graph for all available documents.")
 
     def query_graph(self, natural_language_query: str, output_mode: str = "chunks_summary", top_k_nodes: int = 5) -> Any:
