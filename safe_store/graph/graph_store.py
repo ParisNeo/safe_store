@@ -1,4 +1,3 @@
-# [FINAL & COMPLETE] safe_store/graph/graph_store.py
 from __future__ import annotations
 import sqlite3
 import threading
@@ -87,7 +86,7 @@ class GraphStore:
                 self.conn.execute("BEGIN")
                 if db.get_store_metadata(self.conn, self.GRAPH_FEATURES_ENABLED_KEY) != "true":
                     db.set_store_metadata(self.conn, self.GRAPH_FEATURES_ENABLED_KEY, "true")
-                
+
                 embedder_instance = self.embedder
                 if embedder_instance.dim is None:
                     vectorizer_name_for_error = self.store.vectorizer_name if hasattr(self.store, 'vectorizer_name') else 'unknown'
@@ -120,7 +119,7 @@ class GraphStore:
                     if isinstance(properties, dict):
                         for prop, prop_desc in properties.items():
                             lines.append(f"    - {prop}: {prop_desc}")
-            
+
             relationships = self.ontology.get("relationships")
             if isinstance(relationships, dict) and relationships:
                 if lines: lines.append("")
@@ -131,7 +130,7 @@ class GraphStore:
                     source = details.get("source", "Any")
                     target = details.get("target", "Any")
                     lines.append(f"  - {rel_type} (Source: {source}, Target: {target}): {desc}")
-            
+
             if lines:
                 ASCIIColors.info("Formatted structured ontology for prompt.")
                 return "\n".join(lines)
@@ -141,9 +140,9 @@ class GraphStore:
 
     def _get_graph_extraction_prompt(self, chunk_text: str, guidance: Optional[str] = None) -> str:
         user_guidance = guidance if guidance and guidance.strip() else "Extract all relevant properties you can identify."
-        
+
         has_valid_ontology = isinstance(self.ontology, (dict, str)) and self.ontology
-        
+
         if has_valid_ontology:
             template = self.DEFAULT_GRAPH_EXTRACTION_WITH_ONTOLOGY_PROMPT_TEMPLATE
             ontology_schema = self._format_ontology_for_prompt()
@@ -162,7 +161,7 @@ class GraphStore:
 
     def _get_query_parsing_prompt(self, natural_language_query: str) -> str:
         return self.query_parsing_prompt_template.format(natural_language_query=natural_language_query)
-    
+
     def _get_entity_fusion_prompt(self, node_a_props: Dict, node_b_props: Dict, label: str) -> str:
         """Formats the prompt for the LLM to decide on entity fusion."""
         return self.entity_fusion_prompt_template.format(
@@ -183,7 +182,7 @@ class GraphStore:
         temp_text_to_embed = f"An entity of type {label} with properties {json.dumps(properties)}."
         query_vector = self.embedder.vectorize([temp_text_to_embed])[0]
         candidate_ids = db.search_graph_nodes_by_vector(self.conn, query_vector, top_k=3)
-        
+
         for candidate_id in candidate_ids:
             candidate_details = db.get_node_details_db(self.conn, candidate_id)
             if not candidate_details or candidate_details['label'] != label: continue
@@ -193,15 +192,15 @@ class GraphStore:
                 decision = robust_json_parser(raw_response)
                 if decision.get("is_same") is True:
                     ASCIIColors.info(f"LLM confirmed fusion: Merging new data into node {candidate_id}.")
-                    
+
                     # Fusion logic with `other_identifiers`
                     existing_props = candidate_details['properties']
                     other_identifiers = existing_props.get("other_identifiers", [])
                     new_id_key, new_id_value = self._get_node_identifying_parts(properties)
-                    
+
                     if new_id_value and new_id_value not in other_identifiers:
                         other_identifiers.append(new_id_value)
-                    
+
                     # Merge properties, but ensure other_identifiers is handled correctly
                     merged_props = {**existing_props, **properties}
                     merged_props["other_identifiers"] = sorted(list(set(other_identifiers)))
@@ -258,7 +257,7 @@ class GraphStore:
                     ASCIIColors.cyan(f"--- LLM Raw Output for Chunk {chunk_id} (Attempt {attempt + 1}) ---")
                     ASCIIColors.yellow(raw_response)
                     ASCIIColors.cyan("----------------------------------------------------")
-                
+
                 parsed_json = robust_json_parser(raw_response)
                 return parsed_json
             except Exception as e:
@@ -298,7 +297,7 @@ class GraphStore:
             node_id = self._fuse_or_create_node(label, props)
             self._vectorize_and_store_node_update(node_id, label, props)
             db.link_node_to_chunk(self.conn, node_id, chunk_id)
-            
+
             _, id_value = self._get_node_identifying_parts(props)
             if id_value:
                 node_map[(label, str(id_value))] = node_id
@@ -306,10 +305,10 @@ class GraphStore:
         for rel_data in llm_output.get("relationships", []):
             req_keys = ["source_node_label", "source_node_identifying_value", "target_node_label", "target_node_identifying_value", "type"]
             if not (isinstance(rel_data, dict) and all(k in rel_data for k in req_keys)): continue
-            
+
             src_label, src_val = str(rel_data["source_node_label"]), str(rel_data["source_node_identifying_value"])
             tgt_label, tgt_val = str(rel_data["target_node_label"]), str(rel_data["target_node_identifying_value"])
-            
+
             src_id = node_map.get((src_label, src_val))
             tgt_id = node_map.get((tgt_label, tgt_val))
 
@@ -327,14 +326,14 @@ class GraphStore:
             if src_id is None or tgt_id is None:
                 ASCIIColors.warning(f"Skipping relationship '{rel_data['type']}'. Src: '{src_val}' (Found: {src_id is not None}), Tgt: '{tgt_val}' (Found: {tgt_id is not None})")
                 continue
-            
+
             try:
                 props_json = json.dumps(rel_data.get("properties", {}))
                 db.add_graph_relationship(self.conn, src_id, tgt_id, str(rel_data["type"]), props_json)
                 ASCIIColors.info(f"Successfully created relationship: {src_label} -> {rel_data['type']} -> {tgt_label}")
             except (GraphDBError, json.JSONDecodeError) as e:
                 ASCIIColors.error(f"Error storing relationship '{rel_data['type']}': {e}")
-    
+
     def process_chunk_for_graph(self, chunk_id: int, llm_retries: int = 1) -> None:
         with self.store._instance_lock, self.store._optional_file_lock_context(f"process_chunk_for_graph: {chunk_id}"):
             try:
@@ -373,9 +372,9 @@ class GraphStore:
                         self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
                         ASCIIColors.error(f"Failed to process chunk {chunk_id} for document {doc_id}. Skipping.")
                         trace_exception(e)
-                    
+
                     if progress_callback: progress_callback((i + 1) / len(chunk_ids), f"Processed chunk {i + 1}/{len(chunk_ids)}.")
-                
+
                 # Mark all examined chunks as processed, even if they failed (to avoid infinite loops)
                 db.mark_chunks_graph_processed(self.conn, chunk_ids)
                 self.conn.commit()
@@ -403,7 +402,7 @@ class GraphStore:
             while True:
                 chunk_ids_batch = [r[0] for r in self.conn.execute("SELECT chunk_id FROM chunks WHERE graph_processed_at IS NULL LIMIT ?", (batch_size_chunks,)).fetchall()]
                 if not chunk_ids_batch: break
-                
+
                 try:
                     self.conn.execute("BEGIN")
                     for chunk_id in chunk_ids_batch:
@@ -417,11 +416,11 @@ class GraphStore:
                             self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
                             ASCIIColors.error(f"Failed to process chunk {chunk_id} in batch. Skipping.")
                             trace_exception(e)
-                    
+
                     # Mark all batch chunks as processed to ensure forward progress
                     db.mark_chunks_graph_processed(self.conn, chunk_ids_batch)
                     self.conn.commit()
-                    
+
                     processed += len(chunk_ids_batch)
                     ASCIIColors.info(f"Processed batch of {len(chunk_ids_batch)}. Total processed: {processed}/{total_unprocessed}")
                     if progress_callback: progress_callback(processed / total_unprocessed, f"Processed {processed}/{total_unprocessed} chunks.")
@@ -463,7 +462,7 @@ class GraphStore:
             while head < len(queue):
                 current_node_id, current_depth = queue[head]; head += 1
                 if current_depth >= max_depth: continue
-                
+
                 for rel_spec in target_rels:
                     for rel in db.get_relationships_for_node_db(self.conn, current_node_id, rel_spec.get("type"), rel_spec.get("direction", "any"), limit=100):
                         subgraph_rels[rel["relationship_id"]] = rel
@@ -472,10 +471,10 @@ class GraphStore:
                             neighbor_id, neighbor_label = neighbor_info["node_id"], neighbor_info["label"]
                             if target_labels and neighbor_label not in target_labels: continue
                             if neighbor_id not in subgraph_nodes: subgraph_nodes[neighbor_id] = neighbor_info
-                            if neighbor_id not in visited: 
+                            if neighbor_id not in visited:
                                 queue.append((neighbor_id, current_depth + 1))
                                 visited.add(neighbor_id)
-            
+
             final_graph_data = {"nodes": list(subgraph_nodes.values()), "relationships": list(subgraph_rels.values())}
             return self._format_query_output(final_graph_data, output_mode)
 
@@ -490,7 +489,7 @@ class GraphStore:
             node_ids = [n["node_id"] for n in graph_data["nodes"]]
             node_to_chunks = db.get_chunk_ids_for_nodes_db(self.conn, node_ids)
             all_chunk_ids = {cid for ids in node_to_chunks.values() for cid in ids}
-            
+
             chunk_details = db.get_chunk_details_db(self.conn, list(all_chunk_ids), self.encryptor) if all_chunk_ids else []
             for chunk in chunk_details:
                 chunk["linked_graph_nodes"] = [
@@ -499,7 +498,7 @@ class GraphStore:
                 ]
             if output_mode == "chunks_summary": return chunk_details
             if output_mode == "full": return {"graph": graph_data, "chunks": chunk_details}
-        
+
         if output_mode == "graph_only": return graph_data
         if output_mode == "full": return {"graph": graph_data, "chunks": []}
         return []
@@ -532,15 +531,15 @@ class GraphStore:
                 self.conn.execute("BEGIN")
                 current = db.get_node_details_db(self.conn, node_id)
                 if not current: raise NodeNotFoundError(f"Node {node_id} not found.")
-                
-                if label is not None and label != current["label"]: 
+
+                if label is not None and label != current["label"]:
                     db.update_graph_node_label_db(self.conn, node_id, label)
-                
-                if properties is not None: 
+
+                if properties is not None:
                     if "other_identifiers" not in properties and "other_identifiers" in current["properties"]:
                         properties["other_identifiers"] = current["properties"]["other_identifiers"]
                     db.update_graph_node_properties_db(self.conn, node_id, properties, "overwrite_all")
-                
+
                 updated_label = label or current['label']
                 updated_props = properties if properties is not None else current['properties']
                 self._vectorize_and_store_node_update(node_id, updated_label, updated_props)
@@ -613,12 +612,12 @@ class GraphStore:
                     node_data = rel.get("target_node")
                 elif direction == "incoming":
                     node_data = rel.get("source_node")
-                
+
                 if node_data and node_data.get("node_id") not in seen_ids:
                     neighbor_nodes.append(node_data)
                     seen_ids.add(node_data["node_id"])
             return neighbor_nodes[:limit]
-            
+
     def get_all_nodes_for_visualization(self, limit: int = 1000) -> List[Dict[str, Any]]:
         with self.store._instance_lock:
             try:
@@ -633,7 +632,7 @@ class GraphStore:
                     except json.JSONDecodeError:
                         properties = {"error": "Could not parse properties JSON.", "raw": props_json}
                         title = props_json
-                    
+
                     nodes.append({
                         "id": node_id,
                         "label": label,
@@ -648,13 +647,13 @@ class GraphStore:
         with self.store._instance_lock:
             try:
                 cursor = self.conn.execute(
-                    "SELECT relationship_id, source_node_id, target_node_id, relationship_type, relationship_properties FROM graph_relationships LIMIT ?", 
+                    "SELECT relationship_id, source_node_id, target_node_id, relationship_type, relationship_properties FROM graph_relationships LIMIT ?",
                     (limit,)
                 )
                 edges = []
                 for row in cursor.fetchall():
                     rel_id, source_id, target_id, rel_type, props_json = row
-                    
+
                     edge_label = rel_type
                     try:
                         properties = json.loads(props_json)
@@ -695,21 +694,61 @@ class GraphStore:
                 for table in optional_tables:
                     try: self.conn.execute(f"DROP TABLE IF EXISTS {table}")
                     except sqlite3.Error as e: ASCIIColors.warning(f"Could not drop table {table}: {e}")
-                
+
                 self.conn.execute("DELETE FROM graph_relationships")
                 self.conn.execute("DELETE FROM graph_nodes")
                 self.conn.execute("UPDATE chunks SET graph_processed_at = NULL")
-                
+
                 # Re-initialize the graph features to recreate dropped tables
                 embedder_instance = self.embedder
                 if embedder_instance.dim is not None:
                     db.enable_vector_search_on_graph_nodes(self.conn, embedder_instance.dim)
-                
+
                 self.conn.commit()
                 ASCIIColors.success("Graph has been completely cleared and re-initialized.")
             except Exception as e:
                 if self.conn.in_transaction: self.conn.rollback()
                 raise GraphError(f"Error clearing the graph: {e}") from e
+
+    def delete_all_graph_data(self) -> None:
+        """
+        Completely removes all graph-related data from the database.
+
+        This method deletes all nodes, relationships, and resets the graph processing
+        status for all chunks. Unlike clear_graph(), this method does not attempt to
+        reinitialize the graph features, leaving the database in a state where graph
+        features are effectively disabled until explicitly re-enabled.
+        """
+        with self.store._instance_lock, self.store._optional_file_lock_context("delete_all_graph_data"):
+            try:
+                self.conn.execute("BEGIN")
+
+                # Remove all graph-related tables
+                tables_to_drop = [
+                    "graph_node_vectors",
+                    "graph_node_to_chunk_link",
+                    "graph_relationships",
+                    "graph_nodes"
+                ]
+
+                for table in tables_to_drop:
+                    try:
+                        self.conn.execute(f"DROP TABLE IF EXISTS {table}")
+                        ASCIIColors.info(f"Dropped table: {table}")
+                    except sqlite3.Error as e:
+                        ASCIIColors.warning(f"Could not drop table {table}: {e}")
+
+                # Reset graph processing status for all chunks
+                self.conn.execute("UPDATE chunks SET graph_processed_at = NULL")
+
+                # Remove graph features enabled flag
+                db.set_store_metadata(self.conn, self.GRAPH_FEATURES_ENABLED_KEY, "false")
+
+                self.conn.commit()
+                ASCIIColors.success("All graph data has been completely removed from the database.")
+            except Exception as e:
+                if self.conn.in_transaction: self.conn.rollback()
+                raise GraphError(f"Error deleting all graph data: {e}") from e
 
     def remove_graph_elements_for_document(self, doc_id: int) -> None:
         """
@@ -721,21 +760,21 @@ class GraphStore:
                 self.conn.execute("BEGIN")
                 doc_chunk_ids_cursor = self.conn.execute("SELECT chunk_id FROM chunks WHERE doc_id = ?", (doc_id,))
                 doc_chunk_ids = {row[0] for row in doc_chunk_ids_cursor}
-                
+
                 if not doc_chunk_ids:
                     ASCIIColors.info(f"No chunks found for document {doc_id}, nothing to remove from graph.")
                     self.conn.commit()
                     return
-                
+
                 placeholders = ','.join('?' for _ in doc_chunk_ids)
-                
+
                 # Find all nodes linked to this document's chunks
                 nodes_linked_to_doc_cursor = self.conn.execute(
                     f"SELECT DISTINCT node_id FROM graph_node_to_chunk_link WHERE chunk_id IN ({placeholders})",
                     list(doc_chunk_ids)
                 )
                 nodes_linked_to_doc = {row[0] for row in nodes_linked_to_doc_cursor}
-                
+
                 nodes_to_delete = set()
                 if nodes_linked_to_doc:
                     # For each linked node, check if it's linked to ANY OTHER chunk
@@ -746,11 +785,11 @@ class GraphStore:
                         )
                         if other_links_cursor.fetchone() is None:
                             nodes_to_delete.add(node_id)
-                
+
                 # Unlink all chunks of the document from the graph
                 self.conn.execute(f"UPDATE chunks SET graph_processed_at = NULL WHERE doc_id = ?", (doc_id,))
                 self.conn.execute(f"DELETE FROM graph_node_to_chunk_link WHERE chunk_id IN ({placeholders})", list(doc_chunk_ids))
-                
+
                 # Delete the exclusive nodes
                 if nodes_to_delete:
                     ASCIIColors.info(f"Identified {len(nodes_to_delete)} exclusive nodes to delete for document {doc_id}.")
@@ -758,7 +797,7 @@ class GraphStore:
                         db.delete_graph_node_and_relationships_db(self.conn, node_id)
                 else:
                     ASCIIColors.info(f"No exclusive nodes found for document {doc_id}.")
-                
+
                 self.conn.commit()
                 ASCIIColors.success(f"Successfully removed graph elements for document {doc_id}.")
             except Exception as e:
