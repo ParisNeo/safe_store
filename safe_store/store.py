@@ -123,6 +123,7 @@ class SafeStore:
             self.lock_path = str(db_file_obj.parent / f"{db_file_obj.name}.lock")
             self._file_lock = FileLock(self.lock_path, timeout=self.lock_timeout)
             
+        self._cleanup_stale_locks()
         if self.name is None:
             self.name = "in_memory_store" if self._is_in_memory else Path(self.db_path).stem
 
@@ -151,31 +152,45 @@ class SafeStore:
         except Exception as e:
             raise SafeStoreError(f"An unexpected error occurred while listing models for '{vectorizer_name}': {e}") from e
 
+    def _cleanup_stale_locks(self):
+        """
+        Attempts to clean up lock files that exist but are not held by any process.
+        """
+        if self._file_lock and self.lock_path and Path(self.lock_path).exists():
+            try:
+                self._file_lock.acquire(timeout=0.01)
+                self._file_lock.release()
+                try:
+                    Path(self.lock_path).unlink()
+                except OSError:
+                    pass
+            except (Timeout, OSError, Exception):
+                pass
+
     def _initialize_and_verify_vectorizer(self):
-        with self._optional_file_lock_context("initialize and verify vectorizer"):
-            assert self.conn is not None, "Database must be connected before initializing vectorizer."
-            
-            self.vectorizer = self.vectorizer_manager.get_vectorizer(self.vectorizer_name, self.vectorizer_config)
+        self.vectorizer = self.vectorizer_manager.get_vectorizer(self.vectorizer_name, self.vectorizer_config)
 
-            if self.chunking_strategy in ['token', 'paragraph', 'semantic', 'recursive']:
-                tokenizer = self.vectorizer.get_tokenizer()
-                if tokenizer is not None:
-                    self.tokenizer_for_chunking = tokenizer
-                    ASCIIColors.info("Using tokenizer provided by the vectorizer model for chunking.")
-                elif self.custom_tokenizer is not None:
-                    self.tokenizer_for_chunking = get_tokenizer(self.custom_tokenizer)
-                    ASCIIColors.warning(
-                        f"Using custom tokenizer '{self.custom_tokenizer.get('name')}' for chunking. "
-                        "Note: This may not perfectly match the remote vectorizer's internal tokenizer, "
-                        "but is a close approximation."
-                    )
-                else:
-                    ASCIIColors.warning(
-                        f"Vectorizer '{self.vectorizer_name}' does not provide a client-side tokenizer. "
-                        "Defaulting to 'tiktoken' for accurate sizing. This is a common choice for OpenAI-compatible models."
-                    )
-                    self.tokenizer_for_chunking = get_tokenizer({"name": "tiktoken", "model": "cl100k_base"})
+        if self.chunking_strategy in ['token', 'paragraph', 'semantic', 'recursive']:
+            tokenizer = self.vectorizer.get_tokenizer()
+            if tokenizer is not None:
+                self.tokenizer_for_chunking = tokenizer
+                ASCIIColors.info("Using tokenizer provided by the vectorizer model for chunking.")
+            elif self.custom_tokenizer is not None:
+                self.tokenizer_for_chunking = get_tokenizer(self.custom_tokenizer)
+                ASCIIColors.warning(
+                    f"Using custom tokenizer '{self.custom_tokenizer.get('name')}' for chunking. "
+                    "Note: This may not perfectly match the remote vectorizer's internal tokenizer, "
+                    "but is a close approximation."
+                )
+            else:
+                ASCIIColors.warning(
+                    f"Vectorizer '{self.vectorizer_name}' does not provide a client-side tokenizer. "
+                    "Defaulting to 'tiktoken' for accurate sizing. This is a common choice for OpenAI-compatible models."
+                )
+                self.tokenizer_for_chunking = get_tokenizer({"name": "tiktoken", "model": "cl100k_base"})
 
+        with self._optional_file_lock_context("verify vectorizer compatibility"):
+            assert self.conn is not None, "Database must be connected before verifying vectorizer."
             stored_info_json = db.get_store_metadata(self.conn, "vectorizer_info")
             
             if stored_info_json:
