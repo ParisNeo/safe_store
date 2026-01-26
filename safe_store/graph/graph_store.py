@@ -5,6 +5,7 @@ import json
 import uuid
 from pathlib import Path
 from typing import Optional, Callable, Dict, List, Any, Tuple, TYPE_CHECKING, Set
+import re
 
 from ascii_colors import ASCIIColors, trace_exception
 from ..core import db
@@ -477,6 +478,540 @@ class GraphStore:
 
             final_graph_data = {"nodes": list(subgraph_nodes.values()), "relationships": list(subgraph_rels.values())}
             return self._format_query_output(final_graph_data, output_mode)
+
+    def query_sparql(self, sparql_query: str) -> Dict[str, Any]:
+        """
+        Executes a SPARQL query against the graph database.
+
+        Args:
+            sparql_query: A string containing the SPARQL query
+
+        Returns:
+            A dictionary with 'results' containing the query results
+        """
+        with self.store._instance_lock, self.store._optional_file_lock_context(f"query_sparql: {sparql_query[:30]}"):
+            try:
+                # Parse the SPARQL query
+                parsed_query = self._parse_sparql_query(sparql_query)
+
+                # Execute the query based on its type
+                if parsed_query['type'] == 'SELECT':
+                    results = self._execute_select_query(parsed_query)
+                    return {
+                        'head': {'vars': parsed_query['variables']},
+                        'results': {'bindings': results}
+                    }
+                elif parsed_query['type'] == 'ASK':
+                    result = self._execute_ask_query(parsed_query)
+                    return {'boolean': result}
+                elif parsed_query['type'] == 'CONSTRUCT':
+                    graph = self._execute_construct_query(parsed_query)
+                    return {'graph': graph}
+                elif parsed_query['type'] == 'DESCRIBE':
+                    graph = self._execute_describe_query(parsed_query)
+                    return {'graph': graph}
+                else:
+                    raise QueryError(f"Unsupported SPARQL query type: {parsed_query['type']}")
+
+            except Exception as e:
+                ASCIIColors.error(f"Error executing SPARQL query: {e}")
+                raise QueryError(f"SPARQL query execution failed: {e}") from e
+
+    def _parse_sparql_query(self, sparql_query: str) -> Dict[str, Any]:
+        """
+        Parses a SPARQL query into a structured format for execution.
+
+        Args:
+            sparql_query: The SPARQL query string
+
+        Returns:
+            A dictionary containing the parsed query components
+        """
+        # Basic SPARQL parser - this is a simplified implementation
+        # A full implementation would require a proper SPARQL parser
+
+        # Normalize whitespace and remove comments
+        query = re.sub(r'#.*$', '', sparql_query, flags=re.MULTILINE)
+        query = ' '.join(query.split())
+
+        # Determine query type
+        query_type_match = re.match(r'(SELECT|ASK|CONSTRUCT|DESCRIBE)\b', query, re.IGNORECASE)
+        if not query_type_match:
+            raise QueryError("Could not determine SPARQL query type")
+
+        query_type = query_type_match.group(1).upper()
+
+        # Parse variables for SELECT queries
+        variables = []
+        if query_type == 'SELECT':
+            select_match = re.match(r'SELECT\s+(.*?)\s+WHERE', query, re.IGNORECASE)
+            if not select_match:
+                select_match = re.match(r'SELECT\s+(.*?)\s*\{', query, re.IGNORECASE)
+
+            if select_match:
+                vars_part = select_match.group(1)
+                variables = [v.strip() for v in re.findall(r'\?(\w+)', vars_part)]
+
+        # Parse WHERE clause
+        where_match = re.search(r'WHERE\s*\{([^}]*)\}', query, re.IGNORECASE)
+        if not where_match:
+            where_match = re.search(r'\{([^}]*)\}', query)
+
+        if not where_match:
+            raise QueryError("Could not find WHERE clause in SPARQL query")
+
+        where_clause = where_match.group(1).strip()
+
+        # Parse triple patterns
+        triple_patterns = []
+        for triple in re.split(r'\.\s*', where_clause):
+            triple = triple.strip()
+            if not triple:
+                continue
+
+            # Parse subject, predicate, object
+            parts = re.split(r'\s+', triple, 2)
+            if len(parts) != 3:
+                raise QueryError(f"Invalid triple pattern: {triple}")
+
+            subject, predicate, obj = parts
+
+            # Validate and normalize components
+            subject = self._normalize_sparql_component(subject)
+            predicate = self._normalize_sparql_component(predicate)
+            obj = self._normalize_sparql_component(obj)
+
+            triple_patterns.append({
+                'subject': subject,
+                'predicate': predicate,
+                'object': obj
+            })
+
+        return {
+            'type': query_type,
+            'variables': variables,
+            'triple_patterns': triple_patterns,
+            'filters': [],  # Would be parsed from FILTER clauses
+            'original_query': sparql_query
+        }
+
+    def _normalize_sparql_component(self, component: str) -> Dict[str, Any]:
+        """
+        Normalizes a SPARQL component (subject, predicate, or object) into a structured format.
+
+        Args:
+            component: The component string from the SPARQL query
+
+        Returns:
+            A dictionary with 'type' and 'value' keys
+        """
+        if component.startswith('?'):
+            return {'type': 'variable', 'value': component[1:]}
+        elif component.startswith('<') and component.endswith('>'):
+            return {'type': 'uri', 'value': component[1:-1]}
+        elif component.startswith('"') and component.endswith('"'):
+            # Simple literal - could be more complex with language tags or datatypes
+            value = component[1:-1]
+            return {'type': 'literal', 'value': value}
+        else:
+            # Could be a prefixed name or other type
+            return {'type': 'unknown', 'value': component}
+
+    def _execute_select_query(self, parsed_query: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Executes a SELECT SPARQL query.
+
+        Args:
+            parsed_query: The parsed query dictionary
+
+        Returns:
+            A list of result bindings
+        """
+        # Get all triple patterns from the query
+        triple_patterns = parsed_query['triple_patterns']
+        variables = parsed_query['variables']
+
+        # If no variables, we can't return meaningful results
+        if not variables:
+            return []
+
+        # Build a query to our SQLite database based on the triple patterns
+        query_parts = []
+        params = []
+        variable_mappings = {}  # Maps variable names to their positions in the result
+
+        # Process each triple pattern
+        for i, pattern in enumerate(triple_patterns):
+            subj = pattern['subject']
+            pred = pattern['predicate']
+            obj = pattern['object']
+
+            # Build conditions based on what's a variable vs. a concrete value
+            conditions = []
+            join_conditions = []
+
+            # Subject condition
+            if subj['type'] == 'variable':
+                if subj['value'] not in variable_mappings:
+                    variable_mappings[subj['value']] = f"node_{i}"
+                conditions.append(f"gn_{i}.node_id = ?")
+            elif subj['type'] == 'uri':
+                # In our system, URIs would be represented as node labels or properties
+                conditions.append(f"gn_{i}.node_label = ?")
+                params.append(subj['value'])
+            else:
+                # For literals as subjects (uncommon), we'd need special handling
+                conditions.append(f"gn_{i}.node_properties LIKE ?")
+                params.append(f'%{subj["value"]}%')
+
+            # Predicate condition
+            if pred['type'] == 'variable':
+                if pred['value'] not in variable_mappings:
+                    variable_mappings[pred['value']] = f"rel_{i}"
+                conditions.append(f"gr_{i}.relationship_type = ?")
+            elif pred['type'] == 'uri':
+                conditions.append(f"gr_{i}.relationship_type = ?")
+                params.append(pred['value'])
+            else:
+                # Literal as predicate - not standard SPARQL
+                conditions.append(f"gr_{i}.relationship_properties LIKE ?")
+                params.append(f'%{pred["value"]}%')
+
+            # Object condition
+            if obj['type'] == 'variable':
+                if obj['value'] not in variable_mappings:
+                    variable_mappings[obj['value']] = f"node_{i}_target"
+                conditions.append(f"gn_{i}_target.node_id = ?")
+            elif obj['type'] == 'uri':
+                conditions.append(f"gn_{i}_target.node_label = ?")
+                params.append(obj['value'])
+            elif obj['type'] == 'literal':
+                conditions.append(f"gn_{i}_target.node_properties LIKE ?")
+                params.append(f'%{obj["value"]}%')
+            else:
+                # Unknown type - treat as literal
+                conditions.append(f"gn_{i}_target.node_properties LIKE ?")
+                params.append(f'%{obj["value"]}%')
+
+            # Add the basic join for this triple pattern
+            query_parts.append(f"""
+                JOIN graph_relationships gr_{i} ON
+                    {'gn_{i}.node_id = gr_{i}.source_node_id' if subj['type'] != 'variable' or obj['type'] != 'variable' else '1=1'}
+                JOIN graph_nodes gn_{i}_target ON
+                    gr_{i}.target_node_id = gn_{i}_target.node_id
+            """)
+
+            # Add the node table for the subject
+            query_parts.append(f"""
+                JOIN graph_nodes gn_{i} ON
+                    {'gn_{i}.node_id = gr_{i}.source_node_id' if subj['type'] != 'variable' else '1=1'}
+            """)
+
+            # Add the conditions for this pattern
+            if conditions:
+                query_parts.append(f"WHERE {' AND '.join(conditions)}")
+
+        # Build the complete SQL query
+        sql = f"""
+            SELECT DISTINCT {', '.join(f'gn_{i}.node_id as node_{i}_id, gn_{i}.node_label as node_{i}_label, gn_{i}.node_properties as node_{i}_props' for i in range(len(triple_patterns)))}
+            FROM graph_nodes gn_0
+            {' '.join(query_parts)}
+        """
+
+        # Execute the query
+        cursor = self.conn.cursor()
+        cursor.execute(sql, params)
+
+        # Process the results
+        results = []
+        for row in cursor.fetchall():
+            binding = {}
+
+            # Map the database results back to SPARQL variables
+            for var in variables:
+                if var in variable_mappings:
+                    mapping = variable_mappings[var]
+                    if mapping.startswith('node_'):
+                        # This is a node variable
+                        node_idx = int(mapping.split('_')[1])
+                        node_id = row[f'node_{node_idx}_id']
+                        node_label = row[f'node_{node_idx}_label']
+                        node_props = row[f'node_{node_idx}_props']
+
+                        if node_id is not None:
+                            # Parse properties if available
+                            props = {}
+                            if node_props:
+                                try:
+                                    props = json.loads(node_props)
+                                except json.JSONDecodeError:
+                                    pass
+
+                            # Determine the value type
+                            if node_label:
+                                # This is a URI-like value (our node label)
+                                binding[var] = {
+                                    'type': 'uri',
+                                    'value': node_label
+                                }
+                            else:
+                                # This is a literal value from properties
+                                # Find the first property that matches
+                                for prop_key, prop_value in props.items():
+                                    if prop_value:
+                                        binding[var] = {
+                                            'type': 'literal',
+                                            'value': str(prop_value)
+                                        }
+                                        break
+                    elif mapping.startswith('rel_'):
+                        # This is a relationship variable
+                        rel_idx = int(mapping.split('_')[1])
+                        # In our current query structure, we don't directly select relationship types
+                        # This would need to be enhanced in a full implementation
+                        pass
+
+            if binding:
+                results.append(binding)
+
+        return results
+
+    def _execute_ask_query(self, parsed_query: Dict[str, Any]) -> bool:
+        """
+        Executes an ASK SPARQL query.
+
+        Args:
+            parsed_query: The parsed query dictionary
+
+        Returns:
+            True if the query pattern matches, False otherwise
+        """
+        # For ASK queries, we just need to check if any results would be returned
+        try:
+            results = self._execute_select_query(parsed_query)
+            return len(results) > 0
+        except Exception:
+            return False
+
+    def _execute_construct_query(self, parsed_query: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Executes a CONSTRUCT SPARQL query.
+
+        Args:
+            parsed_query: The parsed query dictionary
+
+        Returns:
+            A list of triples representing the constructed graph
+        """
+        # For CONSTRUCT queries, we execute the WHERE part and then
+        # apply the CONSTRUCT template to the results
+
+        # First, execute the WHERE part as a SELECT query
+        select_query = {
+            'type': 'SELECT',
+            'variables': [],  # We'll capture all variables
+            'triple_patterns': parsed_query['triple_patterns'],
+            'original_query': parsed_query['original_query']
+        }
+
+        # Get all variables from the triple patterns
+        all_variables = set()
+        for pattern in parsed_query['triple_patterns']:
+            for component in ['subject', 'predicate', 'object']:
+                if pattern[component]['type'] == 'variable':
+                    all_variables.add(pattern[component]['value'])
+
+        select_query['variables'] = list(all_variables)
+
+        # Execute the SELECT query
+        results = self._execute_select_query(select_query)
+
+        # Now apply the CONSTRUCT template (which is in the triple_patterns)
+        constructed_graph = []
+
+        for result in results:
+            # For each result binding, create triples based on the CONSTRUCT template
+            for pattern in parsed_query['triple_patterns']:
+                subj = pattern['subject']
+                pred = pattern['predicate']
+                obj = pattern['object']
+
+                # Resolve variables in the pattern
+                subj_value = self._resolve_sparql_component(subj, result)
+                pred_value = self._resolve_sparql_component(pred, result)
+                obj_value = self._resolve_sparql_component(obj, result)
+
+                if subj_value and pred_value and obj_value:
+                    constructed_graph.append({
+                        'subject': subj_value,
+                        'predicate': pred_value,
+                        'object': obj_value
+                    })
+
+        return constructed_graph
+
+    def _execute_describe_query(self, parsed_query: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Executes a DESCRIBE SPARQL query.
+
+        Args:
+            parsed_query: The parsed query dictionary
+
+        Returns:
+            A list of triples describing the resources
+        """
+        # For DESCRIBE queries, we need to find all triples where the described
+        # resources appear as subject or object
+
+        # First, identify the resources to describe
+        resources_to_describe = []
+
+        for pattern in parsed_query['triple_patterns']:
+            for component in ['subject', 'object']:
+                comp = pattern[component]
+                if comp['type'] != 'variable':
+                    resources_to_describe.append(comp['value'])
+
+        # If no specific resources, use variables from the query
+        if not resources_to_describe:
+            for pattern in parsed_query['triple_patterns']:
+                for component in ['subject', 'object']:
+                    comp = pattern[component]
+                    if comp['type'] == 'variable':
+                        resources_to_describe.append(f'?{comp["value"]}')
+
+        # Now find all triples involving these resources
+        described_graph = []
+
+        for resource in resources_to_describe:
+            # Find triples where this resource is the subject
+            subject_triples = self._get_triples_for_resource(resource, as_subject=True)
+            described_graph.extend(subject_triples)
+
+            # Find triples where this resource is the object
+            object_triples = self._get_triples_for_resource(resource, as_subject=False)
+            described_graph.extend(object_triples)
+
+        return described_graph
+
+    def _get_triples_for_resource(self, resource: str, as_subject: bool = True) -> List[Dict[str, Any]]:
+        """
+        Gets all triples for a given resource.
+
+        Args:
+            resource: The resource URI or variable
+            as_subject: Whether to find triples where the resource is the subject
+
+        Returns:
+            A list of triples
+        """
+        triples = []
+
+        if resource.startswith('?'):
+            # This is a variable - we can't resolve it directly
+            return triples
+
+        # Build a query to find triples involving this resource
+        if as_subject:
+            # Find triples where this resource is the subject
+            sql = """
+                SELECT gr.relationship_type as predicate,
+                       gn_target.node_label as object_label,
+                       gn_target.node_properties as object_properties
+                FROM graph_relationships gr
+                JOIN graph_nodes gn_source ON gr.source_node_id = gn_source.node_id
+                JOIN graph_nodes gn_target ON gr.target_node_id = gn_target.node_id
+                WHERE gn_source.node_label = ?
+            """
+            params = [resource]
+        else:
+            # Find triples where this resource is the object
+            sql = """
+                SELECT gr.relationship_type as predicate,
+                       gn_source.node_label as subject_label,
+                       gn_source.node_properties as subject_properties
+                FROM graph_relationships gr
+                JOIN graph_nodes gn_source ON gr.source_node_id = gn_source.node_id
+                JOIN graph_nodes gn_target ON gr.target_node_id = gn_target.node_id
+                WHERE gn_target.node_label = ?
+            """
+            params = [resource]
+
+        cursor = self.conn.cursor()
+        cursor.execute(sql, params)
+
+        for row in cursor.fetchall():
+            if as_subject:
+                predicate = row['predicate']
+                object_label = row['object_label']
+                object_props = row['object_properties']
+
+                # Create the triple
+                obj_value = {
+                    'type': 'uri',
+                    'value': object_label
+                }
+
+                # If it's a literal (from properties)
+                if not object_label:
+                    props = {}
+                    if object_props:
+                        try:
+                            props = json.loads(object_props)
+                        except json.JSONDecodeError:
+                            pass
+
+                    for prop_key, prop_value in props.items():
+                        if prop_value:
+                            obj_value = {
+                                'type': 'literal',
+                                'value': str(prop_value)
+                            }
+                            break
+
+                triples.append({
+                    'subject': {'type': 'uri', 'value': resource},
+                    'predicate': {'type': 'uri', 'value': predicate},
+                    'object': obj_value
+                })
+            else:
+                predicate = row['predicate']
+                subject_label = row['subject_label']
+                subject_props = row['subject_properties']
+
+                # Create the triple
+                subj_value = {
+                    'type': 'uri',
+                    'value': subject_label
+                }
+
+                triples.append({
+                    'subject': subj_value,
+                    'predicate': {'type': 'uri', 'value': predicate},
+                    'object': {'type': 'uri', 'value': resource}
+                })
+
+        return triples
+
+    def _resolve_sparql_component(self, component: Dict[str, Any], binding: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        Resolves a SPARQL component using a result binding.
+
+        Args:
+            component: The component to resolve
+            binding: The result binding from a SELECT query
+
+        Returns:
+            The resolved component or None if it can't be resolved
+        """
+        if component['type'] == 'variable':
+            var_name = component['value']
+            if var_name in binding:
+                return binding[var_name]
+            return None
+        else:
+            # It's already a concrete value
+            return component
 
     def _empty_query_result(self, output_mode: str) -> Any:
         if output_mode == "chunks_summary": return []
