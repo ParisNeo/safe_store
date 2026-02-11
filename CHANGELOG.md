@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - feat(vectorization): add detailed ASCII info for vectorizer initialization
 
+## [2026-02-11 02:17]
+
+- feat(graph): add get_relationship and update_relationship methods
+
 ## [2026-01-26 17:39]
 
 - Bump version to 3.3.7 and improve lock file handling

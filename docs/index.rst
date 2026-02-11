@@ -25,6 +25,7 @@ Key Features:
    quickstart
    logging
    encryption
+   graph_store
    api
 
 

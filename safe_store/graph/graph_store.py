@@ -1127,6 +1127,45 @@ class GraphStore:
                 if self.conn.in_transaction: self.conn.rollback()
                 raise GraphError(f"Error deleting relationship {relationship_id}: {e}") from e
 
+    def get_relationship(self, relationship_id: int) -> Optional[Dict[str, Any]]:
+        with self.store._instance_lock:
+            try:
+                cursor = self.conn.execute(
+                    "SELECT relationship_id, source_node_id, target_node_id, relationship_type, relationship_properties FROM graph_relationships WHERE relationship_id = ?",
+                    (relationship_id,)
+                )
+                row = cursor.fetchone()
+                if not row: return None
+                rel_id, src, tgt, rel_type, props_json = row
+                return {
+                    "relationship_id": rel_id, "source_node_id": src, "target_node_id": tgt,
+                    "type": rel_type, "properties": json.loads(props_json) if props_json else {}
+                }
+            except Exception as e:
+                raise GraphDBError(f"Error fetching relationship {relationship_id}: {e}") from e
+
+    def update_relationship(self, relationship_id: int, rel_type: Optional[str] = None, properties: Optional[Dict[str, Any]] = None) -> bool:
+        if rel_type is None and properties is None: return True
+        with self.store._instance_lock, self.store._optional_file_lock_context(f"update_relationship: {relationship_id}"):
+            try:
+                self.conn.execute("BEGIN")
+                current = self.get_relationship(relationship_id)
+                if not current: raise RelationshipNotFoundError(f"Relationship {relationship_id} not found.")
+
+                new_type = rel_type if rel_type is not None else current["type"]
+                new_props = properties if properties is not None else current["properties"]
+
+                self.conn.execute(
+                    "UPDATE graph_relationships SET relationship_type = ?, relationship_properties = ? WHERE relationship_id = ?",
+                    (new_type, json.dumps(new_props), relationship_id)
+                )
+                self.conn.commit()
+                ASCIIColors.success(f"Relationship {relationship_id} updated successfully.")
+                return True
+            except Exception as e:
+                if self.conn.in_transaction: self.conn.rollback()
+                raise GraphError(f"Error updating relationship {relationship_id}: {e}") from e
+
     def get_nodes_by_label(self, label: str, limit: int = 100) -> List[Dict[str, Any]]:
         with self.store._instance_lock:
             try:
