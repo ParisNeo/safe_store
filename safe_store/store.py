@@ -17,6 +17,7 @@ from safe_store.core.exceptions import (
     VectorizationError, QueryError, ConcurrencyError, SafeStoreError, EncryptionError
 )
 from safe_store.indexing import parser, chunking
+from safe_store.indexing.page_index import PageIndex
 from safe_store.search import similarity
 from safe_store.vectorization.manager import VectorizationManager
 from safe_store.vectorization.base import BaseVectorizer
@@ -94,6 +95,7 @@ class SafeStore:
         self._instance_lock = threading.RLock()
         self.vectorizer: BaseVectorizer
         self.tokenizer_for_chunking: Optional[Any] = None
+        self._page_index: Optional[PageIndex] = None
 
         try:
             self._connect_and_initialize()
@@ -290,6 +292,13 @@ class SafeStore:
         if self._is_closed or self.conn is None:
             self._connect_and_initialize()
             self._initialize_and_verify_vectorizer()
+
+    @property
+    def page_index(self) -> PageIndex:
+        """Returns the PageIndex handler for hierarchical data."""
+        if self._page_index is None:
+            self._page_index = PageIndex(self)
+        return self._page_index
 
     def _get_file_hash(self, file_path: Path) -> str:
         hasher = self._file_hasher()

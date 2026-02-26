@@ -86,7 +86,23 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         
         # This table now stores vectorizer info.
         cursor.execute("CREATE TABLE IF NOT EXISTS store_metadata (key TEXT PRIMARY KEY, value TEXT);")
-        
+
+        # PageIndex tables
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pages (
+            page_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            doc_id INTEGER NOT NULL,
+            parent_id INTEGER,
+            title TEXT NOT NULL,
+            content TEXT,
+            level INTEGER DEFAULT 0,
+            page_order INTEGER DEFAULT 0,
+            metadata TEXT,
+            FOREIGN KEY (doc_id) REFERENCES documents (doc_id) ON DELETE CASCADE,
+            FOREIGN KEY (parent_id) REFERENCES pages (page_id) ON DELETE CASCADE
+        );""")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_pages_doc_parent ON pages (doc_id, parent_id);")
+
         # Graph-related tables remain unchanged.
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS graph_nodes (

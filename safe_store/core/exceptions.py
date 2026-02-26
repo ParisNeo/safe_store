@@ -71,3 +71,12 @@ class DocumentNotFoundError(GraphError):
 class GraphEntityFusionError(GraphProcessingError):
     """Errors related to the entity fusion process, including LLM decisions."""
     pass
+
+# --- PageIndex Exceptions ---
+class PageIndexError(SafeStoreError):
+    """Base class for page indexing errors."""
+    pass
+
+class PageNotFoundError(PageIndexError):
+    """Raised when a specific page ID cannot be found."""
+    pass
