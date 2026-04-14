@@ -5,7 +5,7 @@ last_update_date: 2025-10-10
 class_name: OllamaVectorizer
 description: >
   A vectorizer that uses a local Ollama instance to generate text embeddings.
-  Requires a running Ollama server.
+  Requires a running Ollama server. Supports optional API key authentication for cloud deployments.
 input_parameters:
   - name: model
     type: str
@@ -15,5 +15,10 @@ input_parameters:
   - name: host
     type: str
     description: "The URL of the Ollama server. If not provided, it defaults to http://localhost:11434 or the OLLAMA_HOST environment variable."
+    mandatory: false
+    default: ""
+  - name: api_key
+    type: str
+    description: "Your Ollama API key for authentication (e.g., for ollama.com cloud). If not provided, the OLLAMA_API_KEY environment variable will be used."
     mandatory: false
     default: ""

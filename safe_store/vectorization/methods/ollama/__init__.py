@@ -1,5 +1,6 @@
 import numpy as np
 from typing import List, Optional, Dict, Any
+import os
 from ...base import BaseVectorizer
 from ....core.exceptions import ConfigurationError, VectorizationError
 from ascii_colors import ASCIIColors, trace_exception
@@ -53,6 +54,8 @@ class OllamaVectorizer(BaseVectorizer):
                           - "model" (str): Mandatory. The name of the model to use.
                           - "host" (str): Optional. The URL of the Ollama server.
                             Defaults to http://localhost:11434 or OLLAMA_HOST env var.
+                          - "api_key" (str): Optional. API key for authentication.
+                            If not provided, OLLAMA_API_KEY environment variable is used.
 
         Raises:
             ConfigurationError: If 'ollama' is not installed or config is invalid.
@@ -67,10 +70,26 @@ class OllamaVectorizer(BaseVectorizer):
 
         self.model_name: str = model_config["model"]
         self.host: Optional[str] = model_config.get("host") # Let the client handle default
+        
+        # API key discovery logic (same pattern as OpenAI/Cohere)
+        chosen_api_key: Optional[str] = model_config.get("api_key")
+        if chosen_api_key:
+            ASCIIColors.info("Using Ollama API key provided in vectorizer_config.")
+        else:
+            ASCIIColors.info("API key not in config. Checking OLLAMA_API_KEY environment variable.")
+            chosen_api_key = os.environ.get("OLLAMA_API_KEY")
+        
+        self.api_key: Optional[str] = chosen_api_key
 
         ASCIIColors.info(f"Initializing Ollama client. Model: {self.model_name}, Host: {self.host or 'default'}")
         try:
-            self.client: ollama.Client = ollama.Client(host=self.host.strip())
+            # Build headers with optional API key authentication
+            headers: Optional[Dict[str, str]] = None
+            if self.api_key:
+                headers = {'Authorization': f'Bearer {self.api_key}'}
+                ASCIIColors.info("Using API key authentication for Ollama.")
+            
+            self.client: ollama.Client = ollama.Client(host=self.host.strip() if self.host else None, headers=headers)
 
             # Test connection and get embedding dimension
             test_prompt = "hello world"

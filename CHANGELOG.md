@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - feat(vectorization): add detailed ASCII info for vectorizer initialization
 
+## [2026-04-14 07:38]
+
+- feat(ollama): add optional API key authentication support
+
 ## [2026-02-26 01:37]
 
 - feat: add PageIndex module for hierarchical document structure
