@@ -101,12 +101,11 @@ if not SKLEARN_AVAILABLE:
 def apply_mocks_conditionally(monkeypatch):
     """Applies mocks only if the libraries are unavailable."""
     if not SENTENCE_TRANSFORMERS_AVAILABLE:
-        monkeypatch.setattr("safe_store.vectorization.methods.sentence_transformer.SentenceTransformer", MockSentenceTransformer, raising=False)
-        monkeypatch.setattr("safe_store.vectorization.methods.sentence_transformer._SENTENCE_TRANSFORMERS_AVAILABLE", True, raising=False) # Make wrapper think it's ok
+        # Note: Using the typo 'sentense_transformer' as per current project structure
+        monkeypatch.setattr("safe_store.vectorization.methods.sentense_transformer.SentenceTransformer", MockSentenceTransformer, raising=False)
     if not SKLEARN_AVAILABLE:
-        monkeypatch.setattr("safe_store.vectorization.methods.tfidf.TfidfVectorizer", MockTfidfVectorizer, raising=False)
-        monkeypatch.setattr("safe_store.vectorization.methods.tfidf.NotFittedError", NotFittedError or Exception, raising=False)
-        monkeypatch.setattr("safe_store.vectorization.methods.tfidf._SKLEARN_AVAILABLE", True, raising=False) # Make wrapper think it's ok
+        # Note: Using 'tf_idf' as per current project structure
+        monkeypatch.setattr("safe_store.vectorization.methods.tf_idf.TfidfVectorizer", MockTfidfVectorizer, raising=False)
 
 
 # --- Standard Fixtures ---

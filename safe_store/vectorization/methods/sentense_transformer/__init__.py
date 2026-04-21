@@ -47,6 +47,7 @@ class STVectorizer(BaseVectorizer):
              raise ConfigurationError("STVectorizer config must include a 'model' key.")
 
         try:
+            ASCIIColors.info(f"Loading Sentence Transformer model: {self.model_name}")
             self.model: SentenceTransformer = SentenceTransformer(self.model_name, cache_folder=cache_folder)
             self._dim: int = self.model.get_sentence_embedding_dimension()
             self._dtype: np.dtype = np.dtype(np.float32)

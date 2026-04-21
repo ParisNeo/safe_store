@@ -37,30 +37,21 @@ class VectorizationManager:
     def _create_vectorizer_ascii_infos(vectorizer_name: str, config: Optional[Dict[str, Any]]) -> str:
         lines = []
 
-        lines.append(ASCIIColors.bold(ASCIIColors.magenta("════════════════════════════════════════"), emit=False))
-        lines.append(ASCIIColors.bold(ASCIIColors.magenta("  VECTORISER INFORMATION"), emit=False))
-        lines.append(ASCIIColors.bold(ASCIIColors.magenta("════════════════════════════════════════", emit=False), emit=False))
-        lines.append("")
-
         lines.append(
-            f"{ASCIIColors.cyan('Name')} : "
-            f"{ASCIIColors.bold(ASCIIColors.green(vectorizer_name, emit=False),emit=False)}"
+            f"{'[bold][white]Name[/bold][/white]'} : "
+            f"{vectorizer_name}"
         )
 
         if config:
             lines.append("")
-            lines.append(ASCIIColors.yellow("Configuration:"))
-            lines.append(ASCIIColors.orange("──────────────",emit=False))
+            lines.append("[bold]Configuration:[/bold]")
+            lines.append("[yellow]──────────────[/yellow]")
 
             pretty_config = json.dumps(config, indent=2, sort_keys=True)
             for line in pretty_config.splitlines():
-                lines.append(ASCIIColors.blue(line,emit=False))
+                lines.append(line)
         else:
-            lines.append("")
-            lines.append(ASCIIColors.red("No configuration provided.",emit=False))
-
-        lines.append("")
-        lines.append(ASCIIColors.bold(ASCIIColors.magenta("════════════════════════════════════════",emit=False),emit=False))
+            lines.append("No configuration provided.")
 
         return "\n".join(lines)
 
@@ -102,17 +93,20 @@ class VectorizationManager:
         vectorizer_name: str,
         vectorizer_config: Optional[Dict[str, Any]],
     ) -> BaseVectorizer:
-        # Fix: Add an alias for 'st' to point to the correct folder.
-        # Note: The folder 'sentense_transformer' has a typo and should ideally be 'sentence_transformer'.
+        # Fix: Add aliases for common vectorizer names to their actual folder names.
+        # Note: The folder 'sentense_transformer' has a typo and should be 'sentence_transformer'.
         if vectorizer_name == "st":
             vectorizer_name = "sentense_transformer"
+        # Alias 'tfidf' to 'tf_idf' to match the folder name
+        elif vectorizer_name == "tfidf":
+            vectorizer_name = "tf_idf"
 
         unique_name = self._create_unique_name(vectorizer_name, vectorizer_config)
 
         if unique_name in self._cache:
             return self._cache[unique_name]
-
-        ASCIIColors.info(f"Initializing vectorizer:\n{self._create_vectorizer_ascii_infos(vectorizer_name, vectorizer_config)}")
+        ASCIIColors.rich_print("Initializing vectorizer:")
+        ASCIIColors.panel(f"{self._create_vectorizer_ascii_infos(vectorizer_name, vectorizer_config)}", "[bold][magenta]VECTORISER INFORMATION[/bold][/magenta]")
         config_for_init = vectorizer_config or {}
 
         try:

@@ -68,10 +68,10 @@ if __name__ == "__main__":
     print_header("Accessing Encrypted Store WITHOUT Key")
     store_no_key = safe_store.SafeStore(DB_FILE, vectorizer_name=VECTORIZER_NAME, vectorizer_config=VECTORIZER_CONFIG)
     with store_no_key:
-        results_no_key = store_no_key.query("security protocol", top_k=1)
-        if results_no_key:
-            print(f"    Text: '{results_no_key[0]['chunk_text']}'")
-            assert results_no_key[0]['chunk_text'] == "[Encrypted - Key Unavailable]"
+        # Querying should return placeholders
+        results = store_no_key.query("multiple lines", top_k=1)
+        assert len(results) == 1
+        assert results[0]['chunk_text'] == "[Encrypted Chunk - Key Unavailable]"
 
     # --- 5. Access Encrypted DB with WRONG Key ---
     print_header("Accessing Encrypted Store With WRONG Key")

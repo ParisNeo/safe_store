@@ -14,7 +14,7 @@ from safe_store.core import db
 from safe_store.core.exceptions import (
     ConfigurationError, VectorizationError, DatabaseError, QueryError, SafeStoreError, FileHandlingError
 )
-from safe_store.vectorization.methods.tf_idf import TfidfVectorizerWrapper
+from safe_store.vectorization.methods.tf_idf import TfIdfVectorizer
 from safe_store.vectorization.manager import VectorizationManager
 
 # --- REMOVE Availability Checks and Mock Fixtures ---
@@ -273,63 +273,3 @@ def test_add_vectorization_tfidf_all_docs(mock_store_colors, mock_manager_colors
     cursor.execute("SELECT COUNT(*) FROM vectors WHERE method_id = ?", (method_id,))
     vector_count = cursor.fetchone()[0]; assert vector_count == total_chunk_count
     conn.close()
-
-
-@patch('safe_store.vectorization.manager.ASCIIColors') # Patch manager's logger
-@patch('safe_store.store.ASCIIColors')               # Patch store's logger
-def test_remove_vectorization(mock_store_colors, mock_manager_colors, populated_store: SafeStore):
-    """Test removing a vectorization method."""
-    store = populated_store
-    vectorizer_to_remove = store.DEFAULT_VECTORIZER
-    method_id = None
-    initial_vector_count = 0
-
-    with store:
-        conn = store.conn
-        cursor = conn.cursor()
-        cursor.execute("SELECT method_id FROM vectorization_methods WHERE method_name = ?", (vectorizer_to_remove,))
-        method_id_res = cursor.fetchone(); assert method_id_res is not None
-        method_id = method_id_res[0]
-        cursor.execute("SELECT COUNT(*) FROM vectors WHERE method_id = ?", (method_id,))
-        initial_vector_count = cursor.fetchone()[0]; assert initial_vector_count > 0
-        try:
-            store.vectorizer_manager.get_vectorizer(vectorizer_to_remove, store.conn, None)
-        except Exception: pass
-        assert vectorizer_to_remove in store.vectorizer_manager._cache
-        store.remove_vectorization(vectorizer_to_remove)
-
-    # Check logs
-    assert_log_call_containing(mock_store_colors.warning, f"Attempting to remove vectorization method '{vectorizer_to_remove}'")
-    assert_log_call_containing(mock_store_colors.debug, f"Deleted {initial_vector_count} vector records.")
-    assert_log_call_containing(mock_store_colors.debug, "Deleted 1 vectorization method record.")
-    # *** FIX: Check the manager's mock for the specific log call ***
-    assert_log_call_containing(mock_manager_colors.debug, f"Invalidated cache for method '{vectorizer_to_remove}' (ID: {method_id}) due to removal")
-    assert_log_call_containing(mock_store_colors.success, f"Successfully removed vectorization method '{vectorizer_to_remove}'")
-
-    # Check DB state
-    conn = sqlite3.connect(store.db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT method_id FROM vectorization_methods WHERE method_name = ?", (vectorizer_to_remove,))
-    method_id_res = cursor.fetchone(); assert method_id_res is None
-    cursor.execute("SELECT COUNT(*) FROM vectors WHERE method_id = ?", (method_id,))
-    vector_count = cursor.fetchone()[0]; assert vector_count == 0
-    conn.close()
-
-    # Check cache is cleared directly
-    assert vectorizer_to_remove not in store.vectorizer_manager._cache
-
-
-@patch('safe_store.store.ASCIIColors')
-def test_remove_vectorization_not_found(mock_store_colors, populated_store: SafeStore):
-    """Test attempting to remove a non-existent vectorization method."""
-    store = populated_store
-    non_existent_vectorizer = "non:existent"
-
-    with store:
-        store.remove_vectorization(non_existent_vectorizer)
-
-    # Check logs
-    expected_warning = f"Vectorization method '{non_existent_vectorizer}' not found in the database. Nothing to remove."
-    assert_log_call_containing(mock_store_colors.warning, expected_warning)
-    success_logged = any("Successfully removed" in args[0] for call in mock_store_colors.success.call_args_list for args in call.args if isinstance(args, tuple))
-    assert not success_logged

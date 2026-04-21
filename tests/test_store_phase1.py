@@ -42,7 +42,7 @@ def assert_log_call_containing(mock_logger, expected_substring):
 # --- Tests (keep) ---
 # Remove skipif conditions that rely on the local SENTENCE_TRANSFORMERS_AVAILABLE
 # @pytest.mark.skipif(not SENTENCE_TRANSFORMERS_AVAILABLE and "mock_st" not in globals(), reason="Requires sentence-transformers or mocking")
-@patch('safe_store.vectorization.methods.sentence_transformer.ASCIIColors')
+@patch('safe_store.vectorization.methods.sentense_transformer.ASCIIColors')
 @patch('safe_store.vectorization.manager.ASCIIColors')
 @patch('safe_store.indexing.chunking.ASCIIColors')
 @patch('safe_store.indexing.parser.ASCIIColors')
@@ -86,13 +86,15 @@ def test_add_document_new(
     cursor.execute("SELECT COUNT(*) FROM chunks WHERE doc_id = ?", (doc_id,))
     chunk_count = cursor.fetchone()[0]
     assert chunk_count == 4
-    cursor.execute("SELECT method_id, vector_dim, vector_dtype FROM vectorization_methods WHERE method_name = ?", (vectorizer_name_used,))
-    method_result = cursor.fetchone()
-    assert method_result is not None
-    method_id = method_result[0]
-    assert method_result[1] == 384 # Mock dimension
-    assert method_result[2] == 'float32'
-    cursor.execute("SELECT COUNT(v.vector_id) FROM vectors v JOIN chunks c ON v.chunk_id = c.chunk_id WHERE c.doc_id = ? AND v.method_id = ?", (doc_id, method_id))
+    # Vectorizer info is in store_metadata
+    cursor.execute("SELECT value FROM store_metadata WHERE key = 'vectorizer_info'")
+    res = cursor.fetchone()
+    assert res is not None
+    v_info = json.loads(res[0])
+    assert v_info['dim'] == 384
+    assert v_info['dtype'] == 'float32'
+
+    cursor.execute("SELECT COUNT(v.vector_id) FROM vectors v JOIN chunks c ON v.chunk_id = c.chunk_id WHERE c.doc_id = ?", (doc_id,))
     vector_count = cursor.fetchone()[0]
     assert vector_count == 4
     conn.close()
@@ -120,12 +122,11 @@ def test_add_document_unchanged(
     # Check logs
     assert_log_call_containing(mock_store_colors.info, f"Document '{file_path.name}' is unchanged.")
     assert_log_call_containing(mock_store_colors.success, f"Vectorization '{vectorizer_name_used}' already exists for unchanged '{file_path.name}'. Skipping.")
-    assert_log_call_containing(mock_manager_colors.debug, f"Vectorizer '{vectorizer_name_used}' found in cache (method_id=")
     process_message_found = any(f"Successfully processed" in args[0] for call in mock_store_colors.success.call_args_list for args in call.args if isinstance(args, tuple))
     assert not process_message_found, "Processing success message should NOT be logged when skipping."
 
 
-@patch('safe_store.vectorization.methods.sentence_transformer.ASCIIColors')
+@patch('safe_store.vectorization.methods.sentense_transformer.ASCIIColors')
 @patch('safe_store.vectorization.manager.ASCIIColors')
 @patch('safe_store.indexing.chunking.ASCIIColors')
 @patch('safe_store.indexing.parser.ASCIIColors')

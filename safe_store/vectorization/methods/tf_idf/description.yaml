@@ -2,7 +2,7 @@ title: TF-IDF Vectorizer
 author: ParisNeo
 creation_date: 2025-10-10
 last_update_date: 2025-10-10
-class_name: TfidfVectorizerWrapper
+class_name: TfIdfVectorizer
 description: >
   A classic, local vectorizer based on Term Frequency-Inverse Document Frequency.
   This vectorizer must be 'fit' on your data, so its performance is data-dependent.

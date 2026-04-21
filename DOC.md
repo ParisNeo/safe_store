@@ -73,8 +73,6 @@
     *   Finds `top_k` chunks based on cosine similarity.
     *   Specify which `vectorizer_name` to use.
 *   **Management Methods:**
-    *   `add_vectorization()`: Adds embeddings for a new method to existing documents.
-    *   `remove_vectorization()`: Deletes a vectorization method and its vectors.
     *   `list_documents()`: Retrieves metadata about stored documents.
     *   `list_vectorization_methods()`: Retrieves details about registered vectorizers.
     *   `list_possible_vectorizer_names()`: Provides example vectorizer names.
@@ -447,30 +445,6 @@ Vectorization is the process of converting text into numerical representations (
     ```
 
 #### Managing Vectorizations
-
-*   **`add_vectorization(vectorizer_name, target_doc_path=None, vectorizer_params=None, batch_size=64)`**
-    *   Adds embeddings for a *new* `vectorizer_name` to documents already in the store.
-    *   Does **not** re-parse or re-chunk. It uses existing chunks.
-    *   If `target_doc_path` is given, only that document's chunks are vectorized. Otherwise, all documents are processed.
-    *   If `vectorizer_name` is a TF-IDF model that isn't fitted, it will be fitted on the selected corpus (all docs or `target_doc_path`'s chunks). Chunk text is decrypted if needed for fitting.
-    *   Useful for:
-        *   Adding embeddings from a new Sentence Transformer model.
-        *   Adding a new TF-IDF variant, possibly fitted on the entire corpus.
-    ```python
-    # After indexing some documents with an ST model...
-    # Add a new TF-IDF vectorization, fitting it on all documents
-    store.add_vectorization(
-        "tfidf:global_content_model",
-        vectorizer_params={"stop_words": "english", "min_df": 5}
-    )
-    ```
-
-*   **`remove_vectorization(vectorizer_name)`**
-    *   Deletes a vectorization method and all its associated vector embeddings from the database.
-    *   The document text and chunks remain.
-    ```python
-    store.remove_vectorization("tfidf:old_model_to_remove")
-    ```
 
 *   **`list_vectorization_methods()`**
     *   Returns a list of dictionaries, each describing a registered vectorization method (name, type, dimension, parameters).

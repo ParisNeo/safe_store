@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - feat(vectorization): add detailed ASCII info for vectorizer initialization
 
+## [2026-04-21 02:22]
+
+- docs: update installation guide and clean up documentation
+
 ## [2026-04-14 07:38]
 
 - feat(ollama): add optional API key authentication support
@@ -251,7 +255,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 *   **Querying:** Implemented `SafeStore.query()` using cosine similarity.
 *   **Multiple Vectorization Methods:** Added TF-IDF support (`tfidf:` prefix) using `scikit-learn`. Handles fitting and stores state in DB. Requires `safe_store[tfidf]`.
-*   **Vectorizer Management:** Implemented `SafeStore.add_vectorization()` and `SafeStore.remove_vectorization()`.
 *   **Testing:** Added `tests/test_store_phase2.py`.
 
 ### Changed

@@ -30,7 +30,7 @@ from .indexing.parser import SAFE_STORE_SUPPORTED_FILE_EXTENSIONS, parse_documen
 from .processing.text_cleaning import basic_text_cleaner # Expose the basic cleaner as a utility
 from ascii_colors import ASCIIColors # Expose for user configuration convenience
 
-__version__ = "3.4.0" # Added optional API key support for Ollama vectorizer
+__version__ = "3.4.2" # Consolidated all dependencies into core for a unified installation
 
 __all__ = [
     "SafeStore",

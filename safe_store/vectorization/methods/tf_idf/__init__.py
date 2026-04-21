@@ -19,6 +19,7 @@ class TfIdfVectorizer(BaseVectorizer):
         self._dim = None
 
     def fit(self, texts: List[str]):
+        ASCIIColors.info(f"Fitting TfidfVectorizer on {len(texts)} documents")
         self.vectorizer.fit(texts)
         self._fitted = True
         self._dim = len(self.vectorizer.get_feature_names_out())
@@ -34,7 +35,7 @@ class TfIdfVectorizer(BaseVectorizer):
 
     @property
     def dtype(self) -> np.dtype:
-        return np.float32
+        return np.dtype(np.float32)
 
     def get_params_to_store(self) -> Dict[str, Any]:
         return {"vectorizer_pickle": pickle.dumps(self.vectorizer)}

@@ -12,6 +12,12 @@
 All of this happens entirely on your local machine, using a single, portable SQLite file. Your data never leaves your control.
 
 ---
+## Installation
+
+Install ``safe_store`` using pip. This will install all necessary dependencies for parsing, encryption, and all supported vectorization methods:
+```bash
+   pip install safe_store
+```
 
 ## The Journey from Search to Understanding
 
@@ -181,7 +187,29 @@ with store:
     # ... send to local LLM for answer generation
 ```
 
-### 5. Knowledge Graph Extraction from Technical Documentation
+### 5. Standalone Vectorization (No Database)
+
+Use `safe_store` components as standalone utilities for semantic comparison without creating a persistent database:
+
+```python
+from safe_store.vectorization.manager import VectorizationManager
+from safe_store.search.similarity import cosine_similarity
+
+# Initialize manager and get a vectorizer
+manager = VectorizationManager()
+vectorizer = manager.get_vectorizer("st", {"model": "all-MiniLM-L6-v2"})
+
+# Generate embeddings (returns NumPy array)
+texts = ["The cat sat on the mat", "A feline is resting on a rug"]
+embeddings = vectorizer.vectorize(texts)
+
+# Compare directly
+score = cosine_similarity(embeddings[0], embeddings[1:])[0]
+print(f"Similarity: {((score + 1) / 2) * 100:.2f}%")
+```
+
+---
+### 6. Knowledge Graph Extraction from Technical Documentation
 
 Build structured knowledge from unstructured docs:
 
@@ -235,7 +263,7 @@ result = graph.query_graph(
 )
 ```
 
-### 6. Document Comparison and Deduplication
+### 7. Document Comparison and Deduplication
 
 Identify similar documents across large collections:
 

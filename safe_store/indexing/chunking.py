@@ -69,10 +69,14 @@ def _chunk_by_character(text: str, chunk_size: int, chunk_overlap: int, expand_b
         
         chunks.append((vector_text, storage_text))
         
+        if end_pos == text_len:
+            break
+
         next_start_pos = start_pos + chunk_size - chunk_overlap
         if next_start_pos <= start_pos:
-            break
-        start_pos = next_start_pos
+            start_pos += 1
+        else:
+            start_pos = next_start_pos
         
     return chunks
 

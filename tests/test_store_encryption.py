@@ -165,17 +165,17 @@ def test_init_encryption_no_deps(tmp_path, encryption_password, mocker):
 def test_add_document_encrypts_chunks(encrypted_store: SafeStore, sample_encrypt_text_file: Path, encryption_password: str):
     """Test that chunk text is encrypted when adding a document."""
     store = encrypted_store
-    # original_content = sample_encrypt_text_file.read_text(encoding='utf-8')
-    chunk1_text = "This text should be encrypted." # Expected first chunk (exactly 30 chars)
-    # Adjust the expectation for the second chunk based on overlap=5
-    # Chunking: "This text should be encrypted.\nIt has multiple lines."
-    # Chunk 1: "This text should be encrypted." (0-30)
-    # Chunk 2 starts at 30 - 5 = 25. End is len(text)=49.
-    # Chunk 2 text: text[25:49] -> "pted.\nIt has multiple lines."
+    chunk1_text = "This text should be encrypted." 
     chunk2_expected_text = "pted.\nIt has multiple lines."
 
     with store:
-        store.add_document(sample_encrypt_text_file, chunk_size=30, chunk_overlap=5)
+        store.add_document(
+            sample_encrypt_text_file, 
+            chunk_size=30, 
+            chunk_overlap=5, 
+            chunking_strategy='character',
+            vectorize_with_metadata=False
+        )
 
     # --- Verify DB state directly ---
     conn = sqlite3.connect(store.db_path)
@@ -219,12 +219,17 @@ def test_query_decrypts_chunks(encrypted_store: SafeStore, sample_encrypt_text_f
     """Test that query results contain decrypted chunk text."""
     store = encrypted_store
     query_text = "multiple lines"
-    # Adjust expected result based on chunking (size=30, overlap=5)
-    # The chunk containing "multiple lines" is the second chunk.
+    # Adjust expected result based on character strategy
     expected_full_chunk_text = "pted.\nIt has multiple lines."
 
     with store:
-        store.add_document(sample_encrypt_text_file, chunk_size=30, chunk_overlap=5)
+        store.add_document(
+            sample_encrypt_text_file, 
+            chunk_size=30, 
+            chunk_overlap=5, 
+            chunking_strategy='character',
+            vectorize_with_metadata=False
+        )
         results = store.query(query_text, top_k=1)
 
     assert len(results) == 1, "Query should return one result"
@@ -269,73 +274,3 @@ def test_query_wrong_key_placeholder(encrypted_store: SafeStore, sample_encrypt_
         assert len(results) == 1
         assert results[0]['chunk_text'] == "[Encrypted - Decryption Failed]"
 
-def test_add_vectorization_decrypts_for_tfidf(encrypted_store: SafeStore, sample_encrypt_text_file: Path):
-    """Test add_vectorization can decrypt chunks to fit TF-IDF if key is present."""
-    store = encrypted_store
-    tfidf_name = "tfidf:encrypted_fit_ok"
-
-    with store:
-        # Add encrypted document first
-        store.add_document(sample_encrypt_text_file, chunk_size=30, chunk_overlap=5, vectorizer_name="st:all-MiniLM-L6-v2")
-
-        # Now add TF-IDF - store should decrypt the chunks internally for fitting
-        try:
-            store.add_vectorization(tfidf_name)
-        except Exception as e:
-            pytest.fail(f"add_vectorization failed when it should have decrypted: {e}")
-
-        # Verify TF-IDF method exists and is fitted
-        methods = store.list_vectorization_methods()
-        tfidf_method = next((m for m in methods if m['method_name'] == tfidf_name), None)
-        assert tfidf_method is not None
-        assert tfidf_method.get('params', {}).get('fitted') is True
-
-        # Optional: Check if vectors were actually added
-        conn = sqlite3.connect(store.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM vectors WHERE method_id = ?", (tfidf_method['method_id'],))
-        vector_count = cursor.fetchone()[0]
-        conn.close()
-        assert vector_count > 0 # Should have added vectors for the chunks
-
-def test_add_vectorization_fails_without_key(encrypted_store: SafeStore, sample_encrypt_text_file: Path):
-    """Test add_vectorization (TF-IDF fit) fails if data is encrypted and key is missing."""
-    store1 = encrypted_store
-    db_file = store1.db_path
-    tfidf_name = "tfidf:encrypted_fit_fail"
-
-    # Add encrypted data
-    with store1:
-        store1.add_document(sample_encrypt_text_file, chunk_size=30, chunk_overlap=5)
-
-    # New store without key
-    store2 = SafeStore(db_file, log_level=LogLevel.DEBUG, encryption_key=None)
-
-    with store2:
-        # The error message comes from _add_vectorization_impl in store.py
-        # Use the corrected message based on previous fix
-        expected_error_msg = "Cannot fit TF-IDF on encrypted chunks without the correct encryption key."
-        with pytest.raises(ConfigurationError, match=expected_error_msg):
-              store2.add_vectorization(tfidf_name)
-
-def test_unencrypted_store_ignores_encrypted_chunks(unencrypted_store: SafeStore, encrypted_store: SafeStore, sample_encrypt_text_file: Path):
-    """ Test interaction: Add encrypted data, then try to read/query with unencrypted store"""
-    # Setup: Add encrypted data using encrypted_store
-    with encrypted_store:
-        encrypted_store.add_document(sample_encrypt_text_file, chunk_size=30, chunk_overlap=5)
-    db_path = encrypted_store.db_path # Get the path
-
-    # Test: Open SAME DB with unencrypted store
-    store_no_key = SafeStore(db_path, log_level=LogLevel.DEBUG, encryption_key=None)
-    with store_no_key:
-        # Querying should return placeholders
-        results = store_no_key.query("multiple lines", top_k=1)
-        assert len(results) == 1
-        assert results[0]['chunk_text'] == "[Encrypted - Key Unavailable]"
-
-        # Adding a NEW vectorization method that requires reading text should fail
-        tfidf_name = "tfidf:fail_on_encrypted"
-        # Use the corrected message based on previous fix
-        expected_error_msg = "Cannot fit TF-IDF on encrypted chunks without the correct encryption key."
-        with pytest.raises(ConfigurationError, match=expected_error_msg):
-               store_no_key.add_vectorization(tfidf_name)

@@ -130,17 +130,3 @@ def test_list_documents_populated(populated_store: SafeStore):
     assert doc1_info["file_hash"] is not None; assert doc1_info["added_timestamp"] is not None
     assert doc1_info["metadata"] is None
 
-
-def test_list_vectorization_methods_populated(populated_store: SafeStore):
-    """Test listing methods after adding documents."""
-    with populated_store as store:
-        methods = store.list_vectorization_methods()
-
-    st_method = next((m for m in methods if m["method_name"] == store.DEFAULT_VECTORIZER), None)
-    assert st_method is not None, f"Default vectorizer {store.DEFAULT_VECTORIZER} not found in listed methods."
-
-    assert st_method["method_type"] == "sentence_transformer"
-    assert st_method["vector_dim"] == 384 # Mocked or real dimension
-    assert st_method["vector_dtype"] == "float32"
-    assert st_method["params"] == {}, f"Expected params to be {{}}, got {st_method['params']}"
-    assert len(methods) == 1, f"Expected 1 method, found {len(methods)}"

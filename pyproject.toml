@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "safe-store"
-version = "3.4.0"
+version = "3.4.1"
 description = "Simple, concurrent SQLite-based vector store optimized for local RAG pipelines, with optional encryption."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -37,44 +37,34 @@ dependencies = [
     "numpy>=1.21",
     "ascii_colors>=0.11.6", # For logging/console output
     "filelock>=3.9",       # For concurrency control
-    "sqlalchemy"
-]
-
-[project.optional-dependencies]
-# --- Parsing Libraries ---
-parsing = [
+    "sqlalchemy",
+    "tiktoken",
+    # Parsing Libraries
     "pypdf>=3.10",
     "python-docx>=1.0",
     "beautifulsoup4>=4.11",
-    "lxml>=4.9", # Recommended HTML parser
+    "lxml>=4.9",
+    # Vectorizer Libraries
+    "sentence-transformers>=3.0.0",
+    "scikit-learn>=1.0",
+    "openai>=1.0",
+    "ollama",
+    "cohere",
+    # Security/Encryption
+    "cryptography>=40.0",
+    "bcrypt>=4.0.0"
 ]
 
-# --- Vectorizer Libraries ---
-sentence-transformers = ["sentence-transformers==4.1.0"]
-tfidf = ["scikit-learn>=1.0"]
-# Future vectorizers can be added here:
-openai = ["openai>=1.0"]
-ollama = ["ollama"]
-
-# --- Encryption Library ---
-encryption = ["cryptography>=40.0"] # Added Encryption
-
-# --- Combined Extras ---
-all-vectorizers = [
-    "safe-store[sentence-transformers]",
-    "safe-store[tfidf]",
-    "safe-store[ollama]",
-    "safe-store[openai]",
-]
-# Combined extra for everything (parsing, all vectorizers, encryption, webui)
-all = [
-    "safe-store[parsing]",
-    "safe-store[all-vectorizers]",
-    "safe-store[encryption]",
-]
+[project.optional-dependencies]
 # Extra for development dependencies (testing, linting, building, docs)
 dev = [
-    "safe-store[all]", # Dev should include all optional features
+    "pytest>=7.0",
+    "pytest-cov>=3.0",
+    "flake8>=5.0",     # Or ruff
+    "black>=22.0",
+    "mypy>=0.9",
+    "types-filelock",
+    "types-cryptography", # Added types for cryptography
     "pytest>=7.0",
     "pytest-cov>=3.0",
     "flake8>=5.0",     # Or ruff

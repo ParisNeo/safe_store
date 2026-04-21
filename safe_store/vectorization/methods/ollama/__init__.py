@@ -1,6 +1,7 @@
 import numpy as np
 from typing import List, Optional, Dict, Any
 import os
+import json
 from ...base import BaseVectorizer
 from ....core.exceptions import ConfigurationError, VectorizationError
 from ascii_colors import ASCIIColors, trace_exception
@@ -107,6 +108,15 @@ class OllamaVectorizer(BaseVectorizer):
             self._dtype = np.dtype(np.float32)
             ASCIIColors.info(f"Ollama model '{self.model_name}' ready. Dimension: {self._dim}")
 
+        except json.JSONDecodeError as e:
+            # Handle malformed JSON responses (e.g., proxy servers appending error messages)
+            trace_exception(e)
+            raise VectorizationError(
+                f"Ollama server returned malformed JSON response. "
+                f"This often happens when using a proxy server that appends error messages. "
+                f"Original error: {e}. "
+                f"Check that your Ollama server/proxy at '{self.host or 'default'}' is properly configured."
+            ) from e
         except _OllamaResponseError as e:
             trace_exception(e)
             raise VectorizationError(f"Ollama API error for model '{self.model_name}': {e.error}") from e
