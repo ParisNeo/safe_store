@@ -187,7 +187,27 @@ with store:
     # ... send to local LLM for answer generation
 ```
 
-### 5. Standalone Vectorization (No Database)
+### 5. Categorization with Tags
+
+You can add custom tags to your documents. These tags are stored at the chunk level, allowing for future filtering or metadata analysis.
+
+```python
+with store:
+    # Adding a document with specific category tags
+    store.add_document(
+        "policy_2024.pdf", 
+        tags=["hr", "internal", "priority-1"]
+    )
+    
+    # Adding raw text with tags
+    store.add_text(
+        unique_id="snippet_001",
+        text="Employee vacation days are increased by 2.",
+        tags=["benefits", "update"]
+    )
+```
+
+### 6. Standalone Vectorization (No Database)
 
 Use `safe_store` components as standalone utilities for semantic comparison without creating a persistent database:
 

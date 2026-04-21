@@ -59,7 +59,16 @@ Here's a basic example demonstrating indexing and querying:
             for i, res in enumerate(results_tfidf):
                 print(f"TFIDF Result {i+1}: Score={res['similarity']:.4f}, Path='{Path(res['file_path']).name}', Text='{res['chunk_text'][:60]}...'")
 
-            # --- 5. List Methods ---
+            # --- 5. Tagging and Categorization ---
+            # Tags can be added during indexing to categorize content
+            print("\n--- Adding Document with Tags ---")
+            store.add_document(
+                doc1_path, 
+                tags=["documentation", "storage", "v3-release"],
+                force_reindex=True
+            )
+
+            # --- 6. List Methods ---
             print("\n--- Listing Vectorization Methods ---")
             methods = store.list_vectorization_methods()
             for method in methods:

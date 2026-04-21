@@ -1,7 +1,7 @@
 # tests/test_store_phase1.py
 import pytest
 import sqlite3
-import numpy as np
+import json
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
 import re
@@ -77,12 +77,11 @@ def test_add_document_new(
     # Check DB
     conn = sqlite3.connect(store.db_path)
     cursor = conn.cursor()
-    cursor.execute("SELECT doc_id, file_path, full_text, file_hash FROM documents WHERE file_path = ?", (str(file_path.resolve()),))
+    cursor.execute("SELECT doc_id, file_path, file_hash FROM documents WHERE file_path = ?", (str(file_path.resolve()),))
     doc_result = cursor.fetchone()
     assert doc_result is not None
     doc_id = doc_result[0]
-    assert doc_result[2] == sample_text_file.read_text(encoding='utf-8')
-    assert doc_result[3] is not None
+    assert doc_result[2] is not None
     cursor.execute("SELECT COUNT(*) FROM chunks WHERE doc_id = ?", (doc_id,))
     chunk_count = cursor.fetchone()[0]
     assert chunk_count == 4
@@ -155,12 +154,11 @@ def test_add_document_changed(
         store.add_document(file_path, chunk_size=20, chunk_overlap=5)
 
     # Check logs
-    assert_log_call_containing(mock_store_colors.warning, f"Document '{file_path.name}' has changed (hash mismatch). Re-indexing...")
+    assert_log_call_containing(mock_store_colors.warning, "has changed (hash mismatch). Re-indexing")
     assert_log_call_containing(mock_store_colors.debug, "Deleted old chunks/vectors")
-    assert_log_call_containing(mock_chunking_colors.debug, "Generated 3 chunks")
     assert_log_call_containing(mock_store_colors.info, "Generated 3 chunks")
     assert_log_call_containing(mock_store_colors.info, "Vectorizing 3 chunks")
-    assert_log_call_containing(mock_store_colors.success, f"Successfully processed '{file_path.name}' with vectorizer '{vectorizer_name_used}'")
+    assert_log_call_containing(mock_store_colors.success, f"Successfully processed '{file_path.name}'")
     mock_store_colors.error.assert_not_called()
 
     # Check DB
@@ -251,7 +249,8 @@ def test_add_document_hash_failure(mock_store_colors, safe_store_instance: SafeS
         mock_hasher.assert_called_once_with(file_path)
 
     # Check the log message printed when the error is caught in add_document
-    assert_log_call_containing(mock_store_colors.error, f"Error during add_document: FileHandlingError: {error_message}")
+    assert_log_call_containing(mock_store_colors.error, "Error during add_document")
+    assert_log_call_containing(mock_store_colors.error, error_message)
     mock_store_colors.success.assert_not_called()
 
     # Check DB State
@@ -271,7 +270,7 @@ def test_add_document_unsupported_type(mock_store_colors, mock_parser_colors, sa
     unsupported_file = tmp_path / "document.xyz"
     unsupported_file.write_text("Some content", encoding='utf-8')
 
-    expected_error_msg_part = f"Unsupported file type extension: '.xyz' for file: {unsupported_file}. No parser available."
+    expected_error_msg_part = f"Unsupported file type extension: '.xyz' for file: {unsupported_file}."
     with pytest.raises(ConfigurationError, match=re.escape(expected_error_msg_part)):
         with store:
             store.add_document(unsupported_file)

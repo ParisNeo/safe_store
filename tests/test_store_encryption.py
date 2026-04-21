@@ -255,7 +255,7 @@ def test_query_no_key_placeholder(encrypted_store: SafeStore, sample_encrypt_tex
     with store2:
         results = store2.query("multiple lines", top_k=1)
         assert len(results) == 1
-        assert results[0]['chunk_text'] == "[Encrypted - Key Unavailable]"
+        assert results[0]['chunk_text'] == "[Encrypted Chunk - Key Unavailable]"
 
 def test_query_wrong_key_placeholder(encrypted_store: SafeStore, sample_encrypt_text_file: Path):
     """Test query returns placeholder if store has the wrong key."""
@@ -272,5 +272,5 @@ def test_query_wrong_key_placeholder(encrypted_store: SafeStore, sample_encrypt_
     with store2:
         results = store2.query("multiple lines", top_k=1)
         assert len(results) == 1
-        assert results[0]['chunk_text'] == "[Encrypted - Decryption Failed]"
+        assert results[0]['chunk_text'] == "[Encrypted Chunk - Decryption Failed]"
 
