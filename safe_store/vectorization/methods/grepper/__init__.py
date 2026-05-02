@@ -1,3 +1,5 @@
+class_name = 'GrepperVectorizer'
+
 import re
 import json
 import sqlite3
@@ -18,7 +20,7 @@ class GrepperVectorizer(BaseVectorizer):
     def __init__(self, vectorizer_name: str = "grepper", **kwargs):
         super().__init__(vectorizer_name=vectorizer_name)
         self._dim = 1
-        self._dtype = np.float32
+        self._dtype = np.dtype(np.float32)
         # In-memory cache for indices until they are persisted via hooks
         self._pending_indices: Dict[int, List[Dict[str, Any]]] = {}
         self._pending_trees: Dict[int, Dict[str, Any]] = {}
