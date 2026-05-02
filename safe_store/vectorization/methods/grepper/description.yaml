@@ -1,0 +1,16 @@
+title: Grepper Vectorizer
+author: ParisNeo
+creation_date: 2025-02-05
+last_update_date: 2025-02-05
+class_name: GrepperVectorizer
+description: >
+  A simple keyword-based vectorizer that mimics the behavior of grep.
+  It indexes documents by their tokens and performs exact or case-sensitive
+  substring matching. No machine learning model is required, making it
+  extremely fast and lightweight for basic retrieval tasks.
+input_parameters:
+  - name: case_sensitive
+    type: bool
+    description: "Whether the keyword matching should be case-sensitive."
+    mandatory: false
+    default: false
