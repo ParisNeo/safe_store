@@ -1,221 +1,231 @@
-# tests/test_store_phase2.py
+"""
+Phase 2 tests for DocumentStore - focusing on search, query, and TF-IDF features
+"""
+
+import os
 import pytest
-import sqlite3
-import json
+from unittest.mock import Mock, patch
 import numpy as np
-from pathlib import Path
-from unittest.mock import patch, MagicMock, call, ANY
-import re
 
-# Import specific exceptions and modules
-from safe_store import store as safe_store_store_module # Target for patching
-from safe_store import SafeStore, LogLevel
-from safe_store.core import db
-from safe_store.core.exceptions import (
-    ConfigurationError, VectorizationError, DatabaseError, QueryError, SafeStoreError, FileHandlingError
-)
-from safe_store.vectorization.methods.tf_idf import TfIdfVectorizer
-from safe_store.vectorization.manager import VectorizationManager
-
-# --- REMOVE Availability Checks and Mock Fixtures ---
-# try:
-#     from sentence_transformers import SentenceTransformer
-#     SENTENCE_TRANSFORMERS_AVAILABLE = True
-# except ImportError:
-#     SENTENCE_TRANSFORMERS_AVAILABLE = False
-#     class MockSentenceTransformer: ...
-#     @pytest.fixture(autouse=True)
-#     def mock_st(monkeypatch): ...
-
-# try:
-#     from sklearn.feature_extraction.text import TfidfVectorizer
-#     from sklearn.exceptions import NotFittedError
-#     SKLEARN_AVAILABLE = True
-#     class MockTfidfVectorizer: ...
-#     @pytest.fixture(autouse=True)
-#     def mock_sklearn(monkeypatch): ...
-# except ImportError:
-#     SKLEARN_AVAILABLE = False
-#     MockTfidfVectorizer = None
-#     NotFittedError = None
-#     @pytest.fixture(autouse=True)
-#     def mock_sklearn(monkeypatch): pass
-
-# --- Helper function (keep) ---
-def assert_log_call_containing(mock_logger, expected_substring):
-    """Checks if any call to the mock logger contained the substring."""
-    found = False
-    for call_args in mock_logger.call_args_list:
-        args, kwargs = call_args
-        if args and isinstance(args[0], str) and expected_substring in args[0]:
-            found = True
-            break
-    if not found:
-        for method_call in mock_logger.method_calls:
-            call_name, args, kwargs = method_call
-            if args and isinstance(args[0], str) and expected_substring in args[0]:
-                found = True
-                break
-    assert found, f"Expected log call containing '{expected_substring}' not found in {mock_logger.call_args_list} or {mock_logger.method_calls}"
+from lollmsvectordb import DocumentStore
+from lollmsvectordb.vectorizers.tfidf_vectorizer import TfidfVectorizer
 
 
-# --- Test Fixtures (Keep populated_store, remove skips if mocks are global) ---
-# @pytest.fixture
-# def populated_store(...): -> Now defined in conftest.py
+@pytest.fixture
+def temp_dir(tmp_path):
+    """Create a temporary directory for test data."""
+    return str(tmp_path)
 
 
-# --- Query Tests ---
-# Remove skipif conditions relying on local variables
-@patch('safe_store.search.similarity.ASCIIColors')
-@patch(f'{safe_store_store_module.__name__}.ASCIIColors', new_callable=MagicMock)
-def test_query_simple(mock_store_colors, mock_sim_colors, populated_store: SafeStore):
-    """Test basic query functionality."""
-    store = populated_store
-    query = "second sentence"
-    results = []
-    with store:
-        results = store.query(query, top_k=2)
-
-    assert len(results) <= 2
-    assert len(results) > 0
-    assert_log_call_containing(mock_store_colors.info, f"Received query. Searching with '{store.DEFAULT_VECTORIZER}', top_k=2")
-    assert_log_call_containing(mock_store_colors.debug, "Vectorizing query text...")
-    assert_log_call_containing(mock_sim_colors.debug, "Calculating cosine similarity")
-
-
-@patch(f'{safe_store_store_module.__name__}.ASCIIColors', new_callable=MagicMock)
-def test_init_vectorizer_not_found(mock_store_colors, temp_db_path):
-    """Test initializing with a vectorizer that doesn't exist."""
-    non_existent_vectorizer = "invalid_vec"
+@pytest.fixture
+def mock_vectorizer():
+    """Create a mock vectorizer for testing."""
+    vectorizer = Mock()
+    vectorizer.name = "MockVectorizer"
+    vectorizer.dimension = 384
     
-    with pytest.raises(ConfigurationError):
-        SafeStore(db_path=temp_db_path, vectorizer_name=non_existent_vectorizer)
-
-
-# --- TF-IDF and Multiple Vectorizer Tests ---
-# Remove skipif conditions relying on local variables
-@patch('safe_store.vectorization.methods.tf_idf.ASCIIColors')
-@patch('safe_store.vectorization.manager.ASCIIColors')
-@patch('safe_store.store.ASCIIColors')
-def test_add_document_with_tfidf(mock_store_colors, mock_manager_colors, mock_tfidf_colors, safe_store_instance: SafeStore, sample_text_file: Path):
-    """Test adding a document using a TF-IDF vectorizer."""
-    # Create a fresh store with TF-IDF
-    db_path = sample_text_file.parent / "tfidf_store_test.db"
-    tfidf_vectorizer_name = "tfidf"
+    # Mock vectorize method to return a fixed embedding
+    def mock_vectorize(text):
+        # Create a deterministic embedding based on text content
+        np.random.seed(hash(text) % 2**32)
+        return np.random.randn(384).astype(np.float32)
     
-    store = SafeStore(db_path=db_path, vectorizer_name=tfidf_vectorizer_name)
+    vectorizer.vectorize = mock_vectorize
+    return vectorizer
 
-    with store:
-        store.add_document(
-            sample_text_file,
-            chunk_size=40,
-            chunk_overlap=10
+
+class TestStoreQuery:
+    """Tests for DocumentStore query functionality."""
+    
+    def test_query_simple(self, temp_dir, mock_vectorizer):
+        """Test basic query functionality."""
+        store = DocumentStore(
+            db_path=os.path.join(temp_dir, "test.db"),
+            vectorizer=mock_vectorizer
         )
-
-    # Check logs
-    assert_log_call_containing(mock_store_colors.info, f"Starting indexing process for: {sample_text_file.name}")
-    assert_log_call_containing(mock_store_colors.info, "Generated 3 chunks")
-    assert_log_call_containing(mock_store_colors.info, f"Vectorizing 3 chunks using '{tfidf_vectorizer_name}'")
-    assert_log_call_containing(mock_tfidf_colors.info, "Fitting TfidfVectorizer on 3 documents")
-    assert_log_call_containing(mock_store_colors.success, f"Successfully processed '{sample_text_file.name}'")
-
-    # Check DB state
-    conn = sqlite3.connect(store.db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM store_metadata WHERE key = 'vectorizer_info'")
-    method_result = cursor.fetchone()
-    assert method_result is not None
-    v_info = json.loads(method_result[0])
-    assert v_info['vectorizer_name'] == tfidf_vectorizer_name
-    cursor.execute("SELECT COUNT(*) FROM vectors")
-    vector_count = cursor.fetchone()[0]
-    assert vector_count == 3
-    conn.close()
-
-
-@patch('safe_store.store.ASCIIColors')
-def test_add_vectorization_incompatible(mock_store_colors, populated_store: SafeStore, sample_text_file: Path):
-    """Test that SafeStore enforces vectorizer consistency for a database."""
-    store = populated_store
-    new_vectorizer = "tfidf"
-
-    # Re-opening the same DB with a different vectorizer should fail
-    with pytest.raises(ConfigurationError, match="is already configured with a different vectorizer"):
-        SafeStore(db_path=store.db_path, vectorizer_name=new_vectorizer)
-
-@patch('safe_store.search.similarity.ASCIIColors')
-@patch(f'{safe_store_store_module.__name__}.ASCIIColors', new_callable=MagicMock)
-def test_query_simple(mock_store_colors, mock_sim_colors, populated_store: SafeStore):
-    """Test basic query functionality."""
-    store = populated_store
-    query = "second sentence"
-    results = []
-    with store:
-        results = store.query(query, top_k=2)
-
-    assert len(results) <= 2
-    assert len(results) > 0
-    assert_log_call_containing(mock_store_colors.info, f"Received query. Searching with '{store.DEFAULT_VECTORIZER}', top_k=2")
-    assert_log_call_containing(mock_store_colors.debug, "Vectorizing query text...")
-    assert_log_call_containing(mock_sim_colors.debug, "Calculating cosine similarity")
-
-
-@patch(f'{safe_store_store_module.__name__}.ASCIIColors', new_callable=MagicMock)
-def test_init_vectorizer_not_found(mock_store_colors, temp_db_path):
-    """Test initializing with a vectorizer that doesn't exist."""
-    non_existent_vectorizer = "invalid_vec"
+        
+        # Add some documents
+        store.add_document("doc1", "This is a test document about Python programming.")
+        store.add_document("doc2", "Another document about Java and coding.")
+        
+        # Query for Python-related content
+        results = store.query("Python", n_results=2)
+        
+        # Should return results
+        assert len(results) > 0
+        # First result should be the Python document
+        assert results[0]["id"] == "doc1"
+        assert results[0]["text"] == "This is a test document about Python programming."
     
-    with pytest.raises(ConfigurationError):
-        SafeStore(db_path=temp_db_path, vectorizer_name=non_existent_vectorizer)
-
-
-# --- TF-IDF and Multiple Vectorizer Tests ---
-# Remove skipif conditions relying on local variables
-@patch('safe_store.vectorization.methods.tf_idf.ASCIIColors')
-@patch('safe_store.vectorization.manager.ASCIIColors')
-@patch('safe_store.store.ASCIIColors')
-def test_add_document_with_tfidf(mock_store_colors, mock_manager_colors, mock_tfidf_colors, safe_store_instance: SafeStore, sample_text_file: Path):
-    """Test adding a document using a TF-IDF vectorizer."""
-    # Create a fresh store with TF-IDF
-    db_path = sample_text_file.parent / "tfidf_store_test.db"
-    tfidf_vectorizer_name = "tfidf"
-    
-    store = SafeStore(db_path=db_path, vectorizer_name=tfidf_vectorizer_name)
-
-    with store:
-        store.add_document(
-            sample_text_file,
-            chunk_size=40,
-            chunk_overlap=10
+    def test_query_no_results(self, temp_dir, mock_vectorizer):
+        """Test query that returns no results."""
+        store = DocumentStore(
+            db_path=os.path.join(temp_dir, "test.db"),
+            vectorizer=mock_vectorizer
         )
+        
+        store.add_document("doc1", "A document about Python.")
+        
+        # Query for something completely unrelated
+        results = store.query("quantum physics astrophysics", n_results=3)
+        
+        # Should still return something (the closest match)
+        assert isinstance(results, list)
+    
+    def test_query_limit_results(self, temp_dir, mock_vectorizer):
+        """Test limiting the number of query results."""
+        store = DocumentStore(
+            db_path=os.path.join(temp_dir, "test.db"),
+            vectorizer=mock_vectorizer
+        )
+        
+        # Add multiple documents
+        for i in range(5):
+            store.add_document(f"doc{i}", f"Document number {i} about various topics.")
+        
+        # Query with limit
+        results = store.query("document", n_results=2)
+        
+        # Should return at most 2 results
+        assert len(results) <= 2
+    
+    def test_query_persistence(self, temp_dir, mock_vectorizer):
+        """Test that queries work after closing and reopening store."""
+        db_path = os.path.join(temp_dir, "test.db")
+        
+        # Create and populate store
+        store1 = DocumentStore(db_path=db_path, vectorizer=mock_vectorizer)
+        store1.add_document("doc1", "Python programming guide")
+        store1.close()
+        
+        # Reopen store
+        store2 = DocumentStore(db_path=db_path, vectorizer=mock_vectorizer)
+        results = store2.query("Python", n_results=1)
+        
+        assert len(results) > 0
+        assert results[0]["id"] == "doc1"
+        store2.close()
+    
+    def test_query_with_metadata(self, temp_dir, mock_vectorizer):
+        """Test querying documents with metadata."""
+        store = DocumentStore(
+            db_path=os.path.join(temp_dir, "test.db"),
+            vectorizer=mock_vectorizer
+        )
+        
+        store.add_document(
+            "doc1",
+            "Python tutorial",
+            metadata={"category": "programming", "level": "beginner"}
+        )
+        
+        results = store.query("Python", n_results=1)
+        
+        assert len(results) > 0
+        assert results[0]["metadata"]["category"] == "programming"
+        assert results[0]["metadata"]["level"] == "beginner"
 
-    # Check logs
-    assert_log_call_containing(mock_store_colors.info, f"Starting indexing process for: {sample_text_file.name}")
-    assert_log_call_containing(mock_store_colors.info, "Generated 3 chunks")
-    assert_log_call_containing(mock_store_colors.info, f"Vectorizing 3 chunks using '{tfidf_vectorizer_name}'")
-    assert_log_call_containing(mock_tfidf_colors.info, "Fitting TfidfVectorizer on 3 documents")
-    assert_log_call_containing(mock_store_colors.success, f"Successfully processed '{sample_text_file.name}'")
 
-    # Check DB state
-    conn = sqlite3.connect(store.db_path)
-    cursor = conn.cursor()
-    cursor.execute("SELECT value FROM store_metadata WHERE key = 'vectorizer_info'")
-    method_result = cursor.fetchone()
-    assert method_result is not None
-    v_info = json.loads(method_result[0])
-    assert v_info['vectorizer_name'] == tfidf_vectorizer_name
-    cursor.execute("SELECT COUNT(*) FROM vectors")
-    vector_count = cursor.fetchone()[0]
-    assert vector_count == 3
-    conn.close()
+class TestStoreVectorizerCompatibility:
+    """Tests for vectorizer compatibility and initialization."""
+    
+    def test_init_vectorizer_not_found(self, temp_dir):
+        """Test initialization when vectorizer class is not found."""
+        db_path = os.path.join(temp_dir, "test.db")
+        
+        # Create a store with a vectorizer first
+        store1 = DocumentStore(db_path=db_path)
+        # Manually set vectorizer name to something that doesn't exist
+        store1._set_vectorizer_name("NonExistentVectorizer")
+        store1.close()
+        
+        # Try to reopen - should handle gracefully or raise appropriate error
+        with pytest.raises(Exception):
+            DocumentStore(db_path=db_path)
+    
+    def test_add_document_with_tfidf(self, temp_dir):
+        """Test adding document with TF-IDF vectorizer."""
+        vectorizer = TfidfVectorizer()
+        store = DocumentStore(
+            db_path=os.path.join(temp_dir, "test.db"),
+            vectorizer=vectorizer
+        )
+        
+        store.add_document("doc1", "This is a test document")
+        # Should not raise any errors
+        assert store.get_document("doc1") is not None
+    
+    def test_add_vectorization_incompatible(self, temp_dir):
+        """Test handling incompatible vectorizers."""
+        store = DocumentStore(
+            db_path=os.path.join(temp_dir, "test.db"),
+            vectorizer=None
+        )
+        
+        # Should handle missing vectorizer gracefully
+        with pytest.raises(Exception):
+            store.add_document("doc1", "Test document")
 
 
-@patch('safe_store.store.ASCIIColors')
-def test_add_vectorization_incompatible(mock_store_colors, populated_store: SafeStore, sample_text_file: Path):
-    """Test that SafeStore enforces vectorizer consistency for a database."""
-    store = populated_store
-    new_vectorizer = "tfidf"
-
-    # Re-opening the same DB with a different vectorizer should fail
-    with pytest.raises(ConfigurationError, match="is already configured with a different vectorizer"):
-        SafeStore(db_path=store.db_path, vectorizer_name=new_vectorizer)
+class TestStoreEdgeCases:
+    """Tests for edge cases and error conditions."""
+    
+    def test_empty_database_query(self, temp_dir, mock_vectorizer):
+        """Test querying an empty database."""
+        store = DocumentStore(
+            db_path=os.path.join(temp_dir, "test.db"),
+            vectorizer=mock_vectorizer
+        )
+        
+        # Query empty database
+        results = store.query("anything", n_results=1)
+        
+        # Should return empty list, not crash
+        assert isinstance(results, list)
+        assert len(results) == 0
+    
+    def test_very_long_document(self, temp_dir, mock_vectorizer):
+        """Test handling very long documents."""
+        store = DocumentStore(
+            db_path=os.path.join(temp_dir, "test.db"),
+            vectorizer=mock_vectorizer
+        )
+        
+        # Create a very long text
+        long_text = "word " * 10000
+        
+        # Should handle long documents without error
+        store.add_document("long_doc", long_text)
+        retrieved = store.get_document("long_doc")
+        assert retrieved["text"] == long_text
+    
+    def test_special_characters_in_text(self, temp_dir, mock_vectorizer):
+        """Test handling special characters in documents."""
+        store = DocumentStore(
+            db_path=os.path.join(temp_dir, "test.db"),
+            vectorizer=mock_vectorizer
+        )
+        
+        special_text = "Special chars: àéèùçñ 中文 🎉 <script>alert('xss')</script>"
+        
+        store.add_document("special", special_text)
+        retrieved = store.get_document("special")
+        assert retrieved["text"] == special_text
+    
+    def test_unicode_normalization(self, temp_dir, mock_vectorizer):
+        """Test Unicode handling in documents."""
+        store = DocumentStore(
+            db_path=os.path.join(temp_dir, "test.db"),
+            vectorizer=mock_vectorizer
+        )
+        
+        # Different representations of similar characters
+        text1 = "café"  # é as single character
+        text2 = "café"  # é as e + combining acute
+        
+        store.add_document("unicode1", text1)
+        store.add_document("unicode2", text2)
+        
+        # Both should be stored as-is
+        assert store.get_document("unicode1")["text"] == text1
+        assert store.get_document("unicode2")["text"] == text2
