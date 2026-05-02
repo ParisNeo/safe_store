@@ -518,20 +518,20 @@ class SafeStore:
 
             try:
                 self.conn.execute("BEGIN")
-                
+
                 # Fetch fresh doc_id within transaction
                 doc_id = db.get_document_id_by_path(self.conn, content_id)
                 if doc_id:
                     self.conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
                     ASCIIColors.debug("Deleted old chunks/vectors")
-                
+
                 meta_blob = self.encryptor.encrypt(json.dumps(metadata)) if metadata and self.encryptor.is_enabled else (json.dumps(metadata).encode('utf-8') if metadata else None)
-                
+
                 if doc_id:
                     self.conn.execute("UPDATE documents SET file_hash=?, metadata=?, is_encrypted=? WHERE doc_id=?", (current_hash, meta_blob, 1 if self.encryptor.is_enabled else 0, doc_id))
                 else:
                     doc_id = db.add_document_record(self.conn, content_id, current_hash, meta_blob, self.encryptor.is_enabled)
-                
+
                 tags_str = ",".join(sorted(list(set(tags)))) if tags else None
                 for i, storage_text in enumerate(storage_texts):
                     t_store = self.encryptor.encrypt(storage_text) if self.encryptor.is_enabled else storage_text
@@ -539,6 +539,20 @@ class SafeStore:
                     db.add_vector_record(self.conn, cid, np.ascontiguousarray(vectors[i], dtype=self.vectorizer.dtype))
 
                 self.conn.commit()
+
+                # Lifecycle hook: allow vectorizer to build auxiliary indexes (e.g., grepper inverted index)
+                if doc_id and hasattr(self.vectorizer, 'on_document_indexed') and callable(getattr(self.vectorizer, 'on_document_indexed')):
+                    try:
+                        self.conn.execute("SAVEPOINT on_document_indexed")
+                        self.vectorizer.on_document_indexed(self.conn, doc_id, storage_texts)
+                        self.conn.execute("RELEASE SAVEPOINT on_document_indexed")
+                    except Exception as hook_err:
+                        try:
+                            self.conn.execute("ROLLBACK TO SAVEPOINT on_document_indexed")
+                        except sqlite3.Error:
+                            pass
+                        ASCIIColors.warning(f"Vectorizer hook 'on_document_indexed' failed for '{filename_for_log}': {hook_err}")
+
                 # Final success log matching test patterns
                 ASCIIColors.success(f"Successfully processed '{filename_for_log}' with vectorizer '{self.vectorizer_name}'")
                 return {"num_chunks_added": len(valid_chunks_data), "num_chunks_ignored": num_ignored}
@@ -556,19 +570,25 @@ class SafeStore:
         with self._instance_lock:
             # Log required by test_query_simple
             ASCIIColors.info(f"Received query. Searching with '{self.vectorizer_name}', top_k={top_k}")
-            
-            # --- Phase 1: Vectorize query (No lock) ---
+
+            # --- Phase 0: Check for custom search hook on vectorizer (e.g., grepper) ---
             self._ensure_connection()
             assert self.conn and self.vectorizer is not None
+            custom_search = getattr(self.vectorizer, 'custom_search', None)
+            if callable(custom_search):
+                ASCIIColors.debug("Delegating query to vectorizer custom_search...")
+                return custom_search(self.conn, query_text, top_k, min_similarity_percent)
+
+            # --- Phase 1: Vectorize query (No lock) ---
             ASCIIColors.debug("Vectorizing query text...")
             query_vector = self.vectorizer.vectorize([query_text])[0]
-            
+
             # --- Phase 2: Fetch all vectors (Short lock) ---
             with self._optional_file_lock_context("query - fetch vectors"):
                 self._ensure_connection()
                 assert self.conn is not None
                 all_vectors_data = self.conn.execute("SELECT v.chunk_id, v.vector_data FROM vectors v").fetchall()
-            
+
             if not all_vectors_data: 
                 ASCIIColors.warning(f"No vectors found in the database for method '{self.vectorizer_name}'. Cannot perform query.")
                 return []
