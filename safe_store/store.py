@@ -543,14 +543,8 @@ class SafeStore:
                 # Lifecycle hook: allow vectorizer to build auxiliary indexes (e.g., grepper inverted index)
                 if doc_id and hasattr(self.vectorizer, 'on_document_indexed') and callable(getattr(self.vectorizer, 'on_document_indexed')):
                     try:
-                        self.conn.execute("SAVEPOINT on_document_indexed")
                         self.vectorizer.on_document_indexed(self.conn, doc_id, storage_texts)
-                        self.conn.execute("RELEASE SAVEPOINT on_document_indexed")
                     except Exception as hook_err:
-                        try:
-                            self.conn.execute("ROLLBACK TO SAVEPOINT on_document_indexed")
-                        except sqlite3.Error:
-                            pass
                         ASCIIColors.warning(f"Vectorizer hook 'on_document_indexed' failed for '{filename_for_log}': {hook_err}")
 
                 # Final success log matching test patterns
