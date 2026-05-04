@@ -69,6 +69,7 @@ class SafeStore:
         self.custom_tokenizer = custom_tokenizer
         self.expand_before = expand_before
         self.expand_after = expand_after
+        self.text_cleaner_name = text_cleaner
         self.text_cleaner = get_cleaner(text_cleaner)
         self.chunking_kwargs = chunking_kwargs or {}
         
@@ -271,7 +272,28 @@ class SafeStore:
                 self.description = db.get_store_metadata(self.conn, "store_description")
                 meta_json = db.get_store_metadata(self.conn, "store_metadata")
                 self.metadata = json.loads(meta_json) if meta_json else None
-            self.conn.commit()
+                        # Save store configuration if not already present
+            cursor.execute("SELECT 1 FROM metadata WHERE key = 'store_config'")
+            if not cursor.fetchone():
+                store_config = {
+                    'vectorizer': self.vectorizer_name if hasattr(self, 'vectorizer_name') else None,
+                    'chunk_size': self.chunk_size,
+                    'overlap': self.overlap,
+                    'max_size': self.max_size,
+                    'clean_function': self.clean_function.__name__ if self.clean_function else None,
+                    'text_cleaner': self.text_cleaner_name,
+                    'tokenizer': self.tokenizer_name if hasattr(self, 'tokenizer_name') else None,
+                    'vectorizer_params': self.vectorizer_params,
+                    'chunking_kwargs': self.chunking_kwargs,
+                }
+                # Remove None values for cleaner config
+                store_config = {k: v for k, v in store_config.items() if v is not None}
+                cursor.execute(
+                    "INSERT INTO metadata (key, value) VALUES (?, ?)",
+                    ('store_config', json.dumps(store_config))
+                )
+        
+self.conn.commit()
         except Exception as e:
             if self.conn.in_transaction: self.conn.rollback()
             raise SafeStoreError("Failed to load/initialize store properties") from e
