@@ -40,16 +40,16 @@ class SafeStore:
     def __init__(
         self,
         db_path: Optional[Union[str, Path]] = "safe_store.db",
-        vectorizer_name: str = "st",
+        vectorizer_name: Optional[str] = None,
         vectorizer_config: Optional[Dict[str, Any]] = None,
         custom_vectorizers_path: Optional[str] = None,
-        chunk_size: int = 384,
-        chunk_overlap: int = 50,
-        chunking_strategy: Literal['character', 'token', 'paragraph', 'semantic', 'recursive'] = 'token',
+        chunk_size: Optional[int] = None,
+        chunk_overlap: Optional[int] = None,
+        chunking_strategy: Optional[Literal['character', 'token', 'paragraph', 'semantic', 'recursive']] = None,
         custom_tokenizer: Optional[Dict[str, Any]] = None,
-        expand_before: int = 0,
-        expand_after: int = 0,
-        text_cleaner: Union[str, Callable[[str], str], None] = 'basic',
+        expand_before: Optional[int] = None,
+        expand_after: Optional[int] = None,
+        text_cleaner: Optional[Union[str, Callable[[str], str]]] = None,
         name: Optional[str] = None,
         description: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -61,28 +61,82 @@ class SafeStore:
     ):
         ASCIIColors.set_log_level(log_level)
 
-        self.vectorizer_name = vectorizer_name
-        self.vectorizer_config = vectorizer_config if vectorizer_config is not None else (self.DEFAULT_VECTORIZER_CONFIG if vectorizer_name == self.DEFAULT_VECTORIZER_NAME else {})
-        self.chunk_size = chunk_size
-        self.chunk_overlap = chunk_overlap
-        self.chunking_strategy = chunking_strategy
-        self.custom_tokenizer = custom_tokenizer
-        self.expand_before = expand_before
-        self.expand_after = expand_after
-        self.text_cleaner_name = text_cleaner
-        self.text_cleaner = get_cleaner(text_cleaner)
-        self.chunking_kwargs = chunking_kwargs or {}
-        
-        self.name = name
-        self.description = description
-        self.metadata = metadata
+        # --- Infer configuration from existing database if possible ---
+        # Build a dict of explicitly provided non-None arguments
+        explicit_kwargs = {}
+        if vectorizer_name is not None:
+            explicit_kwargs['vectorizer_name'] = vectorizer_name
+        if vectorizer_config is not None:
+            explicit_kwargs['vectorizer_config'] = vectorizer_config
+        if chunk_size is not None:
+            explicit_kwargs['chunk_size'] = chunk_size
+        if chunk_overlap is not None:
+            explicit_kwargs['chunk_overlap'] = chunk_overlap
+        if chunking_strategy is not None:
+            explicit_kwargs['chunking_strategy'] = chunking_strategy
+        if custom_tokenizer is not None:
+            explicit_kwargs['custom_tokenizer'] = custom_tokenizer
+        if expand_before is not None:
+            explicit_kwargs['expand_before'] = expand_before
+        if expand_after is not None:
+            explicit_kwargs['expand_after'] = expand_after
+        if text_cleaner is not None:
+            explicit_kwargs['text_cleaner'] = text_cleaner
+        if name is not None:
+            explicit_kwargs['name'] = name
+        if description is not None:
+            explicit_kwargs['description'] = description
+        if metadata is not None:
+            explicit_kwargs['metadata'] = metadata
+        if chunking_kwargs is not None:
+            explicit_kwargs['chunking_kwargs'] = chunking_kwargs
+
+        # Resolve db_path early to check existence
+        db_path_input_str = str(db_path).lower() if db_path is not None else ":memory:"
+        stored_config: Dict[str, Any] = {}
+
+        if db_path_input_str not in (":memory:", ":tempfile:"):
+            db_path_resolved = str(Path(db_path).resolve())
+            if Path(db_path_resolved).exists():
+                try:
+                    conn = db.connect_db(db_path_resolved)
+                    try:
+                        raw_config = db.get_store_metadata(conn, "store_config")
+                        if raw_config:
+                            stored_config = json.loads(raw_config)
+                    except Exception:
+                        pass
+                    finally:
+                        conn.close()
+                except Exception:
+                    pass
+
+        # Merge: stored_config provides defaults, explicit_kwargs override
+        merged_config = {**stored_config, **explicit_kwargs}
+
+        # Apply merged configuration with final defaults for anything still missing
+        self.vectorizer_name = merged_config.get('vectorizer_name', 'st')
+        self.vectorizer_config = merged_config.get('vectorizer_config', self.DEFAULT_VECTORIZER_CONFIG if self.vectorizer_name == self.DEFAULT_VECTORIZER_NAME else {})
+        self.chunk_size = merged_config.get('chunk_size', 384)
+        self.chunk_overlap = merged_config.get('chunk_overlap', 50)
+        self.chunking_strategy = merged_config.get('chunking_strategy', 'token')
+        self.custom_tokenizer = merged_config.get('custom_tokenizer', None)
+        self.expand_before = merged_config.get('expand_before', 0)
+        self.expand_after = merged_config.get('expand_after', 0)
+        self.text_cleaner_name = merged_config.get('text_cleaner', 'basic')
+        self.text_cleaner = get_cleaner(self.text_cleaner_name)
+        self.chunking_kwargs = merged_config.get('chunking_kwargs', {})
+
+        self.name = merged_config.get('name', name)
+        self.description = merged_config.get('description', description)
+        self.metadata = merged_config.get('metadata', metadata)
         self.lock_timeout = lock_timeout
 
         self._is_in_memory: bool = False
         self._is_temp_file_db: bool = False
         self._temp_db_actual_path: Optional[str] = None
         self._file_lock: Optional[FileLock] = None
-        
+
         self._setup_paths_and_locks(db_path)
         
         self.conn: Optional[sqlite3.Connection] = None
@@ -106,30 +160,23 @@ class SafeStore:
             raise e
 
     @classmethod
+    def open(cls, db_path: Union[str, Path], **kwargs) -> "SafeStore":
+        """
+        Convenience alias for from_db(). Opens an existing SafeStore database
+        and restores all configuration (vectorizer, chunking settings, etc.).
+        """
+        return cls.from_db(db_path, **kwargs)
+
+    @classmethod
     def from_db(cls, db_path: Union[str, Path], **kwargs) -> "SafeStore":
         """
         Instantiate SafeStore from a database file, reading stored configuration
         from the 'store_config' metadata key and merging with any provided kwargs.
+
+        Since __init__ now automatically infers settings from existing databases,
+        this method simply passes through to the constructor.
         """
-        stored_config: Dict[str, Any] = {}
-        db_path_resolved = str(Path(db_path).resolve())
-
-        if Path(db_path_resolved).exists():
-            try:
-                conn = db.connect_db(db_path_resolved)
-                try:
-                    raw_config = db.get_store_metadata(conn, "store_config")
-                    if raw_config:
-                        stored_config = json.loads(raw_config)
-                except Exception:
-                    pass
-                finally:
-                    conn.close()
-            except Exception:
-                pass
-
-        merged_config = {**stored_config, **kwargs}
-        return cls(db_path=db_path, **merged_config)
+        return cls(db_path=db_path, **kwargs)
 
     def _setup_paths_and_locks(self, db_path):
         db_path_input_str = str(db_path).lower() if db_path is not None else IN_MEMORY_DB_INDICATOR
@@ -228,13 +275,14 @@ class SafeStore:
                 
                 if stored_info.get("unique_name") != unique_name_from_instance:
                     raise ConfigurationError(
-                        f"Database at '{self.db_path}' is already configured with a different vectorizer: '{stored_info.get('unique_name')}'. "
+                        f"Database at '{self.db_path}' has an incompatible vectorizer: '{stored_info.get('unique_name')}'. "
                         f"This instance is configured with '{unique_name_from_instance}'. Use a new DB file for a new vectorizer."
                     )
             else:
                 ASCIIColors.info("No vectorizer info found in DB. Storing current vectorizer configuration.")
                 vectorizer_info = {
                     "unique_name": self.vectorizer_manager._create_unique_name(self.vectorizer_name, self.vectorizer_config),
+                    "name": self.vectorizer_name,
                     "vectorizer_name": self.vectorizer_name,
                     "vectorizer_config": self.vectorizer_config,
                     "dim": self.vectorizer.dim,
@@ -272,28 +320,24 @@ class SafeStore:
                 self.description = db.get_store_metadata(self.conn, "store_description")
                 meta_json = db.get_store_metadata(self.conn, "store_metadata")
                 self.metadata = json.loads(meta_json) if meta_json else None
-                        # Save store configuration if not already present
-            cursor.execute("SELECT 1 FROM metadata WHERE key = 'store_config'")
-            if not cursor.fetchone():
+
+            # Save store configuration if not already present
+            existing_config = db.get_store_metadata(self.conn, "store_config")
+            if existing_config is None:
                 store_config = {
-                    'vectorizer': self.vectorizer_name if hasattr(self, 'vectorizer_name') else None,
+                    'vectorizer_name': self.vectorizer_name,
+                    'vectorizer_config': self.vectorizer_config,
                     'chunk_size': self.chunk_size,
-                    'overlap': self.overlap,
-                    'max_size': self.max_size,
-                    'clean_function': self.clean_function.__name__ if self.clean_function else None,
+                    'chunk_overlap': self.chunk_overlap,
+                    'chunking_strategy': self.chunking_strategy,
+                    'expand_before': self.expand_before,
+                    'expand_after': self.expand_after,
                     'text_cleaner': self.text_cleaner_name,
-                    'tokenizer': self.tokenizer_name if hasattr(self, 'tokenizer_name') else None,
-                    'vectorizer_params': self.vectorizer_params,
                     'chunking_kwargs': self.chunking_kwargs,
                 }
-                # Remove None values for cleaner config
-                store_config = {k: v for k, v in store_config.items() if v is not None}
-                cursor.execute(
-                    "INSERT INTO metadata (key, value) VALUES (?, ?)",
-                    ('store_config', json.dumps(store_config))
-                )
-        
-self.conn.commit()
+                db.set_store_metadata(self.conn, "store_config", json.dumps(store_config))
+
+            self.conn.commit()
         except Exception as e:
             if self.conn.in_transaction: self.conn.rollback()
             raise SafeStoreError("Failed to load/initialize store properties") from e
@@ -325,6 +369,7 @@ self.conn.commit()
             self.vectorizer_manager.clear_cache()
             if self._is_temp_file_db and self._temp_db_actual_path:
                 self._manual_cleanup_temp_files_on_error()
+            ASCIIColors.info("safe_store connection closed.")
 
     def _manual_cleanup_temp_files_on_error(self):
         if self._temp_db_actual_path:
@@ -341,6 +386,7 @@ self.conn.commit()
             return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        ASCIIColors.debug("safe_store context closed cleanly.")
         self.close()
 
     def _ensure_connection(self) -> None:
@@ -458,6 +504,9 @@ self.conn.commit()
                 msg = f"File not found when trying to hash: {content_id}"
                 ASCIIColors.error(f"Error during add_document: FileHandlingError: {msg}")
                 raise FileHandlingError(msg) from e
+            except FileHandlingError as e:
+                ASCIIColors.error(f"Error during add_document: FileHandlingError: {e}")
+                raise
 
             # Check if unchanged
             res = self.conn.execute("SELECT doc_id, file_hash FROM documents WHERE file_path = ?", (content_id,)).fetchone()
@@ -502,7 +551,7 @@ self.conn.commit()
                  ASCIIColors.warning(f"No chunks generated for {filename_for_log}. Document record saved, but skipping vectorization.")
                  try:
                     self.conn.execute("BEGIN")
-                    db.add_document_record(self.conn, file_path=content_id, file_hash=current_hash, is_encrypted=self.encryptor.is_enabled)
+                    db.add_document_record(self.conn, file_path=content_id, file_hash=current_hash, full_text=full_text, is_encrypted=self.encryptor.is_enabled)
                     self.conn.commit()
                  except Exception:
                     if self.conn.in_transaction: self.conn.rollback()
@@ -546,7 +595,7 @@ self.conn.commit()
                 return {"num_chunks_added": 0, "num_chunks_ignored": num_ignored}
 
             # Log chunk generation results (required by tests)
-            ASCIIColors.info(f"Generated {len(valid_chunks_data)} chunks")
+            ASCIIColors.info(f"Generated {len(valid_chunks_data)} chunks for {filename_for_log}")
             ASCIIColors.info(f"Vectorizing {len(valid_chunks_data)} chunks using '{self.vectorizer_name}'")
 
             vector_texts = [item[0] for item in valid_chunks_data]
@@ -576,9 +625,9 @@ self.conn.commit()
                 meta_blob = self.encryptor.encrypt(json.dumps(metadata)) if metadata and self.encryptor.is_enabled else (json.dumps(metadata).encode('utf-8') if metadata else None)
 
                 if doc_id:
-                    self.conn.execute("UPDATE documents SET file_hash=?, metadata=?, is_encrypted=? WHERE doc_id=?", (current_hash, meta_blob, 1 if self.encryptor.is_enabled else 0, doc_id))
+                    self.conn.execute("UPDATE documents SET file_hash=?, full_text=?, metadata=?, is_encrypted=? WHERE doc_id=?", (current_hash, full_text, meta_blob, 1 if self.encryptor.is_enabled else 0, doc_id))
                 else:
-                    doc_id = db.add_document_record(self.conn, content_id, current_hash, meta_blob, self.encryptor.is_enabled)
+                    doc_id = db.add_document_record(self.conn, content_id, current_hash, full_text, meta_blob, self.encryptor.is_enabled)
 
                 tags_str = ",".join(sorted(list(set(tags)))) if tags else None
                 for i, storage_text in enumerate(storage_texts):
@@ -795,6 +844,12 @@ self.conn.commit()
 
     def list_vectorization_methods(self) -> List[Dict[str, Any]]:
         """Shim for legacy tests."""
+        self._ensure_connection()
+        assert self.conn is not None
+        # Return empty list if no vectors exist in the database
+        cursor = self.conn.execute("SELECT 1 FROM vectors LIMIT 1")
+        if cursor.fetchone() is None:
+            return []
         return [{
             "method_id": 0,
             "method_name": self.vectorizer_name,

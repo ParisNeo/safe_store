@@ -105,6 +105,7 @@ class VectorizationManager:
 
         if unique_name in self._cache:
             return self._cache[unique_name]
+        ASCIIColors.info(f"Initializing vectorizer: {vectorizer_name}")
         ASCIIColors.rich_print("Initializing vectorizer:")
         ASCIIColors.panel(f"{self._create_vectorizer_ascii_infos(vectorizer_name, vectorizer_config)}", "[bold][magenta]VECTORISER INFORMATION[/bold][/magenta]")
         config_for_init = vectorizer_config or {}
@@ -124,7 +125,7 @@ class VectorizationManager:
             vectorizer_instance = VectorizerClass(model_config=config_for_init, cache_folder=self.cache_folder)
 
         except (ImportError, FileNotFoundError) as e:
-            raise ConfigurationError(f"Could not find or load vectorizer module for '{vectorizer_name}'.") from e
+            raise ConfigurationError(f"Unsupported vectorizer '{vectorizer_name}': Could not find or load vectorizer module.") from e
         except Exception as e:
             raise VectorizationError(f"Failed to initialize '{vectorizer_name}' vectorizer: {e}") from e
 

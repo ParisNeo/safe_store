@@ -23,19 +23,22 @@ def generate_chunks(
     if strategy == 'token':
         if tokenizer is None:
             raise ValueError("A tokenizer is required for 'token' strategy.")
-        return _chunk_by_tokens(text, tokenizer, chunk_size, chunk_overlap, expand_before, expand_after)
+        chunks = _chunk_by_tokens(text, tokenizer, chunk_size, chunk_overlap, expand_before, expand_after)
     elif strategy == 'character':
-        return _chunk_by_character(text, chunk_size, chunk_overlap, expand_before, expand_after)
+        chunks = _chunk_by_character(text, chunk_size, chunk_overlap, expand_before, expand_after)
     elif strategy == 'paragraph':
-        return _chunk_by_paragraph(text, chunk_size, chunk_overlap, tokenizer, strict_size)
+        chunks = _chunk_by_paragraph(text, chunk_size, chunk_overlap, tokenizer, strict_size)
     elif strategy == 'semantic':
         if vectorizer_fn is None:
              raise ValueError("vectorizer_fn is required for 'semantic' strategy")
-        return _chunk_semantic(text, chunk_size, tokenizer, vectorizer_fn, similarity_threshold, initial_semantic_blocks, strict_size)
+        chunks = _chunk_semantic(text, chunk_size, tokenizer, vectorizer_fn, similarity_threshold, initial_semantic_blocks, strict_size)
     elif strategy == 'recursive':
-        return _chunk_recursive(text, chunk_size, chunk_overlap, tokenizer, strict_size)
+        chunks = _chunk_recursive(text, chunk_size, chunk_overlap, tokenizer, strict_size)
     else:
         raise ValueError(f"Unknown chunking strategy: '{strategy}'")
+
+    ASCIIColors.debug("Chunking complete.")
+    return chunks
 
 def _get_length(text: str, tokenizer: Optional[Any]) -> int:
     if tokenizer:

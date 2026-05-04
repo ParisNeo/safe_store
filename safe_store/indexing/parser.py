@@ -340,6 +340,7 @@ def parse_docx(file_path: Union[str, Path]) -> str:
     Parses a DOCX file to extract text content using python-docx.
     """
     _file_path = Path(file_path)
+    ASCIIColors.debug(f"Attempting to parse DOCX file: {_file_path}")
     try:
         from docx import Document
         from docx.opc.exceptions import PackageNotFoundError

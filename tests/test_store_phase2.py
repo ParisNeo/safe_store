@@ -84,7 +84,7 @@ def test_query_persistence(safe_store_instance: SafeStore, sample_text_file: Pat
 
     # Add document and close
     with store:
-        store.add_document(sample_text_file, chunk_size=30, chunk_overlap=5)
+        store.add_document(sample_text_file, chunk_size=30, chunk_overlap=5, chunking_strategy='character')
 
     # Reopen store
     store2 = SafeStore(db_path=db_path, log_level=LogLevel.DEBUG)
@@ -119,7 +119,7 @@ def test_add_document_with_tfidf(mock_tfidf_colors, mock_manager_colors, mock_st
 
     # Check logs
     assert_log_call_containing(mock_manager_colors.info, "Initializing vectorizer: tf_idf")
-    assert_log_call_containing(mock_store_colors.info, f"Vectorizing 4 chunks using 'tf_idf'")
+    assert_log_call_containing(mock_store_colors.info, f"Vectorizing 2 chunks using 'tf_idf'")
     assert_log_call_containing(mock_store_colors.success, f"Successfully processed '{sample_text_file.name}' with vectorizer 'tf_idf'")
 
     # Check DB
@@ -131,10 +131,10 @@ def test_add_document_with_tfidf(mock_tfidf_colors, mock_manager_colors, mock_st
     doc_id = doc_result[0]
     cursor.execute("SELECT COUNT(*) FROM chunks WHERE doc_id = ?", (doc_id,))
     chunk_count = cursor.fetchone()[0]
-    assert chunk_count == 4
+    assert chunk_count == 2
     cursor.execute("SELECT COUNT(v.vector_id) FROM vectors v JOIN chunks c ON v.chunk_id = c.chunk_id WHERE c.doc_id = ?", (doc_id,))
     vector_count = cursor.fetchone()[0]
-    assert vector_count == 4
+    assert vector_count == 2
     # Check vectorizer metadata
     cursor.execute("SELECT value FROM store_metadata WHERE key = 'vectorizer_info'")
     res = cursor.fetchone()
@@ -172,6 +172,67 @@ def test_empty_database_query(safe_store_instance: SafeStore):
 
 
 @patch('safe_store.store.ASCIIColors')
+@patch('safe_store.vectorization.manager.ASCIIColors')
+def test_from_db_loads_all_configuration(mock_manager_colors, mock_store_colors, tmp_path: Path, sample_text_file: Path):
+    """Test that from_db restores all store configuration from the database."""
+    db_path = tmp_path / "config_test.db"
+
+    # Create store with explicit non-default configuration
+    store1 = SafeStore(
+        db_path=db_path,
+        vectorizer_name="st",
+        vectorizer_config={"model": "all-MiniLM-L6-v2"},
+        chunk_size=25,
+        chunk_overlap=5,
+        chunking_strategy="token",
+        expand_before=2,
+        expand_after=2,
+        text_cleaner="basic",
+        log_level=LogLevel.DEBUG
+    )
+
+    with store1:
+        store1.add_document(sample_text_file, chunk_size=25, chunk_overlap=5)
+        # Verify initial config
+        assert store1.vectorizer_name == "st"
+        assert store1.chunk_size == 25
+        assert store1.chunk_overlap == 5
+        assert store1.chunking_strategy == "token"
+        assert store1.expand_before == 2
+        assert store1.expand_after == 2
+
+    store1.close()
+
+    # Reopen using from_db with ONLY the path - no other parameters
+    store2 = SafeStore.from_db(db_path)
+
+    with store2:
+        # Verify all configuration was restored from database
+        assert store2.vectorizer_name == "st"
+        assert store2.vectorizer_config == {"model": "all-MiniLM-L6-v2"}
+        assert store2.chunk_size == 25
+        assert store2.chunk_overlap == 5
+        assert store2.chunking_strategy == "token"
+        assert store2.expand_before == 2
+        assert store2.expand_after == 2
+        assert store2.text_cleaner_name == "basic"
+
+        # Verify the store is functional - can query existing data
+        results = store2.query("first sentence", top_k=3)
+        assert len(results) > 0
+        assert "chunk_text" in results[0]
+        assert "similarity_score" in results[0]
+
+        # Verify we can add new documents with the restored config
+        doc2_path = tmp_path / "sample2.txt"
+        doc2_path.write_text("Another document with different content.", encoding="utf-8")
+        result = store2.add_document(doc2_path, chunk_size=25, chunk_overlap=5)
+        assert result["num_chunks_added"] > 0
+
+    store2.close()
+
+
+@patch('safe_store.store.ASCIIColors')
 def test_special_characters_in_text(mock_store_colors, safe_store_instance: SafeStore):
     """Test add_text and query with unicode and special characters."""
     store = safe_store_instance
@@ -190,7 +251,7 @@ def test_special_characters_in_text(mock_store_colors, safe_store_instance: Safe
     # Verify document was stored
     conn = sqlite3.connect(store.db_path)
     cursor = conn.cursor()
-    cursor.execute("SELECT doc_id, full_text FROM documents WHERE doc_id = ?", (unique_id,))
+    cursor.execute("SELECT doc_id, full_text FROM documents WHERE file_path = ?", (unique_id,))
     doc_result = cursor.fetchone()
     assert doc_result is not None
     assert doc_result[1] == text

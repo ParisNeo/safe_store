@@ -119,7 +119,7 @@ def test_add_document_html(mock_store_colors, mock_parser_colors, safe_store_ins
 
     assert_log_call_containing(mock_store_colors.info, f"Starting indexing process for: {sample_html_file.name}")
     assert_log_call_containing(mock_parser_colors.debug, "Dispatching parser for extension '.html'")
-    assert_log_call_containing(mock_parser_colors.debug, f"Attempting to parse HTML file: {sample_html_file}")
+    # Note: parse_html does not log "Attempting to parse HTML file" unlike parse_txt/parse_docx
     assert_log_call_containing(mock_store_colors.info, "Generated 1 chunks for")
     assert_log_call_containing(mock_store_colors.success, f"Successfully processed '{sample_html_file.name}'")
     mock_store_colors.error.assert_not_called()

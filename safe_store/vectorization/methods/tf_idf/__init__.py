@@ -4,6 +4,7 @@ from typing import List, Optional, Dict, Any
 import pickle
 from safe_store.vectorization.base import BaseVectorizer
 from safe_store.core.exceptions import ConfigurationError, VectorizationError
+from ascii_colors import ASCIIColors
 import pipmaster as pm
 
 class_name = "TfIdfVectorizer"
