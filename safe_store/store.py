@@ -104,8 +104,8 @@ class SafeStore:
             self._manual_cleanup_temp_files_on_error()
             raise e
 
-        @classmethod
-        def from_db(cls, db_path: Union[str, Path], **kwargs) -> "SafeStore":
+    @classmethod
+    def from_db(cls, db_path: Union[str, Path], **kwargs) -> "SafeStore":
         """
         Instantiate SafeStore from a database file, reading stored configuration
         from the 'store_config' metadata key and merging with any provided kwargs.
@@ -130,7 +130,7 @@ class SafeStore:
         merged_config = {**stored_config, **kwargs}
         return cls(db_path=db_path, **merged_config)
 
-        def _setup_paths_and_locks(self, db_path):
+    def _setup_paths_and_locks(self, db_path):
         db_path_input_str = str(db_path).lower() if db_path is not None else IN_MEMORY_DB_INDICATOR
         if db_path_input_str == IN_MEMORY_DB_INDICATOR:
             self.db_path = IN_MEMORY_DB_INDICATOR
