@@ -271,9 +271,34 @@ class OpenAIVectorizer(BaseVectorizer):
 
     @staticmethod
     def list_models(**kwargs) -> List[str]:
-        """Returns a list of recommended OpenAI embedding models."""
-        return [
+        """Lists available embedding models from OpenAI using the official API, falling back to a recommended list if unavailable."""
+        default_models = [
             "text-embedding-3-small",
             "text-embedding-3-large",
             "text-embedding-ada-002",
         ]
+
+        if not _OPENAI_AVAILABLE:
+            return default_models
+
+        # Attempt to retrieve API key and base URL from arguments or environment
+        api_key = kwargs.get("api_key") or os.environ.get("OPENAI_API_KEY")
+        base_url = kwargs.get("base_url")
+
+        if not api_key:
+            return default_models
+
+        try:
+            client = openai.OpenAI(api_key=api_key, base_url=base_url)
+            models_response = client.models.list()
+
+            # Filter for models containing 'embed' to isolate embedding models
+            embedding_models = [
+                model.id for model in models_response.data 
+                if "embed" in model.id.lower()
+            ]
+
+            return embedding_models if embedding_models else default_models
+        except Exception as e:
+            ASCIIColors.warning(f"Failed to dynamically list OpenAI models: {e}. Falling back to default list.")
+            return default_models
