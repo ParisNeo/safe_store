@@ -11,10 +11,18 @@ from safe_store import SafeStore, BM25Retriever, LogLevel
 
 
 def cleanup_db(db_file: str):
-    """Cleans up database and lock artifacts."""
+    """Cleans up database and lock artifacts with Windows lock safety."""
+    import gc
+    import time
+    gc.collect()
     for ext in ["", ".lock", "-wal", "-shm"]:
         p = Path(f"{db_file}{ext}")
-        p.unlink(missing_ok=True)
+        for _ in range(5):
+            try:
+                p.unlink(missing_ok=True)
+                break
+            except PermissionError:
+                time.sleep(0.05)
 
 
 def main():
@@ -25,15 +33,27 @@ def main():
     print(" SafeStore Tri-Modal Hybrid Retrieval (Dense + BM25 Lexical + RRF) ")
     print("=" * 70)
 
-    # 1. Initialize SafeStore with Sentence Transformers vectorizer
-    store = SafeStore(
-        db_path=db_file,
-        vectorizer_name="st",
-        vectorizer_config={"model": "all-MiniLM-L6-v2"},
-        chunk_size=80,
-        chunk_overlap=10,
-        log_level=LogLevel.INFO
-    )
+    # 1. Initialize SafeStore with Sentence Transformers vectorizer (or fallback)
+    try:
+        store = SafeStore(
+            db_path=db_file,
+            vectorizer_name="st",
+            vectorizer_config={"model": "all-MiniLM-L6-v2"},
+            chunk_size=80,
+            chunk_overlap=10,
+            log_level=LogLevel.INFO
+        )
+    except Exception as e:
+        print(f"\n[!] Notice: Sentence-Transformers initialization failed: {e}")
+        print("[!] If you see 'operator torchvision::nms does not exist', run: pip uninstall -y torchvision")
+        print("[!] Falling back to 'tfidf' vectorizer for this demonstration...\n")
+        store = SafeStore(
+            db_path=db_file,
+            vectorizer_name="tfidf",
+            chunk_size=80,
+            chunk_overlap=10,
+            log_level=LogLevel.INFO
+        )
 
     with store:
         print("\n[Step 1] Ingesting Technical Documentation...")

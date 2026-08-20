@@ -20,10 +20,18 @@ from safe_store import SafeStore, GraphStore, TBoxManager, TabularMapper, LogLev
 
 
 def cleanup_demo_files(db_file: str, work_dir: Path):
-    """Cleans up database and workspace directory artifacts."""
+    """Cleans up database and workspace directory artifacts with Windows lock safety."""
+    import gc
+    import time
+    gc.collect()
     for ext in ["", ".lock", "-wal", "-shm"]:
         p = Path(f"{db_file}{ext}")
-        p.unlink(missing_ok=True)
+        for _ in range(5):
+            try:
+                p.unlink(missing_ok=True)
+                break
+            except PermissionError:
+                time.sleep(0.05)
     if work_dir.exists():
         shutil.rmtree(work_dir, ignore_errors=True)
 
@@ -126,7 +134,11 @@ P3,Charlie Brown,Security Lead,C2,CyberShield Labs,PRJ-903,Quantum Firewall,2200
     # -------------------------------------------------------------------------
     # 3. Initialize SafeStore and Ingest Data via TabularMapper
     # -------------------------------------------------------------------------
-    store = SafeStore(db_path=db_file, vectorizer_name="st", log_level=LogLevel.INFO)
+    try:
+        store = SafeStore(db_path=db_file, vectorizer_name="st", log_level=LogLevel.INFO)
+    except Exception as e:
+        print(f"\n[!] Notice: ST Vectorizer fallback to TF-IDF: {e}\n")
+        store = SafeStore(db_path=db_file, vectorizer_name="tfidf", log_level=LogLevel.INFO)
 
     with store:
         mapper = TabularMapper(store=store, tbox=tbox)

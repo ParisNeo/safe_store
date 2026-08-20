@@ -10,7 +10,14 @@ import pipmaster as pm
 class_name="STVectorizer"
 
 try:
-    pm.ensure_packages(["torch","torchvision","sentence-transformers"])
+    pm.ensure_packages(["torch", "sentence-transformers"])
+    # Proactively test if torchvision is present but broken; mask it out so transformers stays in text-only mode
+    try:
+        import torchvision
+    except Exception:
+        import sys
+        sys.modules["torchvision"] = None
+
     from sentence_transformers import SentenceTransformer
 except Exception as e:
     trace_exception(e)

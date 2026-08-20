@@ -26,7 +26,19 @@ from safe_store.vectorization.base import BaseVectorizer
 from safe_store.vectorization.utils import load_vectorizer_module
 from safe_store.processing.text_cleaning import get_cleaner
 from safe_store.processing.tokenizers import get_tokenizer
-from ascii_colors import ASCIIColors, LogLevel
+from enum import IntEnum
+from ascii_colors import ASCIIColors
+
+try:
+    from ascii_colors import LogLevel as _ASCIILogLevel
+    LogLevel = _ASCIILogLevel
+except (ImportError, AttributeError):
+    class LogLevel(IntEnum):
+        DEBUG = 10
+        INFO = 20
+        WARNING = 30
+        ERROR = 40
+        CRITICAL = 50
 
 DEFAULT_LOCK_TIMEOUT: int = 60
 TEMP_FILE_DB_INDICATOR = ":tempfile:"
@@ -137,6 +149,13 @@ class SafeStore:
             self._connect_and_initialize()
             self._initialize_and_verify_vectorizer()
         except Exception as e:
+            if self.conn:
+                try:
+                    self.conn.close()
+                except Exception:
+                    pass
+                self.conn = None
+            self._is_closed = True
             self._manual_cleanup_temp_files_on_error()
             raise e
 

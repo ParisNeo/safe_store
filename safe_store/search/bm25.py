@@ -79,6 +79,7 @@ class BM25Retriever:
         self.conn.text_factory = bytes
         cursor = self.conn.cursor()
         rows = cursor.execute(sql, (fts_query, top_k)).fetchall()
+        cursor.close()
         self.conn.text_factory = original_factory
 
         for row in rows:
@@ -115,6 +116,7 @@ class BM25Retriever:
         self.conn.text_factory = bytes
         cursor = self.conn.cursor()
         rows = cursor.execute(sql).fetchall()
+        cursor.close()
         self.conn.text_factory = original_factory
 
         scored = []
