@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - feat(vectorization): add detailed ASCII info for vectorizer initialization
 
+## [2026-08-20 21:58]
+
+- docs(readme): add W3C SPARQL 1.1 query forms cheat sheet
+
 ## [2026-08-20 21:53]
 
 - fix: improve Windows file lock handling and vectorizer stability

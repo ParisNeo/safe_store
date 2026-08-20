@@ -458,6 +458,19 @@ print("Encrypted lifecycle demo complete.")
 
 ---
 
+## 🔍 W3C SPARQL 1.1 Query Forms Cheat Sheet
+
+`safe_store` natively executes all four standard W3C SPARQL 1.1 query forms across your knowledge graph:
+
+| Query Form | Purpose | Return Type | Typical Use Case |
+|:---|:---|:---|:---|
+| **`SELECT`** | Tabular projections across graph patterns | `{"head": {"vars": [...]}, "results": {"bindings": [...]}}` | Relational multi-hop traversals, aggregations (`COUNT`, `GROUP BY`), and filtered lookups. |
+| **`ASK`** | Boolean existence test | `{"boolean": True / False}` | Fast sanity checking and compliance verification without retrieving payloads. |
+| **`CONSTRUCT`** | Subgraph transformation & inference | `{"triples": [{"subject": ..., "predicate": ..., "object": ...}]}` | Transforming schemas, creating direct shortcut edges, or exporting custom RDF subgraphs. |
+| **`DESCRIBE`** | Resource neighborhood extraction | `{"triples": [...]}` | Pulling all known incoming and outgoing triples associated with an entity. |
+
+---
+
 ## 📊 Performance Benchmarks
 
 Typical benchmarks measured on consumer hardware (Intel i7 / 16GB RAM / SSD):
