@@ -51,7 +51,7 @@ def connect_db(db_path: Union[str, Path]) -> sqlite3.Connection:
         raise DatabaseError(msg) from e
 
 def initialize_schema(conn: sqlite3.Connection) -> None:
-    """Initializes the database schema for a single-vectorizer design."""
+    """Initializes the database schema for vector, graph, and lexical FTS5 search."""
     cursor = conn.cursor()
     try:
         cursor.execute("""
@@ -76,16 +76,28 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunk_doc_id ON chunks (doc_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunk_graph_processed_at ON chunks (graph_processed_at);")
 
-        # The vectors table is simplified, removing method_id.
+        # FTS5 virtual table for lexical BM25 search
+        try:
+            cursor.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
+                chunk_text,
+                content='chunks',
+                content_rowid='chunk_id',
+                tokenize='porter unicode61'
+            );""")
+        except sqlite3.OperationalError:
+            # Fallback if FTS5 not built into this SQLite library
+            pass
+
+        # The vectors table
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS vectors (
             vector_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chunk_id INTEGER NOT NULL UNIQUE, -- Each chunk has only one vector now
+            chunk_id INTEGER NOT NULL UNIQUE,
             vector_data BLOB NOT NULL,
             FOREIGN KEY (chunk_id) REFERENCES chunks (chunk_id) ON DELETE CASCADE
         );""")
         
-        # This table now stores vectorizer info.
         cursor.execute("CREATE TABLE IF NOT EXISTS store_metadata (key TEXT PRIMARY KEY, value TEXT);")
 
         # PageIndex tables
@@ -104,7 +116,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         );""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pages_doc_parent ON pages (doc_id, parent_id);")
 
-        # Graph-related tables remain unchanged.
+        # Graph-related tables
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS graph_nodes (
             node_id INTEGER PRIMARY KEY AUTOINCREMENT, node_label TEXT NOT NULL, node_properties TEXT,
@@ -112,6 +124,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         );""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_graph_node_label ON graph_nodes (node_label);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_graph_node_signature ON graph_nodes (unique_signature);")
+        
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS graph_relationships (
             relationship_id INTEGER PRIMARY KEY AUTOINCREMENT, source_node_id INTEGER NOT NULL,
@@ -121,6 +134,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         );""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_graph_rel_source_type ON graph_relationships (source_node_id, relationship_type);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_graph_rel_target_type ON graph_relationships (target_node_id, relationship_type);")
+        
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS node_chunk_links (
             node_id INTEGER NOT NULL, chunk_id INTEGER NOT NULL,
@@ -130,7 +144,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         );""")
 
         conn.commit()
-        ASCIIColors.debug("Database schema verified/initialized successfully (single vectorizer design).")
+        ASCIIColors.debug("Database schema verified/initialized successfully.")
     except sqlite3.Error as e:
         conn.rollback()
         raise DatabaseError(f"Schema initialization error: {e}") from e
@@ -146,7 +160,6 @@ def add_document_record(conn: sqlite3.Connection, file_path: str, file_hash: Opt
         if doc_id is None: raise DatabaseError(f"Failed to get lastrowid for document '{file_path}'.")
         return doc_id
     except sqlite3.IntegrityError:
-        # If path is not unique, get the existing ID.
         existing_id = get_document_id_by_path(conn, file_path)
         if existing_id is not None: return existing_id
         raise 
@@ -165,10 +178,18 @@ def add_chunk_record(conn: sqlite3.Connection, doc_id: int, text: Union[str, byt
     cursor.execute(sql, (doc_id, text, start, end, seq, tags, 1 if is_encrypted else 0, encryption_metadata))
     chunk_id = cursor.lastrowid
     if chunk_id is None: raise DatabaseError(f"Failed to get lastrowid for chunk (doc={doc_id}, seq={seq}).")
+
+    # Keep FTS5 table in sync if present
+    try:
+        plain_text = text.decode('utf-8', errors='ignore') if isinstance(text, bytes) else str(text)
+        cursor.execute("INSERT INTO chunks_fts(rowid, chunk_text) VALUES (?, ?)", (chunk_id, plain_text))
+    except Exception:
+        pass
+
     return chunk_id
 
 def add_vector_record(conn: sqlite3.Connection, chunk_id: int, vector: np.ndarray) -> None:
-    """Adds a vector for a given chunk, simplified for single-vectorizer design."""
+    """Adds a vector for a given chunk."""
     sql = "INSERT OR IGNORE INTO vectors (chunk_id, vector_data) VALUES (?, ?)"
     try:
         conn.execute(sql, (chunk_id, vector))
@@ -427,17 +448,6 @@ def mark_chunks_graph_processed(conn: sqlite3.Connection, chunk_ids: List[int]) 
         conn.execute(f"UPDATE chunks SET graph_processed_at = CURRENT_TIMESTAMP WHERE chunk_id IN ({placeholders})", tuple(chunk_ids))
     except sqlite3.Error as e:
         raise GraphDBError(f"Error marking chunks as graph processed: {e}") from e
-
-# --- Complex Graph Operations ---
-def merge_nodes_db(conn, source_node_id, target_node_id):
-    if source_node_id == target_node_id: return
-    try:
-        conn.execute("UPDATE graph_relationships SET target_node_id = ? WHERE target_node_id = ?", (target_node_id, source_node_id))
-        conn.execute("UPDATE graph_relationships SET source_node_id = ? WHERE source_node_id = ?", (target_node_id, source_node_id))
-        conn.execute("INSERT OR IGNORE INTO node_chunk_links (node_id, chunk_id) SELECT ?, chunk_id FROM node_chunk_links WHERE node_id = ?", (target_node_id, source_node_id))
-        conn.execute("DELETE FROM graph_nodes WHERE node_id = ?", (source_node_id,))
-    except sqlite3.Error as e:
-        raise GraphDBError(f"DB error merging node {source_node_id} into {target_node_id}: {e}") from e
 
 def get_chunk_raw_details_by_id(conn: sqlite3.Connection, chunk_id: int) -> Optional[Tuple]:
     """Fetches raw details for a single chunk by its ID, returning bytes for text/blobs."""

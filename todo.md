@@ -1,6 +1,7 @@
-Add SPARQL support
-If an entry fails it must not destroy all the workflow
-Make sure the file lock is minimal (only lock when performing an IO task). handle the case of dead lock files (left over from previous time)
-
-
-Use siglip to encode images and create an image database. make the database capable of storing images.
+- [x] Add Full W3C SPARQL 1.1 Engine (SELECT, ASK, CONSTRUCT, DESCRIBE)
+- [x] TBox and ABox Ontology Management (RDFS/OWL, class hierarchy reasoning, prompt schemas)
+- [x] Declarative Tabular-to-Graph Mapping (CSV, XLSX, SQLite tables to RDF triples)
+- [x] Tri-Modal Hybrid Retrieval with BM25 Lexical (SQLite FTS5) + Dense Vectors + RRF Rank Fusion
+- [x] Robust per-chunk savepoints so single failed entries do not break batch ingestion
+- [x] Minimal write-locking and automatic stale lock file recovery
+- [ ] Use SigLIP / CLIP to encode images and support multi-modal image vector database storage

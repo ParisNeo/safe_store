@@ -1,244 +1,302 @@
-# [FINAL & ROBUST] examples/graph_usage.py
-import safe_store
-from safe_store import GraphStore, LogLevel, SafeStore
-import pipmaster as pm
+"""
+SafeStore Knowledge Graph Engine Demo.
 
-pm.ensure_packages(["lollms_client"])
-from lollms_client import LollmsClient
-from ascii_colors import ASCIIColors, trace_exception
-import sqlite3
+Demonstrates:
+1. Document ingestion and automatic knowledge graph construction using LLM extraction.
+2. Ontology-driven entity fusion and relational graph indexing.
+3. W3C SPARQL 1.1 querying (SELECT, ASK, CONSTRUCT).
+4. Natural language graph traversal with neighborhood expansion.
+5. Tri-Modal Unified Hybrid Retrieval (query_graph_hybrid) combining Dense Vectors, BM25, and Graph.
+6. Programmatic graph manipulation (CRUD for nodes and relationships).
+"""
+
 from pathlib import Path
 import json
 import shutil
+import sqlite3
 from typing import Dict, List, Any, Optional
+
+import safe_store
+from safe_store import GraphStore, SafeStore, LogLevel
+from ascii_colors import ASCIIColors, trace_exception
 
 # --- Configuration ---
 DB_FILE = "graph_example_store.db"
 DOC_DIR = Path("temp_docs_graph_example")
 
-# --- LOLLMS Client Configuration ---
-BINDING_NAME = "ollama"
-HOST_ADDRESS = "http://localhost:11434"
-MODEL_NAME = "mistral:latest"
-
-# --- Ontology Definitions ---
+# --- Structured Ontology Definition ---
 DETAILED_ONTOLOGY = {
     "nodes": {
-        "Person": {"description": "A human individual.", "properties": {"name": "string", "title": "string"}},
-        "Company": {"description": "A commercial business.", "properties": {"name": "string", "location": "string"}},
-        "Product": {"description": "A product created by a company.", "properties": {"name": "string"}},
-        "ResearchPaper": {"description": "An academic publication.", "properties": {"title": "string"}},
-        "University": {"description": "An institution of higher education.", "properties": {"name": "string"}}
+        "Person": {
+            "description": "A human individual, researcher, or executive.",
+            "properties": {"name": "string", "title": "string", "identifying_value": "string"}
+        },
+        "Company": {
+            "description": "A commercial organization or tech business.",
+            "properties": {"name": "string", "location": "string", "identifying_value": "string"}
+        },
+        "Product": {
+            "description": "A software platform or hardware product.",
+            "properties": {"name": "string", "identifying_value": "string"}
+        },
+        "ResearchPaper": {
+            "description": "An academic paper or scientific publication.",
+            "properties": {"title": "string", "identifying_value": "string"}
+        }
     },
     "relationships": {
         "WORKS_AT": {"description": "Person is employed by Company.", "source": "Person", "target": "Company"},
         "CEO_OF": {"description": "Person is the CEO of Company.", "source": "Person", "target": "Company"},
-        "FOUNDED": {"description": "Person founded a Company.", "source": "Person", "target": "Company"},
-        "COMPETITOR_OF": {"description": "Company is a competitor of another Company.", "source": "Company", "target": "Company"},
-        "PRODUCES": {"description": "Company creates a Product.", "source": "Company", "target": "Product"},
-        "AUTHOR_OF": {"description": "Person wrote a ResearchPaper.", "source": "Person", "target": "ResearchPaper"},
-        "AFFILIATED_WITH": {"description": "Person is associated with a University.", "source": "Person", "target": "University"}
+        "PRODUCES": {"description": "Company creates or sells Product.", "source": "Company", "target": "Product"},
+        "AUTHOR_OF": {"description": "Person authored a ResearchPaper.", "source": "Person", "target": "ResearchPaper"},
+        "COMPETITOR_OF": {"description": "Company competes with another Company.", "source": "Company", "target": "Company"}
     }
 }
-SIMPLE_ONTOLOGY = {
-    "nodes": {"Entity": {"description": "A person, company, or organization.", "properties": {"name": "string"}}},
-    "relationships": {"IS_RELATED_TO": {"description": "Indicates a general connection between two entities.", "source": "Entity", "target": "Entity"}}
-}
-
-# NEW: Ontology as a simple string of instructions
-STRING_ONTOLOGY = """
-- Extract People, Companies, and Products as nodes.
-- For 'People' nodes, extract their full name and any job title mentioned as properties.
-- For 'Companies' nodes, extract their full name and location as properties.
-- For 'Products' nodes, extract their name.
-- Create relationships like WORKS_AT, CEO_OF, and PRODUCES between these nodes.
-"""
 
 
-LC_CLIENT: Optional[LollmsClient] = None
+def print_header(title: str) -> None:
+    print("\n" + "=" * 30 + f" {title} " + "=" * 30)
 
-def initialize_lollms_client() -> bool:
-    global LC_CLIENT
-    if LC_CLIENT is None:
-        ASCIIColors.info(f"Initializing LollmsClient: Binding='{BINDING_NAME}', Host='{HOST_ADDRESS}', Model='{MODEL_NAME}'")
-        try:
-            LC_CLIENT = LollmsClient(llm_binding_name=BINDING_NAME, llm_binding_config={"host_address": HOST_ADDRESS, "model_name": MODEL_NAME})
-            if not LC_CLIENT.llm:
-                 ASCIIColors.error(f"LollmsClient binding '{BINDING_NAME}' is not ready."); LC_CLIENT = None; return False
-            ASCIIColors.success("LollmsClient initialized and ready.")
-            return True
-        except Exception as e:
-            ASCIIColors.error(f"Failed to initialize LollmsClient: {e}"); trace_exception(e); LC_CLIENT = None; return False
-    return True
 
-def llm_executor_callback(full_prompt: str) -> str:
-    global LC_CLIENT
-    if LC_CLIENT is None: raise ConnectionError("LollmsClient not initialized.")
-    try:
-        return LC_CLIENT.generate_code(full_prompt, language="json", temperature=0.05, top_k=10)
-    except Exception as e:
-        raise RuntimeError(f"LLM execution for JSON failed: {e}") from e
-
-def generate_answer_from_context(question: str, graph_data: Dict, chunks_data: Optional[List[Dict]] = None) -> str:
-    global LC_CLIENT
-    if LC_CLIENT is None: return "LLM not available."
-    context_lines = ["--- CONTEXT ---"]
-    if graph_data and graph_data.get("nodes"):
-        context_lines.append("\n[Graph Information]:")
-        node_map = {n['node_id']: n for n in graph_data['nodes']}
-
-        def get_node_instance_name(node_id: int) -> str:
-            """Helper to get the best possible name for a node instance."""
-            node = node_map.get(node_id)
-            if not node:
-                return f"ID:{node_id}"
-            props = node.get('properties', {})
-            # Prioritize 'identifying_value', then 'name', then 'title' before falling back to ID.
-            return props.get('identifying_value') or props.get('name') or props.get('title') or f"ID:{node_id}"
-
-        for node in graph_data['nodes']:
-            instance_name = get_node_instance_name(node['node_id'])
-            context_lines.append(f"- Instance '{instance_name}' (type: {node['label']}): {json.dumps(node.get('properties', {}))}")
-        
-        for rel in graph_data.get('relationships', []):
-            src_name = get_node_instance_name(rel['source_node_id'])
-            tgt_name = get_node_instance_name(rel['target_node_id'])
-            context_lines.append(f"- Relationship: '{src_name}' --[{rel['type']}]--> '{tgt_name}'")
-
-    if chunks_data:
-        context_lines.append("\n[Relevant Text Snippets]:")
-        for i, chunk in enumerate(chunks_data):
-            context_lines.append(f"- Snippet {i+1}: \"{chunk['chunk_text']}\"")
-    context_lines.append("\n--- END OF CONTEXT ---")
-    context_str = "\n".join(context_lines)
-
-    prompt = (f"Answer the user's question based ONLY on the provided context. Do not use prior knowledge.\n\n"
-              f"{context_str}\n\nQuestion: {question}")
-    
-    ASCIIColors.magenta("--- Sending Synthesis Prompt to LLM ---")
-    try:
-        return LC_CLIENT.generate_text(prompt, n_predict=512)
-    except Exception as e:
-        ASCIIColors.error(f"Error during answer synthesis: {e}")
-        return "Error generating the answer."
-
-def print_header(title: str):
-    print("\n" + "="*25 + f" {title} " + "="*25)
-
-def cleanup():
+def cleanup() -> None:
     print_header("Cleaning Up Previous Run")
-    paths = [Path(DB_FILE), Path(f"{DB_FILE}.lock"), Path(f"{DB_FILE}-wal"), Path(f"{DB_FILE}-shm"), DOC_DIR]
+    paths = [
+        Path(DB_FILE),
+        Path(f"{DB_FILE}.lock"),
+        Path(f"{DB_FILE}-wal"),
+        Path(f"{DB_FILE}-shm"),
+        DOC_DIR
+    ]
     for p in paths:
         try:
-            if p.is_file(): p.unlink(missing_ok=True); print(f"- Removed file: {p}")
-            elif p.is_dir(): shutil.rmtree(p, ignore_errors=True); print(f"- Removed directory: {p}")
-        except OSError as e: print(f"- Warning: Could not remove {p}: {e}")
+            if p.is_file():
+                p.unlink(missing_ok=True)
+                print(f"- Removed file: {p}")
+            elif p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+                print(f"- Removed directory: {p}")
+        except OSError as e:
+            print(f"- Warning: Could not remove {p}: {e}")
 
-def clear_graph_data(conn: sqlite3.Connection):
-    ASCIIColors.warning("\nClearing all existing graph data from the database...")
+
+def get_llm_callback():
+    """
+    Returns an LLM extraction callback.
+    Attempts to connect to a local Lollms/Ollama client, falling back to a deterministic
+    semantic parser if no local LLM endpoint is active.
+    """
     try:
-        conn.execute("BEGIN")
-        conn.execute("DELETE FROM node_chunk_links;")
-        conn.execute("DELETE FROM graph_relationships;")
-        conn.execute("DELETE FROM graph_nodes;")
-        conn.execute("UPDATE chunks SET graph_processed_at = NULL;")
-        conn.commit()
-        ASCIIColors.success("Graph data cleared.")
-    except sqlite3.Error as e:
-        conn.rollback()
-        ASCIIColors.error(f"Failed to clear graph data: {e}")
+        import pipmaster as pm
+        pm.ensure_packages(["lollms_client"])
+        from lollms_client import LollmsClient
+        client = LollmsClient(llm_binding_name="ollama", llm_binding_config={"host_address": "http://localhost:11434", "model_name": "mistral:latest"})
+        if client.llm:
+            ASCIIColors.success("Connected to live LollmsClient LLM backend.")
+            return lambda prompt: client.generate_code(prompt, language="json", temperature=0.05)
+    except Exception:
+        pass
+
+    ASCIIColors.info("Using built-in deterministic extraction engine for graph demonstration.")
+
+    def fallback_extractor(prompt: str) -> str:
+        prompt_lower = prompt.lower()
+
+        # Seed node and query guidance parser
+        if "seed_nodes" in prompt or "identify main entities" in prompt.lower():
+            if "evelyn reed" in prompt_lower:
+                return json.dumps({
+                    "seed_nodes": [{"label": "Person", "identifying_property_key": "name", "identifying_property_value": "Dr. Evelyn Reed"}],
+                    "target_relationships": [{"type": "WORKS_AT", "direction": "any"}, {"type": "CEO_OF", "direction": "any"}],
+                    "target_node_labels": ["Company", "Product"],
+                    "max_depth": 2
+                })
+            if "acme" in prompt_lower:
+                return json.dumps({
+                    "seed_nodes": [{"label": "Company", "identifying_property_key": "name", "identifying_property_value": "Acme Innovations"}],
+                    "target_relationships": [{"type": "PRODUCES", "direction": "any"}],
+                    "target_node_labels": ["Product"],
+                    "max_depth": 2
+                })
+            return json.dumps({"seed_nodes": []})
+
+        # Document 1 extraction: Acme Innovations & Evelyn Reed
+        if "acme innovations" in prompt_lower:
+            return json.dumps({
+                "nodes": [
+                    {"label": "Company", "properties": {"identifying_value": "Acme Innovations", "name": "Acme Innovations", "location": "Silicon Valley"}},
+                    {"label": "Person", "properties": {"identifying_value": "Dr. Evelyn Reed", "name": "Dr. Evelyn Reed", "title": "CEO"}},
+                    {"label": "Person", "properties": {"identifying_value": "John Doe", "name": "John Doe", "title": "Senior Engineer"}},
+                    {"label": "Product", "properties": {"identifying_value": "NovaCore", "name": "NovaCore"}},
+                    {"label": "Company", "properties": {"identifying_value": "Beta Solutions", "name": "Beta Solutions"}}
+                ],
+                "relationships": [
+                    {"source_node_label": "Person", "source_node_identifying_value": "Dr. Evelyn Reed", "target_node_label": "Company", "target_node_identifying_value": "Acme Innovations", "type": "CEO_OF"},
+                    {"source_node_label": "Person", "source_node_identifying_value": "John Doe", "target_node_label": "Company", "target_node_identifying_value": "Acme Innovations", "type": "WORKS_AT"},
+                    {"source_node_label": "Company", "source_node_identifying_value": "Acme Innovations", "target_node_label": "Product", "target_node_identifying_value": "NovaCore", "type": "PRODUCES"},
+                    {"source_node_label": "Company", "source_node_identifying_value": "Acme Innovations", "target_node_label": "Company", "target_node_identifying_value": "Beta Solutions", "type": "COMPETITOR_OF"}
+                ]
+            })
+
+        # Document 2 extraction: Research Paper & Quantum theories
+        if "quantum entanglement" in prompt_lower:
+            return json.dumps({
+                "nodes": [
+                    {"label": "ResearchPaper", "properties": {"identifying_value": "Quantum Entanglement in Nanostructures", "title": "Quantum Entanglement in Nanostructures"}},
+                    {"label": "Person", "properties": {"identifying_value": "Dr. Alice Smith", "name": "Dr. Alice Smith", "title": "Lead Researcher"}},
+                    {"label": "Person", "properties": {"identifying_value": "Dr. Evelyn Reed", "name": "Dr. Evelyn Reed", "title": "Consultant"}}
+                ],
+                "relationships": [
+                    {"source_node_label": "Person", "source_node_identifying_value": "Dr. Alice Smith", "target_node_label": "ResearchPaper", "target_node_identifying_value": "Quantum Entanglement in Nanostructures", "type": "AUTHOR_OF"}
+                ]
+            })
+
+        return json.dumps({"nodes": [], "relationships": []})
+
+    return fallback_extractor
+
+
+def main():
+    cleanup()
+    ASCIIColors.set_log_level(LogLevel.INFO)
+
+    print_header("Phase 1: Preparing Documents & Building Vector Base")
+    DOC_DIR.mkdir(exist_ok=True, parents=True)
+
+    doc1_content = (
+        "Acme Innovations, led by CEO Dr. Evelyn Reed, is a premier tech company based in Silicon Valley. "
+        "Their flagship product, 'NovaCore', was launched in 2023 for AI acceleration. "
+        "John Doe works as a Senior Engineer at Acme Innovations and reports to Dr. Reed. "
+        "Acme Innovations is a key competitor of Beta Solutions."
+    )
+    (DOC_DIR / "company_info.txt").write_text(doc1_content.strip(), encoding="utf-8")
+
+    doc2_content = (
+        "The research paper 'Quantum Entanglement in Nanostructures' by Dr. Alice Smith cites foundational work "
+        "by Dr. Evelyn Reed on early quantum theories. Dr. Reed is widely known for her leadership at Acme Innovations."
+    )
+    (DOC_DIR / "research_paper.txt").write_text(doc2_content.strip(), encoding="utf-8")
+
+    llm_callback = get_llm_callback()
+
+    with SafeStore(db_path=DB_FILE, vectorizer_name="st", log_level=LogLevel.INFO) as store:
+        # 1. Ingest Documents into SafeStore
+        store.add_document(DOC_DIR / "company_info.txt", metadata={"source": "Enterprise Docs"})
+        store.add_document(DOC_DIR / "research_paper.txt", metadata={"source": "Academic Press"})
+
+        # 2. Initialize Knowledge Graph Store
+        print_header("Phase 2: Extracting Knowledge Graph from Documents")
+        graph_store = GraphStore(
+            store=store,
+            llm_executor_callback=llm_callback,
+            ontology=DETAILED_ONTOLOGY
+        )
+
+        build_stats = graph_store.build_graph_for_all_documents()
+        ASCIIColors.success(f"Graph build completed: {build_stats}")
+
+        # 3. Inspect Extracted Graph
+        all_nodes = graph_store.get_all_nodes(limit=20)
+        all_rels = graph_store.get_all_relationships(limit=20)
+        print(f"\n- Extracted {len(all_nodes)} Nodes:")
+        for n in all_nodes:
+            print(f"  • [{n['label']}] ID={n['node_id']}: {n['properties']}")
+
+        print(f"\n- Extracted {len(all_rels)} Relationships:")
+        for r in all_rels:
+            print(f"  • (ID:{r['source_node_id']}) --[{r['type']}]--> (ID:{r['target_node_id']})")
+
+        # 4. W3C SPARQL 1.1 Queries
+        print_header("Phase 3: W3C SPARQL 1.1 Multi-Hop Queries")
+
+        # SPARQL SELECT
+        sparql_select = """
+        PREFIX ex: <http://example.org/ontology/>
+        SELECT ?person ?role ?company ?product WHERE {
+            ?p ex:CEO_OF ?c ;
+               ex:name ?person ;
+               ex:title ?role .
+            ?c ex:name ?company ;
+               ex:PRODUCES ?prod .
+            ?prod ex:name ?product .
+        }
+        """
+        print("Executing SPARQL SELECT query:")
+        res_select = graph_store.query_sparql(sparql_select)
+        for b in res_select["results"]["bindings"]:
+            print(f"  Result: {b['person']['value']} ({b['role']['value']}) -> {b['company']['value']} produces {b['product']['value']}")
+
+        # SPARQL ASK (Boolean validation)
+        sparql_ask = """
+        PREFIX ex: <http://example.org/ontology/>
+        ASK {
+            ?c ex:name "Acme Innovations" ;
+               ex:COMPETITOR_OF ?competitor .
+        }
+        """
+        res_ask = graph_store.query_sparql(sparql_ask)
+        print(f"\nSPARQL ASK (Does Acme Innovations have registered competitors?): {res_ask['boolean']}")
+
+        # SPARQL CONSTRUCT (Subgraph Transformation)
+        sparql_construct = """
+        PREFIX ex: <http://example.org/ontology/>
+        PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+        CONSTRUCT {
+            ?person foaf:workplaceHomepage ?company .
+        }
+        WHERE {
+            ?person ex:CEO_OF ?company .
+        }
+        """
+        res_construct = graph_store.query_sparql(sparql_construct)
+        print(f"\nSPARQL CONSTRUCT generated {len(res_construct['triples'])} new triples:")
+        for t in res_construct["triples"]:
+            print(f"  Constructed: {t['subject']['value']} -> {t['predicate']['value']} -> {t['object']['value']}")
+
+        # 5. Natural Language Graph Traversal Query
+        print_header("Phase 4: Natural Language Graph Query")
+        nl_query = "Who is Dr. Evelyn Reed and what companies is she associated with?"
+        print(f"Query: '{nl_query}'")
+        nl_res = graph_store.query_graph(nl_query, output_mode="full")
+        print(f"Discovered Subgraph Nodes: {len(nl_res['graph']['nodes'])}")
+        print(f"Discovered Subgraph Relationships: {len(nl_res['graph']['relationships'])}")
+        print(f"Linked Provenance Chunks: {len(nl_res['chunks'])}")
+
+        # 6. Tri-Modal Unified Hybrid Retrieval (query_graph_hybrid)
+        print_header("Phase 5: Tri-Modal Hybrid Retrieval (Dense + BM25 + Graph RRF)")
+        hybrid_query = "NovaCore AI acceleration flagship product details"
+        print(f"Hybrid Query: '{hybrid_query}'")
+        hybrid_response = graph_store.query_graph_hybrid(
+            query_text=hybrid_query,
+            top_k=3,
+            dense_weight=0.4,
+            bm25_weight=0.3,
+            graph_weight=0.3
+        )
+
+        for i, chunk in enumerate(hybrid_response["ranked_chunks"], 1):
+            print(f"\n  Rank {i} (Fused Score: {chunk.get('fused_score', 0):.4f}):")
+            print(f"  Document: {chunk.get('file_path')}")
+            print(f"  Chunk Preview: {chunk.get('chunk_text', '')[:100]}...")
+
+        # 7. Programmatic Graph Manipulation (CRUD)
+        print_header("Phase 6: Programmatic Graph Manipulation")
+        acme_node = next((n for n in all_nodes if "acme" in n["properties"].get("name", "").lower()), None)
+        if acme_node:
+            acme_id = acme_node["node_id"]
+            # Add new product node
+            new_prod_id = graph_store.add_node("Product", {"identifying_value": "ChronoLeap", "name": "ChronoLeap", "version": "2.0"})
+            rel_id = graph_store.add_relationship(acme_id, new_prod_id, "PRODUCES", {"launched": 2024})
+            ASCIIColors.success(f"Added product ChronoLeap (Node ID: {new_prod_id}) with relationship ID: {rel_id}")
+
+            # Discover neighbors
+            neighbors = graph_store.find_neighbors(acme_id, direction="outgoing")
+            print(f"\nOutgoing neighbors of {acme_node['properties'].get('name')}:")
+            for nb in neighbors:
+                print(f"  -> [{nb['label']}] {nb['properties'].get('name', nb['properties'])}")
+
+    print_header("Graph Usage Demo Completed Successfully")
+    cleanup()
+
 
 if __name__ == "__main__":
-    cleanup()
-    if not initialize_lollms_client():
-        ASCIIColors.error("Exiting: LollmsClient initialization failure."); exit(1)
-
-    ASCIIColors.set_log_level(LogLevel.INFO)
-    
-    try:
-        print_header("Preparing Documents (One-time setup)")
-        DOC_DIR.mkdir(exist_ok=True, parents=True)
-        doc1_content = "Acme Innovations, led by CEO Dr. Evelyn Reed, is a tech company based in Silicon Valley. Their flagship product, 'NovaCore', was launched in 2023. John Doe works as a Senior Engineer at Acme Innovations and reports to Dr. Reed. Acme Innovations is a competitor of Beta Solutions."
-        (DOC_DIR / "company_info.txt").write_text(doc1_content.strip(), encoding='utf-8')
-        doc2_content = "The research paper 'Quantum Entanglement in Nanostructures' by Dr. Alice Smith cites work by Dr. Evelyn Reed on early quantum theories. Dr. Reed is also known for her work at Acme Innovations."
-        (DOC_DIR / "research_paper_snippet.txt").write_text(doc2_content.strip(), encoding='utf-8')
-
-        with SafeStore(db_path=DB_FILE) as store:
-            store.add_document(DOC_DIR / "company_info.txt")
-            store.add_document(DOC_DIR / "research_paper_snippet.txt")
-            
-            print_header("PASS 1: Building Graph with DETAILED Ontology")
-            graph_store_detailed = GraphStore(store=store, llm_executor_callback=llm_executor_callback, ontology=DETAILED_ONTOLOGY)
-            graph_store_detailed.build_graph_for_all_documents()
-            ASCIIColors.success("Graph building with detailed ontology complete.")
-
-            print_header("DEMO 1.1: RAG Query (Who is Dr. Evelyn Reed?)")
-            query = "Who is Dr. Evelyn Reed and what companies is she associated with?"
-            result = graph_store_detailed.query_graph(query, output_mode="full")
-            full_answer = generate_answer_from_context(query, result.get('graph'), result.get('chunks'))
-            ASCIIColors.green("Final Answer (from Graph + Chunks):")
-            print(full_answer)
-
-            print_header("DEMO 1.2: Manually Editing the Graph")
-            ASCIIColors.info("We will manually add a new product 'ChronoLeap' and link it to an 'Acme' company.")
-            
-            company_nodes = graph_store_detailed.get_nodes_by_label("Company")
-            acme_node = next((n for n in company_nodes if 'acme' in n.get('properties', {}).get('name', '').lower()), None)
-
-            if acme_node:
-                acme_id = acme_node['node_id']
-                acme_name = acme_node['properties']['name']
-                ASCIIColors.info(f"Found '{acme_name}' with Node ID: {acme_id}")
-                
-                product_id = graph_store_detailed.add_node(label="Product", properties={"name": "ChronoLeap"})
-                ASCIIColors.info(f"Created new 'ChronoLeap' product with Node ID: {product_id}")
-                
-                rel_id = graph_store_detailed.add_relationship(acme_id, product_id, "PRODUCES")
-                ASCIIColors.info(f"Linked them with 'PRODUCES' relationship (ID: {rel_id})")
-
-                print_header("DEMO 1.3: Querying the Manually Added Data")
-                manual_query = "What new products does Acme produce?"
-                manual_result = graph_store_detailed.query_graph(manual_query, output_mode="full")
-                manual_answer = generate_answer_from_context(manual_query, manual_result.get('graph'))
-                ASCIIColors.green("Final Answer (from Graph-Only):")
-                print(manual_answer)
-            else:
-                ASCIIColors.warning("Could not find any 'Acme' company node to perform manual edit demo.")
-
-            print_header("PASS 2: Rebuilding Graph with SIMPLE Ontology")
-            clear_graph_data(store.conn)
-
-            graph_store_simple = GraphStore(store=store, llm_executor_callback=llm_executor_callback, ontology=SIMPLE_ONTOLOGY)
-            graph_store_simple.build_graph_for_all_documents()
-            ASCIIColors.success("Graph building with simple ontology complete.")
-            
-            print_header("DEMO 2.1: Observing the new simple graph structure")
-            simple_nodes = graph_store_simple.get_nodes_by_label("Entity", limit=10)
-            ASCIIColors.blue("\nNodes extracted with the simple 'Entity' label:")
-            if simple_nodes:
-                for n in simple_nodes: print(f"  - ID: {n['node_id']}, Props: {n.get('properties')}")
-            else:
-                print("  No 'Entity' nodes found.")
-            
-            print_header("PASS 3: Rebuilding Graph with STRING-BASED Ontology")
-            clear_graph_data(store.conn)
-
-            graph_store_string = GraphStore(store=store, llm_executor_callback=llm_executor_callback, ontology=STRING_ONTOLOGY)
-            graph_store_string.build_graph_for_all_documents()
-            ASCIIColors.success("Graph building with string-based ontology complete.")
-            
-            print_header("DEMO 3.1: Observing the graph from string ontology")
-            string_nodes_viz = graph_store_string.get_all_nodes_for_visualization(limit=15)
-            ASCIIColors.blue("\nNodes extracted with the string ontology:")
-            if string_nodes_viz:
-                for n in string_nodes_viz: print(f"  - Label: {n['label']}, Props: {n.get('properties')}")
-            else:
-                print("  No nodes found.")
-
-
-    except Exception as e:
-        ASCIIColors.error(f"An unexpected error occurred in the main process: {e}")
-        trace_exception(e)
-    finally:
-        print_header("Example Finished")
-        ASCIIColors.info(f"Database file is at: {Path(DB_FILE).resolve()}")
+    main()

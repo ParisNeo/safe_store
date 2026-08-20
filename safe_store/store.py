@@ -19,6 +19,8 @@ from safe_store.core.exceptions import (
 from safe_store.indexing import parser, chunking
 from safe_store.indexing.page_index import PageIndex
 from safe_store.search import similarity
+from safe_store.search.bm25 import BM25Retriever
+from safe_store.search.fusion import reciprocal_rank_fusion
 from safe_store.vectorization.manager import VectorizationManager
 from safe_store.vectorization.base import BaseVectorizer
 from safe_store.vectorization.utils import load_vectorizer_module
@@ -33,6 +35,7 @@ IN_MEMORY_DB_INDICATOR = ":memory:"
 class SafeStore:
     """
     Manages a local vector store with a single, fixed vectorizer and chunking strategy.
+    Supports dense vector similarity, lexical BM25 search, and tri-modal hybrid retrieval.
     """
     DEFAULT_VECTORIZER_NAME: str = "st"
     DEFAULT_VECTORIZER_CONFIG: Dict[str, Any] = {"model": "all-MiniLM-L6-v2"}
@@ -61,37 +64,21 @@ class SafeStore:
     ):
         ASCIIColors.set_log_level(log_level)
 
-        # --- Infer configuration from existing database if possible ---
-        # Build a dict of explicitly provided non-None arguments
         explicit_kwargs = {}
-        if vectorizer_name is not None:
-            explicit_kwargs['vectorizer_name'] = vectorizer_name
-        if vectorizer_config is not None:
-            explicit_kwargs['vectorizer_config'] = vectorizer_config
-        if chunk_size is not None:
-            explicit_kwargs['chunk_size'] = chunk_size
-        if chunk_overlap is not None:
-            explicit_kwargs['chunk_overlap'] = chunk_overlap
-        if chunking_strategy is not None:
-            explicit_kwargs['chunking_strategy'] = chunking_strategy
-        if custom_tokenizer is not None:
-            explicit_kwargs['custom_tokenizer'] = custom_tokenizer
-        if expand_before is not None:
-            explicit_kwargs['expand_before'] = expand_before
-        if expand_after is not None:
-            explicit_kwargs['expand_after'] = expand_after
-        if text_cleaner is not None:
-            explicit_kwargs['text_cleaner'] = text_cleaner
-        if name is not None:
-            explicit_kwargs['name'] = name
-        if description is not None:
-            explicit_kwargs['description'] = description
-        if metadata is not None:
-            explicit_kwargs['metadata'] = metadata
-        if chunking_kwargs is not None:
-            explicit_kwargs['chunking_kwargs'] = chunking_kwargs
+        if vectorizer_name is not None: explicit_kwargs['vectorizer_name'] = vectorizer_name
+        if vectorizer_config is not None: explicit_kwargs['vectorizer_config'] = vectorizer_config
+        if chunk_size is not None: explicit_kwargs['chunk_size'] = chunk_size
+        if chunk_overlap is not None: explicit_kwargs['chunk_overlap'] = chunk_overlap
+        if chunking_strategy is not None: explicit_kwargs['chunking_strategy'] = chunking_strategy
+        if custom_tokenizer is not None: explicit_kwargs['custom_tokenizer'] = custom_tokenizer
+        if expand_before is not None: explicit_kwargs['expand_before'] = expand_before
+        if expand_after is not None: explicit_kwargs['expand_after'] = expand_after
+        if text_cleaner is not None: explicit_kwargs['text_cleaner'] = text_cleaner
+        if name is not None: explicit_kwargs['name'] = name
+        if description is not None: explicit_kwargs['description'] = description
+        if metadata is not None: explicit_kwargs['metadata'] = metadata
+        if chunking_kwargs is not None: explicit_kwargs['chunking_kwargs'] = chunking_kwargs
 
-        # Resolve db_path early to check existence
         db_path_input_str = str(db_path).lower() if db_path is not None else ":memory:"
         stored_config: Dict[str, Any] = {}
 
@@ -102,19 +89,13 @@ class SafeStore:
                     conn = db.connect_db(db_path_resolved)
                     try:
                         raw_config = db.get_store_metadata(conn, "store_config")
-                        if raw_config:
-                            stored_config = json.loads(raw_config)
-                    except Exception:
-                        pass
-                    finally:
-                        conn.close()
-                except Exception:
-                    pass
+                        if raw_config: stored_config = json.loads(raw_config)
+                    except Exception: pass
+                    finally: conn.close()
+                except Exception: pass
 
-        # Merge: stored_config provides defaults, explicit_kwargs override
         merged_config = {**stored_config, **explicit_kwargs}
 
-        # Apply merged configuration with final defaults for anything still missing
         self.vectorizer_name = merged_config.get('vectorizer_name', 'st')
         self.vectorizer_config = merged_config.get('vectorizer_config', self.DEFAULT_VECTORIZER_CONFIG if self.vectorizer_name == self.DEFAULT_VECTORIZER_NAME else {})
         self.chunk_size = merged_config.get('chunk_size', 384)
@@ -161,21 +142,10 @@ class SafeStore:
 
     @classmethod
     def open(cls, db_path: Union[str, Path], **kwargs) -> "SafeStore":
-        """
-        Convenience alias for from_db(). Opens an existing SafeStore database
-        and restores all configuration (vectorizer, chunking settings, etc.).
-        """
         return cls.from_db(db_path, **kwargs)
 
     @classmethod
     def from_db(cls, db_path: Union[str, Path], **kwargs) -> "SafeStore":
-        """
-        Instantiate SafeStore from a database file, reading stored configuration
-        from the 'store_config' metadata key and merging with any provided kwargs.
-
-        Since __init__ now automatically infers settings from existing databases,
-        this method simply passes through to the constructor.
-        """
         return cls(db_path=db_path, **kwargs)
 
     def _setup_paths_and_locks(self, db_path):
@@ -212,35 +182,20 @@ class SafeStore:
     def list_models(cls, vectorizer_name: str, custom_vectorizers_path: Optional[str] = None, **kwargs) -> List[str]:
         try:
             module = load_vectorizer_module(vectorizer_name, custom_vectorizers_path)
-            VectorizerClass = None
-            if hasattr(module, 'class_name'):
-                VectorizerClass = getattr(module, module.class_name, None)
-
+            VectorizerClass = getattr(module, module.class_name, None) if hasattr(module, 'class_name') else None
             if VectorizerClass and issubclass(VectorizerClass, BaseVectorizer) and hasattr(VectorizerClass, 'list_models'):
                 return VectorizerClass.list_models(**kwargs)
-            else:
-                ASCIIColors.warning(f"Vectorizer module '{vectorizer_name}' does not have a valid 'list_models' static method or class setup.")
-                if hasattr(module, 'list_models'):
-                    return module.list_models(**kwargs)
-                return []
-        except (FileNotFoundError, ConfigurationError, VectorizationError) as e:
-            raise e
+            return []
         except Exception as e:
-            raise SafeStoreError(f"An unexpected error occurred while listing models for '{vectorizer_name}': {e}") from e
+            raise SafeStoreError(f"Error listing models for '{vectorizer_name}': {e}") from e
 
     def _cleanup_stale_locks(self):
-        """
-        Attempts to clean up lock files that exist but are not held by any process.
-        """
         if self._file_lock and self.lock_path and Path(self.lock_path).exists():
             try:
                 self._file_lock.acquire(timeout=0.01)
                 self._file_lock.release()
-                try:
-                    Path(self.lock_path).unlink()
-                except OSError:
-                    pass
-            except (Timeout, OSError, Exception):
+                Path(self.lock_path).unlink(missing_ok=True)
+            except Exception:
                 pass
 
     def _initialize_and_verify_vectorizer(self):
@@ -250,23 +205,13 @@ class SafeStore:
             tokenizer = self.vectorizer.get_tokenizer()
             if tokenizer is not None:
                 self.tokenizer_for_chunking = tokenizer
-                ASCIIColors.info("Using tokenizer provided by the vectorizer model for chunking.")
             elif self.custom_tokenizer is not None:
                 self.tokenizer_for_chunking = get_tokenizer(self.custom_tokenizer)
-                ASCIIColors.warning(
-                    f"Using custom tokenizer '{self.custom_tokenizer.get('name')}' for chunking. "
-                    "Note: This may not perfectly match the remote vectorizer's internal tokenizer, "
-                    "but is a close approximation."
-                )
             else:
-                ASCIIColors.warning(
-                    f"Vectorizer '{self.vectorizer_name}' does not provide a client-side tokenizer. "
-                    "Defaulting to 'tiktoken' for accurate sizing. This is a common choice for OpenAI-compatible models."
-                )
                 self.tokenizer_for_chunking = get_tokenizer({"name": "tiktoken", "model": "cl100k_base"})
 
         with self._optional_file_lock_context("verify vectorizer compatibility"):
-            assert self.conn is not None, "Database must be connected before verifying vectorizer."
+            assert self.conn is not None
             stored_info_json = db.get_store_metadata(self.conn, "vectorizer_info")
             
             if stored_info_json:
@@ -276,10 +221,9 @@ class SafeStore:
                 if stored_info.get("unique_name") != unique_name_from_instance:
                     raise ConfigurationError(
                         f"Database at '{self.db_path}' has an incompatible vectorizer: '{stored_info.get('unique_name')}'. "
-                        f"This instance is configured with '{unique_name_from_instance}'. Use a new DB file for a new vectorizer."
+                        f"This instance is configured with '{unique_name_from_instance}'."
                     )
             else:
-                ASCIIColors.info("No vectorizer info found in DB. Storing current vectorizer configuration.")
                 vectorizer_info = {
                     "unique_name": self.vectorizer_manager._create_unique_name(self.vectorizer_name, self.vectorizer_config),
                     "name": self.vectorizer_name,
@@ -321,7 +265,6 @@ class SafeStore:
                 meta_json = db.get_store_metadata(self.conn, "store_metadata")
                 self.metadata = json.loads(meta_json) if meta_json else None
 
-            # Save store configuration if not already present
             existing_config = db.get_store_metadata(self.conn, "store_config")
             if existing_config is None:
                 store_config = {
@@ -346,7 +289,6 @@ class SafeStore:
     def _optional_file_lock_context(self, description: Optional[str] = None) -> ContextManager[None]:
         if self._file_lock:
             try:
-                # The first part of description usually maps to the operation name in tests
                 op_name = description.split(':')[0]
                 ASCIIColors.debug(f"Attempting to acquire write lock for {op_name}")
                 with self._file_lock:
@@ -396,7 +338,6 @@ class SafeStore:
 
     @property
     def page_index(self) -> PageIndex:
-        """Returns the PageIndex handler for hierarchical data."""
         if self._page_index is None:
             self._page_index = PageIndex(self)
         return self._page_index
@@ -414,7 +355,6 @@ class SafeStore:
 
     @property
     def DEFAULT_VECTORIZER(self):
-        """Backward compatibility attribute for tests."""
         return self.vectorizer_name
 
     def add_document(
@@ -426,16 +366,10 @@ class SafeStore:
         vectorize_with_metadata: bool = True,
         chunk_processor: Optional[Callable[[str, Dict[str, Any]], str]] = None,
         skip_chunking: bool = False,
-        # Operation-specific overrides to support existing test suite
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
         chunking_strategy: Optional[str] = None
     ) -> Dict[str, int]:
-        """
-        Adds a document to the store.
-        Returns:
-            Dict[str, int]: {"num_chunks_added": int, "num_chunks_ignored": int}
-        """
         with self._instance_lock:
             self._ensure_connection()
             return self._add_content_impl(
@@ -463,16 +397,10 @@ class SafeStore:
         vectorize_with_metadata: bool = True,
         chunk_processor: Optional[Callable[[str, Dict[str, Any]], str]] = None,
         skip_chunking: bool = False,
-        # Operation-specific overrides
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
         chunking_strategy: Optional[str] = None
     ) -> Dict[str, int]:
-        """
-        Adds raw text to the store.
-        Returns:
-            Dict[str, int]: {"num_chunks_added": int, "num_chunks_ignored": int}
-        """
         with self._instance_lock:
             self._ensure_connection()
             return self._add_content_impl(
@@ -495,8 +423,6 @@ class SafeStore:
         assert self.conn and self.vectorizer is not None
         filename_for_log = Path(content_id).name
 
-        # Consolidate all file-lock operations for this content into one context
-        # This fixes the test failure where __enter__ was called twice
         with self._optional_file_lock_context(f"add_document: {filename_for_log}"):
             try:
                 current_hash = hash_loader()
@@ -508,7 +434,6 @@ class SafeStore:
                 ASCIIColors.error(f"Error during add_document: FileHandlingError: {e}")
                 raise
 
-            # Check if unchanged
             res = self.conn.execute("SELECT doc_id, file_hash FROM documents WHERE file_path = ?", (content_id,)).fetchone()
             existing_doc_id, existing_hash = res if res else (None, None)
 
@@ -525,7 +450,6 @@ class SafeStore:
             else:
                 ASCIIColors.info(f"Document '{filename_for_log}' is new.")
 
-            # Test suite expectation: Log start before loading content
             ASCIIColors.info(f"Starting indexing process for: {filename_for_log}")
             
             try:
@@ -559,7 +483,6 @@ class SafeStore:
 
             cleaned_text = self.text_cleaner(full_text)
             
-            # Resolve parameters using overrides if provided
             c_size = op_chunk_size if op_chunk_size is not None else self.chunk_size
             c_overlap = op_chunk_overlap if op_chunk_overlap is not None else self.chunk_overlap
             c_strategy = op_chunking_strategy if op_chunking_strategy is not None else self.chunking_strategy
@@ -567,7 +490,6 @@ class SafeStore:
             raw_chunks_data = []
             if skip_chunking:
                 storage_text = cleaned_text
-                # Simple logic for vector text if skip_chunking is true
                 v_text = self.tokenizer_for_chunking.decode(self.tokenizer_for_chunking.encode(cleaned_text)[:c_size]) if self.tokenizer_for_chunking else cleaned_text[:c_size]
                 raw_chunks_data = [(v_text, storage_text)]
             else:
@@ -583,10 +505,7 @@ class SafeStore:
                     **self.chunking_kwargs
                 )
 
-            # Map through processor
             processed_chunks_data = [(chunk_processor(v, metadata or {}) if chunk_processor else v, chunk_processor(s, metadata or {}) if chunk_processor else s) for v, s in raw_chunks_data]
-            
-            # Filter and count
             valid_chunks_data = [chunk for chunk in processed_chunks_data if chunk[0] and chunk[0].strip()]
             num_ignored = len(processed_chunks_data) - len(valid_chunks_data)
 
@@ -594,7 +513,6 @@ class SafeStore:
                 ASCIIColors.warning(f"No chunks generated for {filename_for_log}. Document record saved, but skipping vectorization.")
                 return {"num_chunks_added": 0, "num_chunks_ignored": num_ignored}
 
-            # Log chunk generation results (required by tests)
             ASCIIColors.info(f"Generated {len(valid_chunks_data)} chunks for {filename_for_log}")
             ASCIIColors.info(f"Vectorizing {len(valid_chunks_data)} chunks using '{self.vectorizer_name}'")
 
@@ -605,7 +523,6 @@ class SafeStore:
                 metadata_string = "--- Document Context ---\n" + "\n".join(f"{str(k).title()}: {str(v)}" for k, v in metadata.items()) + "\n------------------------\n\n"
                 vector_texts = [metadata_string + text for text in vector_texts]
 
-            # Handle fitting (TF-IDF special case for logs)
             if hasattr(self.vectorizer, 'fit') and hasattr(self.vectorizer, '_fitted') and not self.vectorizer._fitted:
                 if self.vectorizer_name in ['tf_idf', 'tfidf']:
                     ASCIIColors.warning(f"TF-IDF vectorizer '{self.vectorizer_name}' is not fitted. Fitting ONLY on chunks from '{filename_for_log}'")
@@ -615,8 +532,6 @@ class SafeStore:
 
             try:
                 self.conn.execute("BEGIN")
-
-                # Fetch fresh doc_id within transaction
                 doc_id = db.get_document_id_by_path(self.conn, content_id)
                 if doc_id:
                     self.conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
@@ -637,14 +552,12 @@ class SafeStore:
 
                 self.conn.commit()
 
-                # Lifecycle hook: allow vectorizer to build auxiliary indexes (e.g., grepper inverted index)
                 if doc_id and hasattr(self.vectorizer, 'on_document_indexed') and callable(getattr(self.vectorizer, 'on_document_indexed')):
                     try:
                         self.vectorizer.on_document_indexed(self.conn, doc_id, storage_texts)
                     except Exception as hook_err:
-                        ASCIIColors.warning(f"Vectorizer hook 'on_document_indexed' failed for '{filename_for_log}': {hook_err}")
+                        ASCIIColors.warning(f"Vectorizer hook 'on_document_indexed' failed: {hook_err}")
 
-                # Final success log matching test patterns
                 ASCIIColors.success(f"Successfully processed '{filename_for_log}' with vectorizer '{self.vectorizer_name}'")
                 return {"num_chunks_added": len(valid_chunks_data), "num_chunks_ignored": num_ignored}
 
@@ -659,22 +572,16 @@ class SafeStore:
         min_similarity_percent: float = 0.0
     ) -> List[Dict[str, Any]]:
         with self._instance_lock:
-            # Log required by test_query_simple
             ASCIIColors.info(f"Received query. Searching with '{self.vectorizer_name}', top_k={top_k}")
 
-            # --- Phase 0: Check for custom search hook on vectorizer (e.g., grepper) ---
             self._ensure_connection()
             assert self.conn and self.vectorizer is not None
             custom_search = getattr(self.vectorizer, 'custom_search', None)
             if callable(custom_search):
-                ASCIIColors.debug("Delegating query to vectorizer custom_search...")
                 return custom_search(self.conn, query_text, top_k, min_similarity_percent)
 
-            # --- Phase 1: Vectorize query (No lock) ---
-            ASCIIColors.debug("Vectorizing query text...")
             query_vector = self.vectorizer.vectorize([query_text])[0]
 
-            # --- Phase 2: Fetch all vectors (Short lock) ---
             with self._optional_file_lock_context("query - fetch vectors"):
                 self._ensure_connection()
                 assert self.conn is not None
@@ -684,7 +591,6 @@ class SafeStore:
                 ASCIIColors.warning(f"No vectors found in the database for method '{self.vectorizer_name}'. Cannot perform query.")
                 return []
 
-            # --- Phase 3: Compute similarity (No lock) ---
             chunk_ids, vector_blobs = zip(*all_vectors_data)
             candidate_vectors = np.array([db.reconstruct_vector(blob, self.vectorizer.dtype.name) for blob in vector_blobs])
 
@@ -701,7 +607,6 @@ class SafeStore:
             top_indices = np.argsort(scores_passing)[::-1][:k]
             top_chunk_ids, top_scores = chunk_ids_passing[top_indices], scores_passing[top_indices]
 
-            # --- Phase 4: Fetch details for top chunks (Short lock) ---
             with self._optional_file_lock_context("query - fetch details"):
                 self._ensure_connection()
                 assert self.conn is not None
@@ -720,7 +625,6 @@ class SafeStore:
                 details_raw = self.conn.execute(sql, tuple(top_chunk_ids.tolist())).fetchall()
                 self.conn.text_factory = original_factory
 
-            # --- Phase 5: Process details (No lock) ---
             for row in details_raw:
                 chunk_id, chunk_text_data, start, end, chunk_is_enc, path, doc_meta_data, doc_is_enc = row
                 
@@ -751,7 +655,7 @@ class SafeStore:
                 
                 if isinstance(meta_dict, dict) and "error" not in meta_dict:
                     doc_metadata_text += "--- Document Context ---\n"
-                    for k, v in meta_dict.items(): doc_metadata_text += f"{str(k).title()}: {str(v)}\n"
+                    for kd, vd in meta_dict.items(): doc_metadata_text += f"{str(kd).title()}: {str(vd)}\n"
                     doc_metadata_text += "------------------------\n\n"
 
                 details_map[chunk_id] = {
@@ -766,6 +670,38 @@ class SafeStore:
                 ordered_results.append(res)
             return ordered_results
 
+    def hybrid_query(
+        self,
+        query_text: str,
+        top_k: int = 5,
+        dense_weight: float = 0.5,
+        bm25_weight: float = 0.5,
+        rrf_k: int = 60
+    ) -> List[Dict[str, Any]]:
+        """
+        Executes a Tri-Modal Hybrid query combining Dense Vector search and Sparse BM25 lexical search via RRF.
+        """
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+
+            # 1. Fetch Dense Vector Results
+            dense_results = self.query(query_text, top_k=top_k * 2)
+
+            # 2. Fetch BM25 Lexical Results
+            bm25_retriever = BM25Retriever(self.conn)
+            bm25_results = bm25_retriever.search(query_text, top_k=top_k * 2)
+
+            # 3. Fuse Results with Reciprocal Rank Fusion
+            fused = reciprocal_rank_fusion(
+                ranked_lists=[dense_results, bm25_results],
+                weights=[dense_weight, bm25_weight],
+                k=rrf_k,
+                top_k=top_k
+            )
+
+            return fused
+
     def get_vectorization_details(self) -> Optional[Dict[str, Any]]:
          with self._instance_lock:
             self._ensure_connection()
@@ -779,7 +715,7 @@ class SafeStore:
             assert self.conn is not None
             try:
                 self.conn.execute("BEGIN")
-                rows = self.conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,)).rowcount
+                rows = self.conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
                 self.conn.commit()
                 if rows > 0: ASCIIColors.success(f"Deleted document ID {doc_id}.")
             except sqlite3.Error as e:
@@ -841,12 +777,9 @@ class SafeStore:
         assert self.vectorizer is not None
         return self.vectorizer.vectorize([text_to_vectorize])
 
-
     def list_vectorization_methods(self) -> List[Dict[str, Any]]:
-        """Shim for legacy tests."""
         self._ensure_connection()
         assert self.conn is not None
-        # Return empty list if no vectors exist in the database
         cursor = self.conn.execute("SELECT 1 FROM vectors LIMIT 1")
         if cursor.fetchone() is None:
             return []
@@ -859,14 +792,8 @@ class SafeStore:
             "params": {}
         }]
 
-    # --- Tag Management API ---
-
     def reconstruct_document_text(self, file_path: Union[str, Path]) -> Optional[str]:
-        """
-        Reconstructs the content of a document by fetching and joining its chunks.
-        """
         _path_or_id = str(Path(file_path).resolve() if isinstance(file_path, Path) else file_path)
-        
         with self._instance_lock, self._optional_file_lock_context(f"reconstruct_document: {_path_or_id}"):
             self._ensure_connection()
             assert self.conn is not None
@@ -883,19 +810,15 @@ class SafeStore:
             rows = cursor.execute(sql, (doc_id,)).fetchall()
             self.conn.text_factory = original_factory
 
-            if not rows:
-                return ""
+            if not rows: return ""
 
             decrypted_chunks = []
             for chunk_text_data, is_enc in rows:
                 if is_enc:
                     if self.encryptor.is_enabled:
-                        try:
-                            decrypted_chunks.append(self.encryptor.decrypt(chunk_text_data))
-                        except EncryptionError:
-                            decrypted_chunks.append("[Encrypted Chunk - Decryption Failed]")
-                    else:
-                        decrypted_chunks.append("[Encrypted Chunk - Key Unavailable]")
+                        try: decrypted_chunks.append(self.encryptor.decrypt(chunk_text_data))
+                        except EncryptionError: decrypted_chunks.append("[Encrypted Chunk - Decryption Failed]")
+                    else: decrypted_chunks.append("[Encrypted Chunk - Key Unavailable]")
                 else:
                     decrypted_chunks.append(chunk_text_data.decode('utf-8'))
             
@@ -907,13 +830,10 @@ class SafeStore:
             assert self.conn is not None
             
             row = db.get_chunk_raw_details_by_id(self.conn, chunk_id)
-            if not row:
-                return None
+            if not row: return None
 
-            # Unpack the raw row from the database
             _, chunk_text_data, chunk_is_enc, path_bytes, doc_meta_data, doc_is_enc = row
 
-            # Decrypt chunk text if necessary
             chunk_text: str
             if chunk_is_enc:
                 if self.encryptor.is_enabled:
@@ -923,18 +843,13 @@ class SafeStore:
             else:
                 chunk_text = chunk_text_data.decode('utf-8')
 
-            # Decrypt and parse document metadata if necessary
             meta_dict = None
             if doc_meta_data:
                 if doc_is_enc:
                     if self.encryptor.is_enabled:
-                        try:
-                            meta_json = self.encryptor.decrypt(doc_meta_data)
-                            meta_dict = json.loads(meta_json)
-                        except (EncryptionError, json.JSONDecodeError):
-                            meta_dict = {"error": "Failed to decrypt or parse metadata"}
-                    else:
-                        meta_dict = {"error": "Encrypted metadata but key unavailable"}
+                        try: meta_dict = json.loads(self.encryptor.decrypt(doc_meta_data))
+                        except (EncryptionError, json.JSONDecodeError): meta_dict = {"error": "Failed to decrypt or parse metadata"}
+                    else: meta_dict = {"error": "Encrypted metadata but key unavailable"}
                 else:
                     try: meta_dict = json.loads(doc_meta_data.decode('utf-8'))
                     except json.JSONDecodeError: meta_dict = {"error": "Failed to parse metadata"}
@@ -947,9 +862,6 @@ class SafeStore:
             }
 
     def export_point_cloud(self, output_format: Literal['json_str', 'dict', 'csv'] = 'json_str') -> Union[str, List[Dict[str, Any]]]:
-        """
-        Exports all vectorized chunks as a 2D point cloud using PCA.
-        """
         try:
             from sklearn.decomposition import PCA
             import pandas as pd
@@ -957,19 +869,15 @@ class SafeStore:
             raise ConfigurationError("'export_point_cloud' requires 'scikit-learn' and 'pandas'. Install with: pip install scikit-learn pandas")
 
         with self._instance_lock:
-            # --- Phase 1: Fetch all data from DB (Short Lock) ---
             with self._optional_file_lock_context("export_point_cloud - fetch data"):
                 self._ensure_connection()
                 assert self.conn and self.vectorizer is not None
                 all_data = db.get_all_vectors_with_doc_info(self.conn)
                 vectorizer_details = self.get_vectorization_details()
 
-            if not all_data:
-                raise SafeStoreError("No vectors found in the store to export.")
-            if not vectorizer_details:
-                raise SafeStoreError("Could not retrieve vectorizer details from the database.")
+            if not all_data: raise SafeStoreError("No vectors found in the store to export.")
+            if not vectorizer_details: raise SafeStoreError("Could not retrieve vectorizer details from the database.")
 
-            # --- Phase 2: Process data (No Lock) ---
             chunk_ids, vectors, doc_paths, doc_metadatas = [], [], [], []
             dtype_str = vectorizer_details["dtype"]
 

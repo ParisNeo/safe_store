@@ -48,7 +48,10 @@ class STVectorizer(BaseVectorizer):
 
         try:
             ASCIIColors.info(f"Loading Sentence Transformer model: {self.model_name}")
-            self.model: SentenceTransformer = SentenceTransformer(self.model_name, cache_folder=cache_folder)
+            st_kwargs = {}
+            if cache_folder is not None:
+                st_kwargs["cache_folder"] = cache_folder
+            self.model: SentenceTransformer = SentenceTransformer(self.model_name, **st_kwargs)
             self._dim: int = self.model.get_sentence_embedding_dimension()
             self._dtype: np.dtype = np.dtype(np.float32)
             ASCIIColors.info(f"Model '{self.model_name}' loaded. Dimension: {self._dim}")

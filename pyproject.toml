@@ -39,6 +39,7 @@ dependencies = [
     "filelock>=3.9",       # For concurrency control
     "sqlalchemy",
     "tiktoken",
+    "rdflib>=7.0.0",       # W3C RDF 1.1 & SPARQL 1.1 Engine
     # Parsing Libraries
     "pypdf>=3.10",
     "python-docx>=1.0",

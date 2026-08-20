@@ -35,20 +35,44 @@ except ImportError:
 
 # Mock SentenceTransformer if not available
 if not SENTENCE_TRANSFORMERS_AVAILABLE:
+    import hashlib
+    import re
+
     class MockSentenceTransformer:
         DEFAULT_MODEL = "mock-st-model"
-        def __init__(self, model_name):
-            self.model_name = model_name
+        def __init__(self, model_name_or_path=None, *args, **kwargs):
+            self.model_name = model_name_or_path or self.DEFAULT_MODEL
+            self.cache_folder = kwargs.get("cache_folder")
             self._dim = 384
             self._dtype = np.float32
+
         def encode(self, texts, convert_to_numpy=True, show_progress_bar=False):
-             if not texts: return np.empty((0, self._dim), dtype=self._dtype)
-             return np.random.rand(len(texts), self._dim).astype(self._dtype)
-        def get_sentence_embedding_dimension(self): return self._dim
+            if not texts:
+                return np.empty((0, self._dim), dtype=self._dtype)
+
+            vecs = []
+            for t in texts:
+                v = np.zeros(self._dim, dtype=self._dtype)
+                words = re.findall(r'\w+', str(t).lower())
+                for w in words:
+                    h = int(hashlib.md5(w.encode('utf-8')).hexdigest(), 16) % self._dim
+                    v[h] += 1.0
+                norm = np.linalg.norm(v)
+                if norm > 0:
+                    v = v / norm
+                vecs.append(v)
+            return np.array(vecs, dtype=self._dtype)
+
+        def get_sentence_embedding_dimension(self):
+            return self._dim
+
         @property
-        def dim(self): return self._dim
+        def dim(self):
+            return self._dim
+
         @property
-        def dtype(self): return self._dtype
+        def dtype(self):
+            return self._dtype
 
     @pytest.fixture(scope="session", autouse=True)
     def mock_st_globally(session_mocker):

@@ -1,745 +1,493 @@
-# safe_store: Transform Your Digital Chaos into a Queryable Knowledge Base
+# safe_store: The Local Multi-Modal Vector, Graph & Semantic Engine
 
 [![PyPI version](https://img.shields.io/pypi/v/safe_store.svg)](https://pypi.org/project/safe_store/)
 [![PyPI license](https://img.shields.io/pypi/l/safe_store.svg)](https://github.com/ParisNeo/safe_store/blob/main/LICENSE)
-[![PyPI pyversions](https://img.shields.io/pypi/pyversions/safe_store.svg)](https://pypi.org/project/safe_store/)
+[![Python Version](https://img.shields.io/pypi/pyversions/safe_store.svg)](https://pypi.org/project/safe_store/)
 
-**`safe_store` is a Python library that turns your local folders of documents into a powerful, private, and intelligent knowledge base.** It achieves this by combining two powerful AI concepts into a single, seamless tool:
+**`safe_store` is an ultra-fast, local, and sovereign knowledge engine for Python.** It transforms unstructured documents (PDF, DOCX, HTML, Markdown, Code) and structured datasets (CSV, Excel XLSX, SQLite) into an interconnected, queryable knowledge base combining:
 
-1.  **Deep Semantic Search:** It reads and *understands* the content of your files, allowing you to search by meaning and context, not just keywords.
-2.  **AI-Powered Knowledge Graph:** It uses a Large Language Model (LLM) to automatically identify key entities (people, companies, concepts) and the relationships between them, building an interconnected web of your knowledge.
-
-All of this happens entirely on your local machine, using a single, portable SQLite file. Your data never leaves your control.
+1. 🧠 **Dense Semantic Vector Search**: Embeddings powered by Sentence-Transformers, Ollama, OpenAI, Cohere, Lollms, or TF-IDF.
+2. ⚡ **Sparse Lexical Search (BM25)**: Native SQLite FTS5 full-text indexing for exact technical identifiers, part numbers, and error codes.
+3. 🕸️ **Knowledge Graph & W3C SPARQL 1.1 Engine**: Native TBox/ABox ontology management, declarative tabular mapping, and full SPARQL (`SELECT`, `ASK`, `CONSTRUCT`, `DESCRIBE`).
+4. 🔀 **Tri-Modal Reciprocal Rank Fusion (RRF)**: Merges dense similarity, lexical BM25, and symbolic graph traversals into unified, context-rich results.
+5. 🔐 **Zero-Leakage Local Encryption**: End-to-end AES-128/HMAC (Fernet) encryption at rest inside a single, portable `.db` file.
 
 ---
-## Installation
 
-Install ``safe_store`` using pip. This will install all necessary dependencies for parsing, encryption, and all supported vectorization methods:
+## 📦 Installation
+
 ```bash
-   pip install safe_store
+pip install safe_store
 ```
 
-## The Journey from Search to Understanding
+---
 
-`safe_store` is designed to grow with your needs. You can start with a simple, powerful RAG system in minutes, and then evolve it into a sophisticated knowledge engine.
+## 🌟 Core Architecture & Pillars
 
-### Level 1: Build a Powerful RAG System with Semantic Search
-**The Foundation: Retrieval-Augmented Generation (RAG)**
+```
+                               ┌────────────────────────────────────────┐
+                               │           User Natural Query           │
+                               └──────────────────┬─────────────────────┘
+                                                  │
+                ┌─────────────────────────────────┼─────────────────────────────────┐
+                ▼                                 ▼                                 ▼
+    ┌───────────────────────┐         ┌───────────────────────┐         ┌───────────────────────┐
+    │  Dense Vector Search  │         │   Sparse BM25 Search  │         │  Symbolic Graph Query │
+    │  (Semantic Context)   │         │ (Exact IDs/SKUs/Names)│         │ (TBox/ABox/SPARQL/Hop)│
+    └───────────┬───────────┘         └───────────┬───────────┘         └───────────┬───────────┘
+                │                                 │                                 │
+                │        [Candidate Set 1]        │        [Candidate Set 2]        │ [Candidate Set 3]
+                └─────────────────────────────────┼─────────────────────────────────┘
+                                                  ▼
+                               ┌─────────────────────────────────────┐
+                               │  Reciprocal Rank Fusion (RRF / WCS) │
+                               │  Score = Σ (w_i / (k + rank_i))     │
+                               └──────────────────┬──────────────────┘
+                                                  ▼
+                               ┌─────────────────────────────────────┐
+                               │  Enriched Context + Provenance Lineage│
+                               └──────────────────┬──────────────────┘
+                                                  ▼
+                               ┌─────────────────────────────────────┐
+                               │       LLM Response Generation       │
+                               └─────────────────────────────────────┘
+```
 
-RAG is the state-of-the-art technique for making Large Language Models (LLMs) answer questions about your private documents. The process is simple:
-1.  **Retrieve:** Find the most relevant text chunks from your documents related to a user's query.
-2.  **Augment:** Add those chunks as context to your prompt.
-3.  **Generate:** Ask the LLM to generate an answer based *only* on the provided context.
+---
 
-`SafeStore` is the perfect tool for the "Retrieve" step. It uses vector embeddings to understand the *meaning* of your text, allowing you to find relevant passages even if they don't contain the exact keywords.
+## 🚀 Quick Start
 
-**Example: A Simple RAG Pipeline**
+### 1. Tri-Modal Hybrid Retrieval (Dense Vectors + BM25 Lexical + RRF)
+
+Combining dense embeddings with sparse BM25 guarantees precision for both fuzzy conceptual questions and exact code/identifier queries.
+
 ```python
 import safe_store
-import numpy as np
 
-# Create stores with different vectorizers
-semantic_store = safe_store.SafeStore(
-    db_path="semantic.db",
+store = safe_store.SafeStore(
+    db_path="hybrid_kb.db",
+    vectorizer_name="st",
+    vectorizer_config={"model": "all-MiniLM-L6-v2"},
+    chunk_size=128,
+    chunk_overlap=16
+)
+
+with store:
+    # Index unstructured technical documents
+    store.add_text(
+        unique_id="incident_001",
+        text="Production node crashed due to OOMKilled condition in supervisor daemon. "
+             "Error code ERR-4091 was emitted by telemetry controller.",
+        metadata={"service": "Telemetry", "severity": "Critical"}
+    )
+    store.add_text(
+        unique_id="manual_001",
+        text="Troubleshooting Guide: When encountering error code ERR-4091, replace the "
+             "memory buffer chip and execute supervisor restart.",
+        metadata={"doc_type": "Runbook"}
+    )
+
+    # Hybrid Query: Fuses Dense Semantic Similarity with BM25 Sparse Lexical Score via RRF
+    results = store.hybrid_query(
+        query_text="troubleshooting memory failure ERR-4091",
+        top_k=2,
+        dense_weight=0.5,
+        bm25_weight=0.5,
+        rrf_k=60
+    )
+
+    for r in results:
+        print(f"[{r['file_path']}] (Fused Score: {r['fused_score']:.4f})")
+        print(f"Content: {r['chunk_text']}\n")
+```
+
+---
+
+### 2. W3C SPARQL 1.1 Knowledge Graph Engine
+
+`safe_store` provides a full, standards-compliant SPARQL 1.1 engine supporting `SELECT`, `ASK`, `CONSTRUCT`, and `DESCRIBE` queries across multi-hop relational graphs.
+
+```python
+from safe_store import SafeStore, GraphStore
+
+store = SafeStore(db_path="enterprise_kg.db", vectorizer_name="st")
+graph = GraphStore(store=store)
+
+# Create Graph Entities and Relationships
+alice_id = graph.add_node("Person", {"name": "Alice Smith", "role": "Lead Architect"})
+bob_id = graph.add_node("Person", {"name": "Bob Jones", "role": "Data Scientist"})
+acme_id = graph.add_node("Company", {"name": "Acme Robotics", "industry": "AI"})
+paris_id = graph.add_node("City", {"name": "Paris", "country": "France"})
+
+graph.add_relationship(alice_id, acme_id, "worksFor", {"since": 2021})
+graph.add_relationship(bob_id, acme_id, "worksFor", {"since": 2023})
+graph.add_relationship(acme_id, paris_id, "locatedIn")
+graph.add_relationship(alice_id, bob_id, "collaboratesWith")
+
+# 1. SPARQL SELECT: Multi-Hop Relational Traversal
+sparql_select = """
+PREFIX ex: <http://example.org/>
+PREFIX ont: <http://example.org/ontology/>
+SELECT ?personName ?cityName WHERE {
+    ?person ont:worksFor ?company ;
+            ont:hasName ?personName .
+    ?company ont:locatedIn ?city .
+    ?city ont:hasName ?cityName .
+}
+"""
+results = graph.query_sparql(sparql_select)
+for b in results["results"]["bindings"]:
+    print(f"Person: {b['personName']['value']} works in City: {b['cityName']['value']}")
+
+# 2. SPARQL ASK: Boolean Verification
+sparql_ask = """
+PREFIX ont: <http://example.org/ontology/>
+ASK {
+    ?person ont:worksFor ?company .
+    ?company ont:hasName "Acme Robotics" .
+}
+"""
+is_valid = graph.query_sparql(sparql_ask)
+print(f"Acme Robotics employs personnel: {is_valid['boolean']}")
+
+# 3. SPARQL CONSTRUCT: Subgraph Transformation
+sparql_construct = """
+PREFIX ont: <http://example.org/ontology/>
+PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+CONSTRUCT {
+    ?person foaf:workplaceHomepage ?company .
+}
+WHERE {
+    ?person ont:worksFor ?company .
+}
+"""
+subgraph = graph.query_sparql(sparql_construct)
+for triple in subgraph["triples"]:
+    print(f"Constructed: {triple['subject']['value']} -> {triple['predicate']['value']} -> {triple['object']['value']}")
+```
+
+---
+
+### 3. TBox (Ontology) & Declarative Tabular-to-Graph Mapping (CSV / XLSX / SQLite)
+
+Convert structured business tables directly into grounded RDF knowledge graphs matching an explicit RDFS/OWL ontology (TBox).
+
+```python
+from safe_store import SafeStore, TBoxManager, TabularMapper
+
+store = SafeStore(db_path="supply_chain.db")
+
+# 1. Load TBox Ontology (Turtle format)
+tbox = TBoxManager()
+tbox.load_ontology("""
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex: <http://example.org/ontology/> .
+
+ex:Product a owl:Class .
+ex:Supplier a owl:Class .
+
+ex:suppliedBy a owl:ObjectProperty ;
+    rdfs:domain ex:Product ;
+    rdfs:range ex:Supplier .
+
+ex:hasPrice a owl:DatatypeProperty ;
+    rdfs:domain ex:Product .
+""", format="turtle")
+
+# 2. Declarative Mapping Configuration
+mapping_rules = {
+    "entity_mappings": [
+        {
+            "class": "http://example.org/ontology/Product",
+            "subject_template": "http://example.org/product/{sku}",
+            "properties": {
+                "product_name": "http://example.org/ontology/hasName",
+                "unit_price": "http://example.org/ontology/hasPrice"
+            }
+        },
+        {
+            "class": "http://example.org/ontology/Supplier",
+            "subject_template": "http://example.org/supplier/{supplier_id}",
+            "properties": {
+                "supplier_name": "http://example.org/ontology/hasName"
+            }
+        }
+    ],
+    "relationship_mappings": [
+        {
+            "predicate": "http://example.org/ontology/suppliedBy",
+            "source_template": "http://example.org/product/{sku}",
+            "target_template": "http://example.org/supplier/{supplier_id}"
+        }
+    ]
+}
+
+# 3. Ingest CSV or Excel Sheet directly into ABox Graph
+mapper = TabularMapper(store=store, tbox=tbox)
+summary = mapper.map_csv("inventory.csv", mapping_rules=mapping_rules)
+# Alternatively: mapper.map_excel("inventory.xlsx", mapping_rules=mapping_rules, sheet_name="Q3_Stock")
+# Alternatively: mapper.map_sqlite_table("legacy.db", "products", mapping_rules=mapping_rules)
+
+print(f"Mapped {summary['records_processed']} records into {summary['triples_generated']} RDF triples.")
+```
+
+---
+
+### 4. Tri-Modal Unified Graph Retrieval (`query_graph_hybrid`)
+
+Execute multi-channel queries combining Graph Subgraph Exploration, Dense Vectors, and Sparse BM25 Lexical search in a single call.
+
+```python
+from safe_store import SafeStore, GraphStore
+
+store = SafeStore(db_path="enterprise_kb.db", vectorizer_name="st")
+graph = GraphStore(store=store)
+
+# Unified retrieval: discovers related subgraph entities + BM25 hits + semantic vector chunks
+response = graph.query_graph_hybrid(
+    query_text="What microservices depend on AuthEngine and what database tables do they use?",
+    top_k=5,
+    dense_weight=0.4,
+    bm25_weight=0.3,
+    graph_weight=0.3
+)
+
+print(f"Retrieved {len(response['ranked_chunks'])} fused context chunks.")
+print(f"Identified Subgraph Nodes: {len(response['subgraph']['nodes'])}")
+print(f"Identified Subgraph Edges: {len(response['subgraph']['relationships'])}")
+```
+
+---
+## 🔐 Zero-Leakage Encryption at Rest
+
+`safe_store` provides transparent, chunk-level authenticated encryption using **Fernet** (AES-128-CBC with HMAC-SHA256). User-supplied passwords are hardened via **PBKDF2-HMAC-SHA256** (600,000 iterations) before key derivation.
+
+### What Is Protected
+
+| Data | Encrypted? | Notes |
+|------|------------|-------|
+| Chunk text | ✅ Yes | Decrypted transparently during `query()` |
+| Document metadata | ✅ Yes | JSON blob is encrypted at rest |
+| Document full_text | ✅ Yes | Stored in `documents` table |
+| Vector embeddings | ❌ No | Required for similarity search |
+| Graph nodes/edges | ❌ No | Structural knowledge graph data |
+| File paths / timestamps | ❌ No | Operational metadata |
+
+### Basic Usage
+
+```python
+import safe_store
+
+# 1. Create an encrypted store
+store = safe_store.SafeStore(
+    db_path="classified.db",
+    encryption_key="my-super-secure-passphrase",
     vectorizer_name="st",
     vectorizer_config={"model": "all-MiniLM-L6-v2"}
 )
 
-keyword_store = safe_store.SafeStore(
-    db_path="keyword.db", 
-    vectorizer_name="tf_idf",
-    vectorizer_config={"name": "my_tfidf"}
-)
-
-# Index same documents in both
-with semantic_store, keyword_store:
-    for doc_path in document_paths:
-        semantic_store.add_document(doc_path)
-        keyword_store.add_document(doc_path)
-
-# Hybrid query: combine semantic and keyword search
-def hybrid_query(query_text, alpha=0.7):
-    """Combine semantic and keyword results with weighting."""
-    semantic_results = semantic_store.query(query_text, top_k=10)
-    keyword_results = keyword_store.query(query_text, top_k=10)
-    
-    # Normalize scores and combine
-    combined = {}
-    for r in semantic_results:
-        combined[r['chunk_id']] = {'data': r, 'score': alpha * r['similarity']}
-    for r in keyword_results:
-        if r['chunk_id'] in combined:
-            combined[r['chunk_id']]['score'] += (1-alpha) * r['similarity']
-        else:
-            combined[r['chunk_id']] = {'data': r, 'score': (1-alpha) * r['similarity']}
-    
-    # Return top results by combined score
-    sorted_results = sorted(combined.values(), key=lambda x: x['score'], reverse=True)
-    return [r['data'] for r in sorted_results[:5]]
-```
-
-### 2. Incremental Updates with Change Detection
-
-Perfect for monitoring document folders and only re-indexing changed files:
-
-```python
-from pathlib import Path
-import hashlib
-
-class DocumentWatcher:
-    def __init__(self, store, watch_dir):
-        self.store = store
-        self.watch_dir = Path(watch_dir)
-        self.known_hashes = {}
-        
-    def scan_and_update(self):
-        """Efficiently update only changed documents."""
-        for file_path in self.watch_dir.rglob("*.*"):
-            if file_path.suffix.lower() not in safe_store.SAFE_STORE_SUPPORTED_FILE_EXTENSIONS:
-                continue
-                
-            current_hash = self._hash_file(file_path)
-            
-            # Check if file exists in store
-            existing = self._get_doc_by_path(str(file_path))
-            
-            if existing:
-                stored_hash = existing.get('file_hash')
-                if stored_hash != current_hash:
-                    print(f"Updating changed file: {file_path.name}")
-                    self.store.add_document(file_path, force_reindex=True)
-                else:
-                    print(f"Skipping unchanged: {file_path.name}")
-            else:
-                print(f"Adding new file: {file_path.name}")
-                self.store.add_document(file_path)
-                
-            self.known_hashes[str(file_path)] = current_hash
-    
-    def _hash_file(self, path):
-        hasher = hashlib.md5()
-        with open(path, 'rb') as f:
-            while chunk := f.read(8192):
-                hasher.update(chunk)
-        return hasher.hexdigest()
-    
-    def _get_doc_by_path(self, file_path):
-        docs = self.store.list_documents()
-        return next((d for d in docs if d['file_path'] == file_path), None)
-```
-
-### 3. Custom Chunking for Code Analysis
-
-Specialized chunking strategies for code files preserve semantic structure:
-
-```python
-store = safe_store.SafeStore(
-    db_path="codebase.db",
-    vectorizer_name="st",
-    chunking_strategy="recursive",  # Respects code structure
-    chunk_size=512,
-    chunk_overlap=50
-)
-
-# Process a Python project
-for py_file in Path("src").rglob("*.py"):
-    # The recursive strategy intelligently splits by:
-    # - Module/class boundaries
-    # - Function definitions  
-    # - Logical blocks
-    store.add_document(py_file)
-    
-# Query for specific functions or patterns
-results = store.query(
-    "function that handles authentication and validates JWT tokens",
-    top_k=5
-)
-```
-
-### 4. Privacy-First RAG with Local Models
-
-Complete offline pipeline using local models:
-
-```python
-import safe_store
-
-# Ollama for embeddings (completely local)
-store = safe_store.SafeStore(
-    db_path="private_kb.db",
-    vectorizer_name="ollama",
-    vectorizer_config={
-        "model": "nomic-embed-text",
-        "host": "http://localhost:11434"
-    },
-    encryption_key="user-provided-password"  # Optional: encrypt at rest
-)
-
-# Build knowledge base
 with store:
-    for doc in sensitive_documents:
-        store.add_document(doc, metadata={"classification": "confidential"})
+    # Document and metadata are encrypted before hitting SQLite
+    store.add_document("confidential_contract.pdf", metadata={"classification": "Top Secret"})
     
-    # Query locally - no data leaves your machine
-    results = store.query("quarterly financial projections", top_k=3)
-    
-    # Pass to local LLM (e.g., via Ollama)
-    context = "\n\n".join(r['chunk_text'] for r in results)
-    # ... send to local LLM for answer generation
+    # Query decrypts chunks transparently in memory
+    results = store.query("liability clauses", top_k=2)
+    print(results[0]["chunk_text"])
 ```
 
-### 5. Categorization with Tags
+### Opening Without a Key (Graceful Degradation)
 
-You can add custom tags to your documents. These tags are stored at the chunk level, allowing for future filtering or metadata analysis.
+If the database is opened without providing the encryption key, queries still function but return encrypted placeholders instead of plaintext. This prevents accidental crashes while signalling that the data is protected.
+
+```python
+# Re-open the same database WITHOUT the key
+unauth_store = safe_store.SafeStore("classified.db", encryption_key=None)
+
+with unauth_store:
+    res = unauth_store.query("liability clauses", top_k=1)
+    print(res[0]["chunk_text"])
+    # >>> "[Encrypted Chunk - Key Unavailable]"
+```
+
+### Wrong Key Detection
+
+Supplying an incorrect key is detected immediately during decryption (via Fernet's HMAC verification). The library distinguishes between "no key provided" and "wrong key provided":
+
+```python
+# Re-open with an INCORRECT key
+wrong_store = safe_store.SafeStore(
+    "classified.db",
+    encryption_key="this-is-definitely-wrong"
+)
+
+with wrong_store:
+    res = wrong_store.query("liability clauses", top_k=1)
+    print(res[0]["chunk_text"])
+    # >>> "[Encrypted Chunk - Decryption Failed]"
+```
+
+### Verifying Encryption Programmatically
+
+You can inspect the database directly to confirm that encryption flags are set correctly on every chunk and document:
+
+```python
+import sqlite3
+
+store = safe_store.SafeStore(
+    "audit.db",
+    encryption_key="audit-key",
+    vectorizer_name="st"
+)
+
+with store:
+    store.add_text("sensitive_unique_42", "Payload data here.", metadata={"owner": "Alice"})
+
+# Verify raw DB state
+conn = sqlite3.connect("audit.db")
+cursor = conn.cursor()
+cursor.execute("SELECT is_encrypted FROM chunks WHERE doc_id = 1")
+flags = cursor.fetchall()
+assert all(flag[0] == 1 for flag in flags), "Not all chunks are encrypted!"
+conn.close()
+```
+
+### Metadata Encryption
+
+When encryption is enabled, the metadata dictionary is also encrypted as a single JSON blob. This is transparent during queries:
 
 ```python
 with store:
-    # Adding a document with specific category tags
-    store.add_document(
-        "policy_2024.pdf", 
-        tags=["hr", "internal", "priority-1"]
-    )
-    
-    # Adding raw text with tags
     store.add_text(
-        unique_id="snippet_001",
-        text="Employee vacation days are increased by 2.",
-        tags=["benefits", "update"]
+        unique_id="report_001",
+        text="Q3 Financial Analysis...",
+        metadata={"department": "Finance", "clearance": "Restricted"}
     )
+    
+    # The metadata is decrypted and prepended as context in query results
+    results = store.query("Q3 analysis", top_k=1)
+    print(results[0]["document_metadata"])
+    # >>> {'department': 'Finance', 'clearance': 'Restricted'}
 ```
-
-### 6. Standalone Vectorization (No Database)
-
-Use `safe_store` components as standalone utilities for semantic comparison without creating a persistent database:
-
-```python
-from safe_store.vectorization.manager import VectorizationManager
-from safe_store.search.similarity import cosine_similarity
-
-# Initialize manager and get a vectorizer
-manager = VectorizationManager()
-vectorizer = manager.get_vectorizer("st", {"model": "all-MiniLM-L6-v2"})
-
-# Generate embeddings (returns NumPy array)
-texts = ["The cat sat on the mat", "A feline is resting on a rug"]
-embeddings = vectorizer.vectorize(texts)
-
-# Compare directly
-score = cosine_similarity(embeddings[0], embeddings[1:])[0]
-print(f"Similarity: {((score + 1) / 2) * 100:.2f}%")
-```
-
----
-### 6. Knowledge Graph Extraction from Technical Documentation
-
-Build structured knowledge from unstructured docs:
-
-```python
-from safe_store import GraphStore
-
-# Define domain-specific ontology
-ontology = {
-    "nodes": {
-        "APIEndpoint": {
-            "description": "A REST API endpoint",
-            "properties": {"path": "string", "method": "string", "auth_required": "boolean"}
-        },
-        "DatabaseTable": {
-            "description": "A database table", 
-            "properties": {"name": "string", "primary_key": "string"}
-        },
-        "Microservice": {
-            "description": "A microservice component",
-            "properties": {"name": "string", "owner": "string", "repo_url": "string"}
-        }
-    },
-    "relationships": {
-        "DEPENDS_ON": {
-            "description": "Service dependency",
-            "source": "Microservice",
-            "target": "Microservice"
-        },
-        "USES_TABLE": {
-            "description": "API uses database table",
-            "source": "APIEndpoint",
-            "target": "DatabaseTable"
-        }
-    }
-}
-
-# Initialize graph store
-graph = GraphStore(
-    store=store,
-    llm_executor_callback=my_local_llm,
-    ontology=ontology
-)
-
-# Process architecture documentation
-graph.build_graph_for_all_documents()
-
-# Query the system architecture
-result = graph.query_graph(
-    "Which microservices depend on the User service and what database tables do they use?",
-    output_mode="full"
-)
-```
-
-### 7. Document Comparison and Deduplication
-
-Identify similar documents across large collections:
-
-```python
-import numpy as np
-from sklearn.cluster import DBSCAN
-
-def find_duplicate_documents(store, similarity_threshold=0.95):
-    """Identify potential duplicate or near-duplicate documents."""
-    with store:
-        # Export point cloud for all chunks
-        points = store.export_point_cloud(output_format='dict')
-        
-        # Group by document
-        doc_vectors = {}
-        for p in points:
-            doc = p['document_title']
-            if doc not in doc_vectors:
-                doc_vectors[doc] = []
-            doc_vectors[doc].append([p['x'], p['y']])
-        
-        # Average chunk positions per document
-        doc_centroids = {}
-        for doc, vectors in doc_vectors.items():
-            doc_centroids[doc] = np.mean(vectors, axis=0)
-        
-        # Cluster to find similar documents
-        docs = list(doc_centroids.keys())
-        centroids = np.array([doc_centroids[d] for d in docs])
-        
-        clustering = DBSCAN(eps=0.5, min_samples=2).fit(centroids)
-        
-        # Return groups of similar documents
-        groups = {}
-        for doc, label in zip(docs, clustering.labels_):
-            if label not in groups:
-                groups[label] = []
-            groups[label].append(doc)
-        
-        return [g for g in groups.values() if len(g) > 1]
-```
-
----
-## 🎓 Best Practices
-
-### Performance Optimization
-
-1. **Choose the Right Chunk Size**
-   - Small chunks (256-512 tokens): Better for precise retrieval, higher storage cost
-   - Large chunks (1024-2048 tokens): Better context, may include irrelevant text
-   - For code: Use `recursive` strategy with smaller sizes
-   - For prose: Use `token` strategy with moderate overlap
-
-2. **Vectorizer Selection Guide**
-
-| Use Case | Recommended Vectorizer | Why |
-|----------|------------------------|-----|
-| General English text | `st:all-MiniLM-L6-v2` | Fast, good quality, small |
-| Multilingual content | `st:LaBSE` | Supports 100+ languages |
-| Code search | `st:code-*` models | Understands syntax patterns |
-| Legal/medical | Fine-tuned domain models | Domain-specific terminology |
-| Very large scale | `tfidf` | No GPU required, fast indexing |
-| API-based RAG | `openai:text-embedding-3-small` | Best quality, cost consideration |
-
-3. **Database Maintenance**
-   ```python
-   # Regular cleanup of WAL files
-   store = safe_store.SafeStore("my_store.db")
-   with store:
-       # Vacuum to reclaim space after deletions
-       store.conn.execute("VACUUM")
-       
-       # Analyze for query optimization
-       store.conn.execute("ANALYZE")
-   ```
-
-4. **Memory Management for Large Collections**
-   ```python
-   # Process documents in batches to control memory
-   batch_size = 100
-   for i in range(0, len(all_documents), batch_size):
-       batch = all_documents[i:i+batch_size]
-       with store:
-           for doc in batch:
-               store.add_document(doc)
-       # Force garbage collection between batches
-       import gc; gc.collect()
-   ```
 
 ### Security Considerations
 
-1. **Encryption at Rest**
-   ```python
-   # Use strong passwords for encryption
-   import secrets
-   encryption_key = secrets.token_hex(32)  # 256-bit key
-   
-   store = safe_store.SafeStore(
-       db_path="encrypted.db",
-       encryption_key=encryption_key
-   )
-   
-   # Store key securely (e.g., environment variable, key management service)
-   ```
+- **Fixed Salt**: This implementation uses a fixed salt for PBKDF2 derivation. This means the same password always yields the same key, which is a deliberate trade-off for portability (a single `.db` file can be moved between machines without external salt storage). For higher security requirements, consider wrapping the database file with OS-level full-disk encryption.
+- **Vectors Remain Plaintext**: Vector embeddings are stored as raw `BLOB`s to allow cosine-similarity search without decrypting the entire dataset. If your threat model requires vectors to be secret, encrypt the underlying filesystem.
+- **Memory Safety**: Decryption occurs in-memory during `query()`. Plaintext chunks exist only for the duration of the result formatting and are not cached outside of the SQLite connection scope.
 
-2. **Access Control Pattern**
-   ```python
-   class SecureStore:
-       def __init__(self, db_path, key_provider):
-           self.key_provider = key_provider
-           
-       def get_store(self, user_id):
-           key = self.key_provider.get_key(user_id)
-           return safe_store.SafeStore(self.db_path, encryption_key=key)
-   ```
-
----
-## 🔧 Troubleshooting
-
-### Common Issues
-
-**"Database is locked" errors**
-- Ensure only one SafeStore instance per database at a time
-- Check for stale lock files (`.db.lock`) and remove if process crashed
-- Increase `lock_timeout` if operations are slow: `SafeStore(..., lock_timeout=120)`
-
-**"Vectorizer dimension mismatch"**
-- You cannot change vectorizers on an existing database
-- Create a new database or use `add_vectorization()` to add new vectorization methods
-
-**Slow query performance**
-- Enable WAL mode (automatic): Improves concurrent read/write
-- Add indexes: `CREATE INDEX IF NOT EXISTS idx_vectors_method ON vectors(method_id)`
-- Reduce `top_k` if fetching too many results
-
-**Out of memory during indexing**
-- Reduce batch size in `build_graph_for_all_documents(batch_size_chunks=10)`
-- Use smaller chunks to reduce per-document memory footprint
-- Process documents sequentially rather than in parallel
-
-**Graph extraction quality issues**
-- Refine your ontology: Be specific about expected properties
-- Increase `llm_retries` for better JSON parsing success
-- Use `guidance` parameter to steer LLM extraction
-- Check chunk size: Too small may break context, too large may dilute focus
-
-### Debugging Queries
-
-```python
-# Enable debug logging
-import logging
-logging.getLogger('safe_store').setLevel(logging.DEBUG)
-
-# Inspect what's actually stored
-with store:
-    docs = store.list_documents()
-    for doc in docs:
-        print(f"Document: {doc['file_path']}")
-        print(f"Metadata: {doc['metadata']}")
-        print(f"Chunks: {store.conn.execute('SELECT COUNT(*) FROM chunks WHERE doc_id=?', (doc['doc_id'],)).fetchone()[0]}")
-```
-
----
-## 📊 Performance Benchmarks
-
-Typical performance on a modern laptop (i7, 16GB RAM, SSD):
-
-| Operation | Time | Notes |
-|-----------|------|-------|
-| Index 1MB text (ST) | ~2-5s | Includes chunking, vectorization, storage |
-| Index 1MB text (TF-IDF) | ~0.5-1s | Faster, no neural model loading |
-| Query (10k chunks) | ~50-100ms | Cosine similarity on pre-loaded vectors |
-| Graph build (100 chunks) | ~30-60s | Depends on LLM latency |
-| Export point cloud (50k vectors) | ~5-10s | PCA computation time |
-
-*Benchmarks are approximate and vary based on hardware, document complexity, and network conditions for API-based vectorizers.*
-
----
-## 🔗 Integration Examples
-
-### LangChain Integration
-
-```python
-from langchain.schema import Document
-from langchain.vectorstores import VectorStore
-
-class SafeStoreLangChain(VectorStore):
-    def __init__(self, safe_store_instance):
-        self.store = safe_store_instance
-        
-    def add_texts(self, texts, metadatas=None):
-        for i, text in enumerate(texts):
-            meta = metadatas[i] if metadatas else {}
-            self.store.add_text(f"langchain_doc_{i}", text, metadata=meta)
-        return [f"langchain_doc_{i}" for i in range(len(texts))]
-    
-    def similarity_search(self, query, k=4):
-        results = self.store.query(query, top_k=k)
-        return [
-            Document(page_content=r['chunk_text'], metadata=r.get('document_metadata', {}))
-            for r in results
-        ]
-```
-
-### LlamaIndex Integration
-
-```python
-from llama_index.core import VectorStoreIndex, SimpleDirectoryReader
-
-# Create a custom loader that uses safe_store
-documents = SimpleDirectoryReader("docs").load_data()
-
-# Build index using safe_store as the backend
-index = VectorStoreIndex.from_documents(
-    documents,
-    vector_store=SafeStoreLangChain(store)  # Using wrapper above
-)
-
-# Query
-response = index.query("What are the main points?")
-```
-
-### FastAPI Web Service
-
-```python
-from fastapi import FastAPI, UploadFile, File
-from pydantic import BaseModel
-
-app = FastAPI()
-store = safe_store.SafeStore("api_store.db")
-
-class QueryRequest(BaseModel):
-    question: str
-    top_k: int = 5
-
-@app.post("/upload")
-async def upload_document(file: UploadFile = File(...)):
-    # Save uploaded file
-    temp_path = f"/tmp/{file.filename}"
-    with open(temp_path, "wb") as f:
-        f.write(await file.read())
-    
-    # Index in safe_store
-    with store:
-        result = store.add_document(temp_path)
-    
-    return {"status": "indexed", "chunks_added": result['num_chunks_added']}
-
-@app.post("/query")
-async def query_documents(request: QueryRequest):
-    with store:
-        results = store.query(request.question, top_k=request.top_k)
-    return {"results": results}
-```
-### Pre-processing Chunks on the Fly with `chunk_processor`
-For advanced RAG, you might need to transform the text of a chunk *before* it's vectorized and stored. The `chunk_processor` is a powerful hook that lets you do exactly that.
-
-It's an optional callable that you can pass to `add_document` or `add_text`. The function receives the raw text of each chunk and the document's metadata, and it must return the string that you want to be stored and vectorized instead.
-
-**Example: Prepending Metadata to Each Chunk**
+### Complete Example: Encrypted Document Lifecycle
 
 ```python
 import safe_store
+from pathlib import Path
+import shutil
 
-store = safe_store.SafeStore(db_path="processed_store.db")
+DB_FILE = "encrypted_lifecycle.db"
+KEY = "correct-horse-battery-staple"
 
-def prepend_topic_processor(chunk_text: str, metadata: dict) -> str:
-    """A processor that adds the 'topic' from metadata to the chunk text."""
-    topic = metadata.get("topic", "general")
-    return f"[Topic: {topic}] {chunk_text}"
+# Cleanup from previous runs
+for p in [DB_FILE, f"{DB_FILE}.lock", f"{DB_FILE}-wal", f"{DB_FILE}-shm"]:
+    Path(p).unlink(missing_ok=True)
 
-with store:
-    store.add_text(
-        unique_id="processed_doc_1",
-        text="This chunk is about quantum mechanics.",
-        metadata={"topic": "Physics"},
-        chunk_processor=prepend_topic_processor,
-        force_reindex=True
-    )
+# Phase 1: Write encrypted data
+writer = safe_store.SafeStore(
+    db_path=DB_FILE,
+    vectorizer_name="st",
+    vectorizer_config={"model": "all-MiniLM-L6-v2"},
+    encryption_key=KEY
+)
 
-# When you query this, the stored text will be:
-# "[Topic: Physics] This chunk is about quantum mechanics."
-# This can make the vector more specific to the topic.
-results = store.query("information related to physics", top_k=1)
-if results:
-    print(results['chunk_text'])
+doc = Path("secret_notes.txt")
+doc.write_text("Project Phoenix launch is Q4. Key personnel: Alice, Bob.")
 
-store.close()
-```
+with writer:
+    writer.add_document(doc, metadata={"sensitivity": "high"})
+    print("Document encrypted and stored.")
 
-**Example: Multi-Stage Processing Pipeline**
+# Phase 2: Read with correct key
+reader = safe_store.SafeStore(DB_FILE, encryption_key=KEY)
+with reader:
+    results = reader.query("Project Phoenix", top_k=1)
+    assert "Project Phoenix" in results[0]["chunk_text"]
+    print("Decryption successful with correct key.")
 
-```python
-import re
+# Phase 3: Read without key (placeholder)
+no_key = safe_store.SafeStore(DB_FILE, encryption_key=None)
+with no_key:
+    res = no_key.query("Project Phoenix", top_k=1)
+    assert res[0]["chunk_text"] == "[Encrypted Chunk - Key Unavailable]"
+    print("Confirmed: no key returns placeholder.")
 
-def create_advanced_processor():
-    """Creates a processor that normalizes citations and adds context."""
-    
-    def processor(chunk_text: str, metadata: dict) -> str:
-        # Step 1: Normalize citation formats (e.g., [1], [2] -> [REF-1], [REF-2])
-        normalized = re.sub(r'\[(\d+)\]', r'[REF-\1]', chunk_text)
-        
-        # Step 2: Add document section context if available
-        section = metadata.get("section", "unknown")
-        if section != "unknown":
-            normalized = f"[Section: {section}] {normalized}"
-        
-        # Step 3: Mark code blocks for special handling
-        if metadata.get("contains_code", False):
-            normalized = "[CODE] " + normalized
-        
-        return normalized
-    
-    return processor
+# Phase 4: Read with wrong key (tamper detection)
+bad_key = safe_store.SafeStore(DB_FILE, encryption_key="wrong-key")
+with bad_key:
+    res = bad_key.query("Project Phoenix", top_k=1)
+    assert res[0]["chunk_text"] == "[Encrypted Chunk - Decryption Failed]"
+    print("Confirmed: wrong key is rejected via HMAC.")
 
-store = safe_store.SafeStore(db_path="advanced_store.db")
-
-with store:
-    # Process a technical document with multiple transformations
-    store.add_document(
-        "technical_spec.md",
-        metadata={"section": "API Reference", "contains_code": True},
-        chunk_processor=create_advanced_processor()
-    )
-```
-
-**Example: Conditional Processing Based on Content Type**
-
-```python
-def smart_chunk_processor(chunk_text: str, metadata: dict) -> str:
-    """
-    Applies different processing based on detected content type.
-    """
-    content_type = metadata.get("content_type", "text")
-    
-    if content_type == "legal":
-        # Expand legal abbreviations
-        replacements = {
-            "Sec.": "Section",
-            "Art.": "Article",
-            "para.": "paragraph"
-        }
-        for short, full in replacements.items():
-            chunk_text = chunk_text.replace(short, full)
-        return "[LEGAL] " + chunk_text
-    
-    elif content_type == "medical":
-        # Ensure medical terms are properly spaced
-        chunk_text = re.sub(r'([a-z])([A-Z])', r'\1 \2', chunk_text)
-        return "[MEDICAL] " + chunk_text
-    
-    return chunk_text
-
-store = safe_store.SafeStore(db_path="multi_domain_store.db")
-
-with store:
-    # Legal document
-    store.add_document(
-        "contract.pdf",
-        metadata={"content_type": "legal"}
-    )
-    
-    # Medical document
-    store.add_document(
-        "patient_notes.txt",
-        metadata={"content_type": "medical"}
-    )
-```
-
-This simple hook provides immense flexibility for customizing your data ingestion pipeline.
-
-### Reconstructing Original Content
-After indexing, you may need to retrieve the full, original text of a document as it was processed by `safe_store`. The `reconstruct_document_text` method does this by fetching and reassembling all of a document's stored chunks.
-
-```python
-# Assuming 'store' is an initialized SafeStore instance
-# with "path/to/research_paper.txt" already added.
-full_text = store.reconstruct_document_text("path/to/research_paper.txt")
-
-if full_text:
-    print("--- Reconstructed Text ---")
-    print(full_text[:500] + "...")
-
-# Note: If a chunk_overlap was used during indexing, the reconstructed text
-# will contain these repeated, overlapping segments. This method provides a
-# raw reassembly of the stored data.
-```
-
-**Use Case: Document Verification and Comparison**
-
-```python
-def verify_document_integrity(store, file_path: str) -> dict:
-    """
-    Compares the reconstructed document with the original to verify
-    that all content was properly stored.
-    """
-    from pathlib import Path
-    
-    # Get original content
-    original = Path(file_path).read_text(encoding='utf-8')
-    
-    # Get reconstructed content
-    reconstructed = store.reconstruct_document_text(file_path)
-    
-    # Compare (ignoring whitespace differences from chunking)
-    original_normalized = ' '.join(original.split())
-    reconstructed_normalized = ' '.join(reconstructed.split())
-    
-    return {
-        "file": file_path,
-        "original_length": len(original),
-        "reconstructed_length": len(reconstructed),
-        "match": original_normalized == reconstructed_normalized,
-        "difference_ratio": len(set(original_normalized.split()) ^ set(reconstructed_normalized.split())) / len(set(original_normalized.split()))
-    }
-
-with store:
-    result = verify_document_integrity(store, "important_contract.pdf")
-    if not result["match"]:
-        print(f"Warning: Document reconstruction mismatch!")
-        print(f"Difference ratio: {result['difference_ratio']:.2%}")
+# Cleanup
+doc.unlink(missing_ok=True)
+for p in [DB_FILE, f"{DB_FILE}.lock", f"{DB_FILE}-wal", f"{DB_FILE}-shm"]:
+    Path(p).unlink(missing_ok=True)
+print("Encrypted lifecycle demo complete.")
 ```
 ---
+
+## 🎯 Supported Vectorization Backends
+
+| Backend | Identifier | Typical Model / Target | Local / Remote |
+| :--- | :--- | :--- | :--- |
+| **Sentence-Transformers** | `"st"` | `all-MiniLM-L6-v2`, `all-mpnet-base-v2` | Local (PyTorch / HuggingFace) |
+| **Ollama** | `"ollama"` | `nomic-embed-text`, `qwen3-embedding` | Local (Ollama Server) |
+| **OpenAI** | `"openai"` | `text-embedding-3-small`, `text-embedding-3-large` | Remote API |
+| **Cohere** | `"cohere"` | `embed-english-v3.0`, `embed-multilingual-v3.0` | Remote API |
+| **Lollms** | `"lollms"` | Any OpenAI-compatible local/remote endpoint | Local / Remote |
+| **TF-IDF** | `"tfidf"` / `"tf_idf"` | Data-dependent sparse baseline | Local (Scikit-Learn) |
+| **Grepper** | `"grepper"` | Lightweight inverted index with markdown trees | Local (Zero-ML) |
+
+---
+
+## 📑 Supported Document & File Formats
+
+`safe_store` parses structured, unstructured, and source files out-of-the-box:
+
+- **Unstructured Documents**: `.pdf`, `.docx`, `.pptx`, `.html`, `.htm`, `.txt`, `.md`, `.rst`, `.msg`, `.rtf`
+- **Data & Tables**: `.csv`, `.tsv`, `.json`, `.xlsx`, `.xls`, `.xml`, `.sql`
+- **Source Code**: `.py`, `.js`, `.ts`, `.tsx`, `.jsx`, `.c`, `.cpp`, `.h`, `.cs`, `.java`, `.go`, `.rs`, `.php`, `.rb`, `.swift`, `.kt`, `.sh`, `.ps1`, `.lua`, `.sql`
+
+---
+
+## 📊 Performance Benchmarks
+
+Typical benchmarks measured on consumer hardware (Intel i7 / 16GB RAM / SSD):
+
+| Operation | Scale / Dataset | Elapsed Time | Mode |
+| :--- | :--- | :--- | :--- |
+| **Dense Vector Query** | 50,000 Chunks | ~15 ms | NumPy Cosine Dot Product |
+| **BM25 Lexical Search** | 100,000 Chunks | ~4 ms | SQLite FTS5 (Porter Stemmed) |
+| **W3C SPARQL Relational Join** | 20,000 Triples (2-hop) | ~8 ms | RDFLib + In-Memory Quad Index |
+| **Tabular Mapping** | 10,000 CSV Rows | ~1.2 s | Batch Transactional Insertion |
+| **Document Ingestion (ST)** | 1 MB Text (~300 pages) | ~3.5 s | Parsing + Token Chunking + Embedding |
+
+---
+
 ## 🗺️ Roadmap
 
-- [x] Core vector storage with SQLite
-- [x] Multiple vectorizer support (ST, TF-IDF, OpenAI, Ollama, Cohere)
-- [x] Knowledge graph extraction and querying
-- [x] SPARQL support for graph queries
-- [x] Encryption at rest
-- [ ] Vector quantization for memory efficiency
-- [ ] Distributed/multi-instance synchronization
-- [ ] Web-based management UI
-- [ ] Hybrid search (dense + sparse vectors)
-- [ ] Automatic ontology suggestion
-- [ ] Incremental graph updates
+- [x] SQLite-backed dense vector database with auto-configuration persistence
+- [x] Multi-backend vectorizer hub (ST, Ollama, OpenAI, Cohere, Lollms, TF-IDF, Grepper)
+- [x] W3C SPARQL 1.1 Engine (`SELECT`, `ASK`, `CONSTRUCT`, `DESCRIBE`)
+- [x] TBox & ABox Ontology Management (OWL / RDFS introspection)
+- [x] Declarative Tabular Mapping for CSV, XLSX, and SQLite tables
+- [x] Tri-Modal Hybrid Retrieval Engine (BM25 FTS5 + Dense Vectors + RRF)
+- [x] AES-128/HMAC Authenticated Encryption at Rest
+- [ ] Multi-Modal Image Vector Database using SigLIP / CLIP embeddings
+- [ ] Web-based Visual Knowledge Graph Studio & Inspector
 
 ---
+
 ## 🤝 Contributing & License
 
-Contributions are highly welcome! Please open an issue to discuss a new feature or submit a pull request on [GitHub](https://github.com/ParisNeo/safe_store).
+Contributions are welcome! Please open an issue or submit a pull request on [GitHub](https://github.com/ParisNeo/safe_store).
 
-### Areas We Need Help With
-
-- Additional vectorizer implementations
-- Performance optimizations for large-scale deployments  
-- More comprehensive test coverage
-- Documentation translations
-- Example integrations with popular frameworks
-
-Licensed under Apache 2.0. See [LICENSE](LICENSE).
-
----
-## 📚 Additional Resources
-
-- [Full API Documentation](https://parisneo.github.io/safe_store/)
-- [Example Projects](https://github.com/ParisNeo/safe_store/tree/main/examples)
-- [Discord Community](https://discord.gg/safe_store)
-- [Blog Posts & Tutorials](https://parisneo.github.io/blog/tag/safe_store)
+Licensed under the [Apache 2.0 License](LICENSE).

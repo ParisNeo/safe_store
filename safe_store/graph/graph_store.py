@@ -5,7 +5,6 @@ import json
 import uuid
 from pathlib import Path
 from typing import Optional, Callable, Dict, List, Any, Tuple, TYPE_CHECKING, Set
-import re
 
 from ascii_colors import ASCIIColors, trace_exception
 from ..core import db
@@ -15,6 +14,7 @@ from ..core.exceptions import (
 )
 from ..utils.json_parsing import robust_json_parser
 from ..vectorization.base import BaseVectorizer
+from .sparql.engine import SparqlEngine
 
 if TYPE_CHECKING:
     from ..store import SafeStore
@@ -31,12 +31,7 @@ def load_prompt(file_name: str) -> str:
 class GraphStore:
     """
     Manages a knowledge graph within a SafeStore database.
-
-    This class provides functionalities to build a graph from text documents,
-    perform vector-based semantic queries on the graph, and manually
-    manage graph elements (nodes and relationships). It operates as an
-    extension of a SafeStore instance, relying on it for database
-    connection, concurrency control, and vectorization.
+    Provides SPARQL 1.1 querying, graph building, entity fusion, and relational traversal.
     """
     GRAPH_FEATURES_ENABLED_KEY = "graph_features_enabled"
     DEFAULT_GRAPH_EXTRACTION_PROMPT_TEMPLATE = load_prompt("graph_extraction_prompt")
@@ -47,18 +42,19 @@ class GraphStore:
     def __init__(
         self,
         store: "SafeStore",
-        llm_executor_callback: LLMExecutorCallback,
-        ontology: Optional[Dict[str, Any]] = None,
+        llm_executor_callback: Optional[LLMExecutorCallback] = None,
+        ontology: Optional[Union[Dict[str, Any], str]] = None,
         graph_extraction_prompt_template: Optional[str] = None,
         query_parsing_prompt_template: Optional[str] = None,
         entity_fusion_prompt_template: Optional[str] = None,
     ):
         self.store = store
-        self.llm_executor = llm_executor_callback
+        self.llm_executor = llm_executor_callback or (lambda p: '{"nodes": [], "relationships": []}')
         self.ontology = ontology
         self.graph_extraction_prompt_template = graph_extraction_prompt_template or self.DEFAULT_GRAPH_EXTRACTION_PROMPT_TEMPLATE
         self.query_parsing_prompt_template = query_parsing_prompt_template or self.DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE
         self.entity_fusion_prompt_template = entity_fusion_prompt_template or self.DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE
+        self._sparql_engine: Optional[SparqlEngine] = None
         ASCIIColors.info(f"Initializing GraphStore with shared SafeStore for database: {self.store.db_path}")
         self._initialize_graph_features()
 
@@ -80,6 +76,12 @@ class GraphStore:
             raise ConfigurationError("The parent SafeStore has not been initialized with a vectorizer.")
         return self.store.vectorizer
 
+    @property
+    def sparql_engine(self) -> SparqlEngine:
+        if self._sparql_engine is None or self._sparql_engine.conn != self.conn:
+            self._sparql_engine = SparqlEngine(self.conn)
+        return self._sparql_engine
+
     def _initialize_graph_features(self) -> None:
         with self.store._instance_lock, self.store._optional_file_lock_context("Graph feature initialization"):
             try:
@@ -99,12 +101,8 @@ class GraphStore:
                 raise GraphError("Failed to initialize GraphStore features.") from e
 
     def _format_ontology_for_prompt(self) -> str:
-        """
-        Formats the ontology for the LLM prompt. Handles structured dicts,
-        plain text instructions, or empty/invalid inputs.
-        """
+        """Formats the ontology for the LLM prompt."""
         if isinstance(self.ontology, str) and self.ontology.strip():
-            ASCIIColors.info("Using plain text ontology instructions for prompt.")
             return self.ontology.strip()
 
         if isinstance(self.ontology, dict):
@@ -133,43 +131,178 @@ class GraphStore:
                     lines.append(f"  - {rel_type} (Source: {source}, Target: {target}): {desc}")
 
             if lines:
-                ASCIIColors.info("Formatted structured ontology for prompt.")
                 return "\n".join(lines)
 
-        ASCIIColors.info("No valid ontology provided; using default instructions.")
         return "No specific ontology provided. Extract entities and relationships based on the text context."
 
     def _get_graph_extraction_prompt(self, chunk_text: str, guidance: Optional[str] = None) -> str:
         user_guidance = guidance if guidance and guidance.strip() else "Extract all relevant properties you can identify."
-
         has_valid_ontology = isinstance(self.ontology, (dict, str)) and self.ontology
 
         if has_valid_ontology:
             template = self.DEFAULT_GRAPH_EXTRACTION_WITH_ONTOLOGY_PROMPT_TEMPLATE
             ontology_schema = self._format_ontology_for_prompt()
-            ASCIIColors.info("Using ontology-aware prompt for graph extraction.")
             return template.format(
                 chunk_text=chunk_text,
                 user_guidance=("" if not ontology_schema else "Ontology:\n"+ontology_schema+"\nGuidance:\n") + user_guidance
             )
         else:
             template = self.graph_extraction_prompt_template
-            ASCIIColors.info("Using default prompt for graph extraction.")
-            return template.format(
-                chunk_text=chunk_text,
-                user_guidance=user_guidance
-            )
+            return template.format(chunk_text=chunk_text, user_guidance=user_guidance)
 
     def _get_query_parsing_prompt(self, natural_language_query: str) -> str:
         return self.query_parsing_prompt_template.format(natural_language_query=natural_language_query)
 
     def _get_entity_fusion_prompt(self, node_a_props: Dict, node_b_props: Dict, label: str) -> str:
-        """Formats the prompt for the LLM to decide on entity fusion."""
         return self.entity_fusion_prompt_template.format(
             node_a_properties=json.dumps(node_a_props, indent=2),
             node_b_properties=json.dumps(node_b_props, indent=2),
             entity_label=label
         )
+
+    def _extract_and_insert_graph_for_chunk(self, chunk_id: int, chunk_text: str, guidance: Optional[str] = None) -> Tuple[int, int]:
+        """Extracts graph elements from a single chunk using LLM and saves to DB."""
+        prompt = self._get_graph_extraction_prompt(chunk_text, guidance)
+        raw_response = self.llm_executor(prompt)
+        try:
+            parsed = robust_json_parser(raw_response)
+        except Exception as e:
+            ASCIIColors.warning(f"Failed to parse LLM extraction response for chunk {chunk_id}: {e}")
+            return 0, 0
+
+        nodes_data = parsed.get("nodes", [])
+        rels_data = parsed.get("relationships", [])
+
+        node_map: Dict[Tuple[str, str], int] = {}
+        nodes_created = 0
+        rels_created = 0
+
+        for n in nodes_data:
+            if not isinstance(n, dict) or "label" not in n or "properties" not in n:
+                continue
+            label = str(n["label"])
+            props = n["properties"]
+            if not isinstance(props, dict):
+                continue
+
+            node_id = self._fuse_or_create_node(label, props)
+            self._vectorize_and_store_node_update(node_id, label, props)
+            db.link_node_to_chunk(self.conn, node_id, chunk_id)
+
+            id_key, id_val = self._get_node_identifying_parts(props)
+            if id_val:
+                node_map[(label.lower(), str(id_val).strip().lower())] = node_id
+                node_map[(label, str(id_val))] = node_id
+            nodes_created += 1
+
+        for r in rels_data:
+            if not isinstance(r, dict):
+                continue
+            src_label = str(r.get("source_node_label", ""))
+            src_val = str(r.get("source_node_identifying_value", ""))
+            tgt_label = str(r.get("target_node_label", ""))
+            tgt_val = str(r.get("target_node_identifying_value", ""))
+            rel_type = str(r.get("type", ""))
+
+            src_id = node_map.get((src_label.lower(), src_val.strip().lower())) or node_map.get((src_label, src_val))
+            if not src_id and src_label and src_val:
+                src_id = db.get_graph_node_by_signature(self.conn, f"{src_label}:{src_val.strip().lower()}")
+
+            tgt_id = node_map.get((tgt_label.lower(), tgt_val.strip().lower())) or node_map.get((tgt_label, tgt_val))
+            if not tgt_id and tgt_label and tgt_val:
+                tgt_id = db.get_graph_node_by_signature(self.conn, f"{tgt_label}:{tgt_val.strip().lower()}")
+
+            if src_id and tgt_id and rel_type:
+                props = r.get("properties", {})
+                props_json = json.dumps(props if isinstance(props, dict) else {})
+                db.add_graph_relationship(self.conn, src_id, tgt_id, rel_type, props_json)
+                rels_created += 1
+
+        return nodes_created, rels_created
+
+    def build_graph_for_document(self, doc_id: int, guidance: Optional[str] = None) -> Dict[str, int]:
+        """Builds graph nodes and relationships for all chunks of a specific document."""
+        with self.store._instance_lock, self.store._optional_file_lock_context(f"build_graph_for_document: {doc_id}"):
+            cursor = self.conn.execute("SELECT chunk_id, chunk_text, is_encrypted FROM chunks WHERE doc_id = ?", (doc_id,))
+            rows = cursor.fetchall()
+            if not rows:
+                return {"nodes_created": 0, "relationships_created": 0, "chunks_processed": 0}
+
+            total_nodes = 0
+            total_rels = 0
+            processed_chunk_ids = []
+
+            for chunk_id, chunk_text_data, is_enc in rows:
+                if is_enc:
+                    if self.encryptor.is_enabled:
+                        try:
+                            chunk_text = self.encryptor.decrypt(chunk_text_data)
+                        except Exception:
+                            continue
+                    else:
+                        continue
+                else:
+                    chunk_text = chunk_text_data.decode('utf-8') if isinstance(chunk_text_data, bytes) else str(chunk_text_data)
+
+                n_cnt, r_cnt = self._extract_and_insert_graph_for_chunk(chunk_id, chunk_text, guidance)
+                total_nodes += n_cnt
+                total_rels += r_cnt
+                processed_chunk_ids.append(chunk_id)
+
+            if processed_chunk_ids:
+                db.mark_chunks_graph_processed(self.conn, processed_chunk_ids)
+
+            return {
+                "nodes_created": total_nodes,
+                "relationships_created": total_rels,
+                "chunks_processed": len(processed_chunk_ids)
+            }
+
+    def build_graph_for_all_documents(self, guidance: Optional[str] = None, progress_callback: Optional[ProgressCallback] = None) -> Dict[str, int]:
+        """Builds graph nodes and relationships for all unprocessed chunks across all documents."""
+        with self.store._instance_lock, self.store._optional_file_lock_context("build_graph_for_all_documents"):
+            cursor = self.conn.execute("SELECT chunk_id, chunk_text, is_encrypted, doc_id FROM chunks WHERE graph_processed_at IS NULL")
+            rows = cursor.fetchall()
+            if not rows:
+                cursor = self.conn.execute("SELECT chunk_id, chunk_text, is_encrypted, doc_id FROM chunks")
+                rows = cursor.fetchall()
+
+            total_chunks = len(rows)
+            if total_chunks == 0:
+                return {"nodes_created": 0, "relationships_created": 0, "chunks_processed": 0}
+
+            total_nodes = 0
+            total_rels = 0
+            processed_chunk_ids = []
+
+            for idx, (chunk_id, chunk_text_data, is_enc, doc_id) in enumerate(rows):
+                if is_enc:
+                    if self.encryptor.is_enabled:
+                        try:
+                            chunk_text = self.encryptor.decrypt(chunk_text_data)
+                        except Exception:
+                            continue
+                    else:
+                        continue
+                else:
+                    chunk_text = chunk_text_data.decode('utf-8') if isinstance(chunk_text_data, bytes) else str(chunk_text_data)
+
+                n_cnt, r_cnt = self._extract_and_insert_graph_for_chunk(chunk_id, chunk_text, guidance)
+                total_nodes += n_cnt
+                total_rels += r_cnt
+                processed_chunk_ids.append(chunk_id)
+
+                if progress_callback:
+                    progress_callback((idx + 1) / total_chunks, f"Processed chunk {idx+1}/{total_chunks}")
+
+            if processed_chunk_ids:
+                db.mark_chunks_graph_processed(self.conn, processed_chunk_ids)
+
+            return {
+                "nodes_created": total_nodes,
+                "relationships_created": total_rels,
+                "chunks_processed": len(processed_chunk_ids)
+            }
 
     def _fuse_or_create_node(self, label: str, properties: Dict[str, Any]) -> int:
         id_key, id_value = self._get_node_identifying_parts(properties)
@@ -177,7 +310,6 @@ class GraphStore:
             sig = f"{label}:{id_key}:{id_value.strip().lower()}"
             if node_id := db.get_graph_node_by_signature(self.conn, sig):
                 db.update_graph_node_properties_db(self.conn, node_id, properties, merge_strategy="overwrite_all")
-                ASCIIColors.info(f"Fused node via exact signature '{sig}' into existing node {node_id}.")
                 return node_id
 
         temp_text_to_embed = f"An entity of type {label} with properties {json.dumps(properties)}."
@@ -192,9 +324,6 @@ class GraphStore:
                 raw_response = self.llm_executor(prompt)
                 decision = robust_json_parser(raw_response)
                 if decision.get("is_same") is True:
-                    ASCIIColors.info(f"LLM confirmed fusion: Merging new data into node {candidate_id}.")
-
-                    # Fusion logic with `other_identifiers`
                     existing_props = candidate_details['properties']
                     other_identifiers = existing_props.get("other_identifiers", [])
                     new_id_key, new_id_value = self._get_node_identifying_parts(properties)
@@ -202,33 +331,28 @@ class GraphStore:
                     if new_id_value and new_id_value not in other_identifiers:
                         other_identifiers.append(new_id_value)
 
-                    # Merge properties, but ensure other_identifiers is handled correctly
                     merged_props = {**existing_props, **properties}
                     merged_props["other_identifiers"] = sorted(list(set(other_identifiers)))
 
                     db.update_graph_node_properties_db(self.conn, candidate_id, merged_props, merge_strategy="overwrite_all")
                     return candidate_id
-            except (LLMCallbackError, json.JSONDecodeError, KeyError) as e:
-                ASCIIColors.warning(f"Entity fusion LLM call failed for candidate {candidate_id}: {e}")
+            except (LLMCallbackError, json.JSONDecodeError, KeyError):
+                pass
 
-        # Ensure new nodes have the other_identifiers property
         if "other_identifiers" not in properties:
             properties["other_identifiers"] = []
 
         sig = f"{label}:{id_key}:{id_value.strip().lower()}" if id_key and id_value else f"unidentified:{label}:{uuid.uuid4()}"
         new_node_id = db.add_or_update_graph_node(self.conn, label, properties, sig)
-        ASCIIColors.info(f"No match found. Created new node {new_node_id} with signature '{sig}'.")
         return new_node_id
 
     def _get_node_identifying_parts(self, properties: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
         if not isinstance(properties, dict): return None, None
-        # Prioritize "identifying_value" if present, as per the prompt's structure
         if "identifying_value" in properties and properties["identifying_value"]:
             return "identifying_value", str(properties["identifying_value"])
         for key in ["name", "title", "id", "identifier"]:
             if key in properties and properties[key]:
                 return key, str(properties[key])
-        # Fallback to the first non-empty, sortable property
         for key, value in sorted(properties.items()):
             if isinstance(value, (str, int, float)) and value:
                 return key, str(value)
@@ -243,192 +367,12 @@ class GraphStore:
         except Exception as e:
             ASCIIColors.warning(f"Could not generate or store vector for node {node_id}: {e}")
 
-    def _get_llm_extraction_with_retry(
-        self, chunk_id: int, chunk_text: str, guidance: Optional[str], max_retries: int
-    ) -> Optional[Dict[str, Any]]:
+    def query_sparql(self, sparql_query: str) -> Dict[str, Any]:
         """
-        Calls the LLM to extract graph data, with a retry mechanism for JSON parsing failures.
-        Returns the parsed JSON dictionary on success, or None if all retries fail.
+        Executes a W3C SPARQL 1.1 query (SELECT, ASK, CONSTRUCT, DESCRIBE) against the graph database.
         """
-        prompt = self._get_graph_extraction_prompt(chunk_text, guidance)
-        for attempt in range(max_retries + 1):
-            try:
-                raw_response = self.llm_executor(prompt)
-                if attempt > 0: # Log if we are in a retry attempt
-                    ASCIIColors.cyan(f"--- LLM Raw Output for Chunk {chunk_id} (Attempt {attempt + 1}) ---")
-                    ASCIIColors.yellow(raw_response)
-                    ASCIIColors.cyan("----------------------------------------------------")
-
-                parsed_json = robust_json_parser(raw_response)
-                return parsed_json
-            except Exception as e:
-                ASCIIColors.warning(f"LLM output for chunk {chunk_id} failed parsing on attempt {attempt + 1}/{max_retries + 1}. Error: {e}")
-                if attempt < max_retries:
-                    # Add a corrective instruction to the prompt for the next attempt
-                    prompt += (f"\n\n--- Previous Attempt Failed ---"
-                               f"\nYour last response could not be parsed as valid JSON. "
-                               f"Please review the instructions and provide a single, complete, and well-formed JSON object "
-                               f"enclosed in a markdown code block. Raw previous response: {raw_response[:500]}...")
-                else:
-                    # This was the last attempt
-                    ASCIIColors.error(f"Failed to get valid JSON from LLM for chunk {chunk_id} after {max_retries + 1} attempts.")
-                    return None
-        return None # Should be unreachable, but here for completeness
-
-    def _process_chunk_for_graph_impl(self, chunk_id: int, guidance: Optional[str] = None, llm_retries: int = 1) -> None:
-        chunk_details = db.get_chunk_details_db(self.conn, [chunk_id], self.encryptor)[0]
-        if not chunk_details:
-            raise GraphProcessingError(f"Chunk {chunk_id} not found.")
-        decrypted_chunk_text = chunk_details['chunk_text']
-
-        llm_output = self._get_llm_extraction_with_retry(chunk_id, decrypted_chunk_text, guidance, llm_retries)
-
-        if not llm_output:
-            ASCIIColors.error(f"Skipping graph processing for chunk {chunk_id} due to persistent LLM JSON parsing failures.")
-            return
-
-        if "nodes" not in llm_output or "relationships" not in llm_output:
-            ASCIIColors.warning(f"LLM output for chunk {chunk_id} is structured incorrectly (missing keys). Skipping.")
-            return
-
-        node_map: Dict[Tuple[str, str], int] = {}
-        for node_data in llm_output.get("nodes", []):
-            if not (isinstance(node_data, dict) and node_data.get("label") and isinstance(node_data.get("properties"), dict)): continue
-            label, props = str(node_data["label"]), node_data["properties"]
-            node_id = self._fuse_or_create_node(label, props)
-            self._vectorize_and_store_node_update(node_id, label, props)
-            db.link_node_to_chunk(self.conn, node_id, chunk_id)
-
-            _, id_value = self._get_node_identifying_parts(props)
-            if id_value:
-                node_map[(label, str(id_value))] = node_id
-
-        for rel_data in llm_output.get("relationships", []):
-            req_keys = ["source_node_label", "source_node_identifying_value", "target_node_label", "target_node_identifying_value", "type"]
-            if not (isinstance(rel_data, dict) and all(k in rel_data for k in req_keys)): continue
-
-            src_label, src_val = str(rel_data["source_node_label"]), str(rel_data["source_node_identifying_value"])
-            tgt_label, tgt_val = str(rel_data["target_node_label"]), str(rel_data["target_node_identifying_value"])
-
-            src_id = node_map.get((src_label, src_val))
-            tgt_id = node_map.get((tgt_label, tgt_val))
-
-            def find_node_id_db(label: str, value: str) -> Optional[int]:
-                for key in ["identifying_value", "name", "title", "id", "identifier"]:
-                    sig = f"{label}:{key}:{value.strip().lower()}"
-                    if node_id := db.get_graph_node_by_signature(self.conn, sig): return node_id
-                if similar_nodes := db.find_node_by_label_and_property_value(self.conn, label, value, limit=1):
-                    return similar_nodes[0]['node_id']
-                return None
-
-            if src_id is None: src_id = find_node_id_db(src_label, src_val)
-            if tgt_id is None: tgt_id = find_node_id_db(tgt_label, tgt_val)
-
-            if src_id is None or tgt_id is None:
-                ASCIIColors.warning(f"Skipping relationship '{rel_data['type']}'. Src: '{src_val}' (Found: {src_id is not None}), Tgt: '{tgt_val}' (Found: {tgt_id is not None})")
-                continue
-
-            try:
-                props_json = json.dumps(rel_data.get("properties", {}))
-                db.add_graph_relationship(self.conn, src_id, tgt_id, str(rel_data["type"]), props_json)
-                ASCIIColors.info(f"Successfully created relationship: {src_label} -> {rel_data['type']} -> {tgt_label}")
-            except (GraphDBError, json.JSONDecodeError) as e:
-                ASCIIColors.error(f"Error storing relationship '{rel_data['type']}': {e}")
-
-    def process_chunk_for_graph(self, chunk_id: int, llm_retries: int = 1) -> None:
-        with self.store._instance_lock, self.store._optional_file_lock_context(f"process_chunk_for_graph: {chunk_id}"):
-            try:
-                self.conn.execute("BEGIN")
-                self._process_chunk_for_graph_impl(chunk_id, llm_retries=llm_retries)
-                db.mark_chunks_graph_processed(self.conn, [chunk_id])
-                self.conn.commit()
-                ASCIIColors.success(f"Successfully processed chunk {chunk_id} for graph.")
-            except Exception as e:
-                if self.conn.in_transaction: self.conn.rollback()
-                ASCIIColors.error(f"Error processing chunk {chunk_id} for graph: {e}")
-                raise GraphProcessingError(f"Failed to process chunk {chunk_id}") from e
-
-    def build_graph_for_document(
-        self, doc_id: int, guidance: Optional[str] = None, progress_callback: Optional[ProgressCallback] = None, llm_retries: int = 1
-    ) -> None:
-        with self.store._instance_lock, self.store._optional_file_lock_context(f"build_graph_for_document: {doc_id}"):
-            # AND graph_processed_at IS NULL
-            chunk_ids = [row[0] for row in self.conn.execute("SELECT chunk_id FROM chunks WHERE doc_id = ?", (doc_id,)).fetchall()]
-            if not chunk_ids:
-                ASCIIColors.info(f"No unprocessed chunks found for document {doc_id}.")
-                if progress_callback: progress_callback(1.0, "No new chunks to process.")
-                return
-
-            if progress_callback: progress_callback(0.0, f"Starting to process {len(chunk_ids)} chunks.")
-            try:
-                self.conn.execute("BEGIN")
-                for i, chunk_id in enumerate(chunk_ids):
-                    # Robust error handling per chunk
-                    savepoint_name = f"sp_doc_chunk_{chunk_id}"
-                    try:
-                        self.conn.execute(f"SAVEPOINT {savepoint_name}")
-                        self._process_chunk_for_graph_impl(chunk_id, guidance, llm_retries)
-                        self.conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
-                    except Exception as e:
-                        self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
-                        ASCIIColors.error(f"Failed to process chunk {chunk_id} for document {doc_id}. Skipping.")
-                        trace_exception(e)
-
-                    if progress_callback: progress_callback((i + 1) / len(chunk_ids), f"Processed chunk {i + 1}/{len(chunk_ids)}.")
-
-                # Mark all examined chunks as processed, even if they failed (to avoid infinite loops)
-                db.mark_chunks_graph_processed(self.conn, chunk_ids)
-                self.conn.commit()
-                if progress_callback: progress_callback(1.0, "Graph building complete.")
-                ASCIIColors.success(f"Successfully built graph for document {doc_id}.")
-            except Exception as e:
-                if self.conn.in_transaction: self.conn.rollback()
-                if progress_callback: progress_callback(1.0, f"Error: {e}")
-                ASCIIColors.error(f"Critical error building graph for document {doc_id}: {e}")
-                raise GraphProcessingError(f"Failed to build graph for document {doc_id}") from e
-
-    def build_graph_for_all_documents(
-        self, batch_size_chunks: int = 20, progress_callback: Optional[ProgressCallback] = None, llm_retries: int = 1
-    ) -> None:
-        with self.store._instance_lock, self.store._optional_file_lock_context("build_graph_for_all_documents"):
-            total_unprocessed = self.conn.execute("SELECT COUNT(*) FROM chunks WHERE graph_processed_at IS NULL").fetchone()[0]
-            if total_unprocessed == 0:
-                ASCIIColors.success("Graph is already up-to-date with all chunks.")
-                if progress_callback: progress_callback(1.0, "Graph is up-to-date.")
-                return
-
-            ASCIIColors.info(f"Found {total_unprocessed} total unprocessed chunks. Processing in batches of {batch_size_chunks}.")
-            processed = 0
-            if progress_callback: progress_callback(0, f"Starting build for {total_unprocessed} chunks.")
-            while True:
-                chunk_ids_batch = [r[0] for r in self.conn.execute("SELECT chunk_id FROM chunks WHERE graph_processed_at IS NULL LIMIT ?", (batch_size_chunks,)).fetchall()]
-                if not chunk_ids_batch: break
-
-                try:
-                    self.conn.execute("BEGIN")
-                    for chunk_id in chunk_ids_batch:
-                        # Robust error handling per chunk within batch
-                        savepoint_name = f"sp_chunk_{chunk_id}"
-                        try:
-                            self.conn.execute(f"SAVEPOINT {savepoint_name}")
-                            self._process_chunk_for_graph_impl(chunk_id, llm_retries=llm_retries)
-                            self.conn.execute(f"RELEASE SAVEPOINT {savepoint_name}")
-                        except Exception as e:
-                            self.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name}")
-                            ASCIIColors.error(f"Failed to process chunk {chunk_id} in batch. Skipping.")
-                            trace_exception(e)
-
-                    # Mark all batch chunks as processed to ensure forward progress
-                    db.mark_chunks_graph_processed(self.conn, chunk_ids_batch)
-                    self.conn.commit()
-
-                    processed += len(chunk_ids_batch)
-                    ASCIIColors.info(f"Processed batch of {len(chunk_ids_batch)}. Total processed: {processed}/{total_unprocessed}")
-                    if progress_callback: progress_callback(processed / total_unprocessed, f"Processed {processed}/{total_unprocessed} chunks.")
-                except Exception as e:
-                    if self.conn.in_transaction: self.conn.rollback()
-                    raise GraphProcessingError("Critical failure during batch processing.") from e
-            ASCIIColors.success("Finished building graph for all available documents.")
+        with self.store._instance_lock, self.store._optional_file_lock_context(f"query_sparql: {sparql_query[:30]}"):
+            return self.sparql_engine.execute_query(sparql_query)
 
     def query_graph(self, natural_language_query: str, output_mode: str = "chunks_summary", top_k_nodes: int = 5) -> Any:
         with self.store._instance_lock, self.store._optional_file_lock_context(f"query_graph: {natural_language_query[:30]}"):
@@ -437,15 +381,14 @@ class GraphStore:
             query_vector = self.embedder.vectorize([natural_language_query])[0]
             seed_node_ids = db.search_graph_nodes_by_vector(self.conn, query_vector, top_k_nodes)
             if not seed_node_ids:
-                ASCIIColors.warning("Vector search yielded no relevant seed nodes for the query.")
                 return self._empty_query_result(output_mode)
-            ASCIIColors.debug(f"Found seed node IDs via vector search: {seed_node_ids}")
 
             parsed_guidance = {}
             try:
                 raw_llm_response = self.llm_executor(self._get_query_parsing_prompt(natural_language_query))
                 parsed_guidance = robust_json_parser(raw_llm_response)
-            except Exception as e: ASCIIColors.warning(f"Could not parse LLM guidance for query, using defaults. Error: {e}")
+            except Exception:
+                pass
 
             max_depth = parsed_guidance.get("max_depth", 2)
             target_rels = parsed_guidance.get("target_relationships") or [{"type": None, "direction": "any"}]
@@ -479,539 +422,46 @@ class GraphStore:
             final_graph_data = {"nodes": list(subgraph_nodes.values()), "relationships": list(subgraph_rels.values())}
             return self._format_query_output(final_graph_data, output_mode)
 
-    def query_sparql(self, sparql_query: str) -> Dict[str, Any]:
+    def query_graph_hybrid(
+        self,
+        query_text: str,
+        top_k: int = 5,
+        dense_weight: float = 0.4,
+        bm25_weight: float = 0.3,
+        graph_weight: float = 0.3,
+        rrf_k: int = 60
+    ) -> Dict[str, Any]:
         """
-        Executes a SPARQL query against the graph database.
-
-        Args:
-            sparql_query: A string containing the SPARQL query
-
-        Returns:
-            A dictionary with 'results' containing the query results
+        Unified Tri-Modal Retrieval combining Graph Traversal (SPARQL/Neighborhood),
+        Dense Vector Similarity, and Sparse BM25 Lexical search via Reciprocal Rank Fusion.
         """
-        with self.store._instance_lock, self.store._optional_file_lock_context(f"query_sparql: {sparql_query[:30]}"):
-            try:
-                # Parse the SPARQL query
-                parsed_query = self._parse_sparql_query(sparql_query)
-
-                # Execute the query based on its type
-                if parsed_query['type'] == 'SELECT':
-                    results = self._execute_select_query(parsed_query)
-                    return {
-                        'head': {'vars': parsed_query['variables']},
-                        'results': {'bindings': results}
-                    }
-                elif parsed_query['type'] == 'ASK':
-                    result = self._execute_ask_query(parsed_query)
-                    return {'boolean': result}
-                elif parsed_query['type'] == 'CONSTRUCT':
-                    graph = self._execute_construct_query(parsed_query)
-                    return {'graph': graph}
-                elif parsed_query['type'] == 'DESCRIBE':
-                    graph = self._execute_describe_query(parsed_query)
-                    return {'graph': graph}
-                else:
-                    raise QueryError(f"Unsupported SPARQL query type: {parsed_query['type']}")
-
-            except Exception as e:
-                ASCIIColors.error(f"Error executing SPARQL query: {e}")
-                raise QueryError(f"SPARQL query execution failed: {e}") from e
-
-    def _parse_sparql_query(self, sparql_query: str) -> Dict[str, Any]:
-        """
-        Parses a SPARQL query into a structured format for execution.
-
-        Args:
-            sparql_query: The SPARQL query string
-
-        Returns:
-            A dictionary containing the parsed query components
-        """
-        # Basic SPARQL parser - this is a simplified implementation
-        # A full implementation would require a proper SPARQL parser
-
-        # Normalize whitespace and remove comments
-        query = re.sub(r'#.*$', '', sparql_query, flags=re.MULTILINE)
-        query = ' '.join(query.split())
-
-        # Determine query type
-        query_type_match = re.match(r'(SELECT|ASK|CONSTRUCT|DESCRIBE)\b', query, re.IGNORECASE)
-        if not query_type_match:
-            raise QueryError("Could not determine SPARQL query type")
-
-        query_type = query_type_match.group(1).upper()
-
-        # Parse variables for SELECT queries
-        variables = []
-        if query_type == 'SELECT':
-            select_match = re.match(r'SELECT\s+(.*?)\s+WHERE', query, re.IGNORECASE)
-            if not select_match:
-                select_match = re.match(r'SELECT\s+(.*?)\s*\{', query, re.IGNORECASE)
-
-            if select_match:
-                vars_part = select_match.group(1)
-                variables = [v.strip() for v in re.findall(r'\?(\w+)', vars_part)]
-
-        # Parse WHERE clause
-        where_match = re.search(r'WHERE\s*\{([^}]*)\}', query, re.IGNORECASE)
-        if not where_match:
-            where_match = re.search(r'\{([^}]*)\}', query)
-
-        if not where_match:
-            raise QueryError("Could not find WHERE clause in SPARQL query")
-
-        where_clause = where_match.group(1).strip()
-
-        # Parse triple patterns
-        triple_patterns = []
-        for triple in re.split(r'\.\s*', where_clause):
-            triple = triple.strip()
-            if not triple:
-                continue
-
-            # Parse subject, predicate, object
-            parts = re.split(r'\s+', triple, 2)
-            if len(parts) != 3:
-                raise QueryError(f"Invalid triple pattern: {triple}")
-
-            subject, predicate, obj = parts
-
-            # Validate and normalize components
-            subject = self._normalize_sparql_component(subject)
-            predicate = self._normalize_sparql_component(predicate)
-            obj = self._normalize_sparql_component(obj)
-
-            triple_patterns.append({
-                'subject': subject,
-                'predicate': predicate,
-                'object': obj
-            })
-
-        return {
-            'type': query_type,
-            'variables': variables,
-            'triple_patterns': triple_patterns,
-            'filters': [],  # Would be parsed from FILTER clauses
-            'original_query': sparql_query
-        }
-
-    def _normalize_sparql_component(self, component: str) -> Dict[str, Any]:
-        """
-        Normalizes a SPARQL component (subject, predicate, or object) into a structured format.
-
-        Args:
-            component: The component string from the SPARQL query
-
-        Returns:
-            A dictionary with 'type' and 'value' keys
-        """
-        if component.startswith('?'):
-            return {'type': 'variable', 'value': component[1:]}
-        elif component.startswith('<') and component.endswith('>'):
-            return {'type': 'uri', 'value': component[1:-1]}
-        elif component.startswith('"') and component.endswith('"'):
-            # Simple literal - could be more complex with language tags or datatypes
-            value = component[1:-1]
-            return {'type': 'literal', 'value': value}
-        else:
-            # Could be a prefixed name or other type
-            return {'type': 'unknown', 'value': component}
-
-    def _execute_select_query(self, parsed_query: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Executes a SELECT SPARQL query.
-
-        Args:
-            parsed_query: The parsed query dictionary
-
-        Returns:
-            A list of result bindings
-        """
-        # Get all triple patterns from the query
-        triple_patterns = parsed_query['triple_patterns']
-        variables = parsed_query['variables']
-
-        # If no variables, we can't return meaningful results
-        if not variables:
-            return []
-
-        # Build a query to our SQLite database based on the triple patterns
-        query_parts = []
-        params = []
-        variable_mappings = {}  # Maps variable names to their positions in the result
-
-        # Process each triple pattern
-        for i, pattern in enumerate(triple_patterns):
-            subj = pattern['subject']
-            pred = pattern['predicate']
-            obj = pattern['object']
-
-            # Build conditions based on what's a variable vs. a concrete value
-            conditions = []
-            join_conditions = []
-
-            # Subject condition
-            if subj['type'] == 'variable':
-                if subj['value'] not in variable_mappings:
-                    variable_mappings[subj['value']] = f"node_{i}"
-                conditions.append(f"gn_{i}.node_id = ?")
-            elif subj['type'] == 'uri':
-                # In our system, URIs would be represented as node labels or properties
-                conditions.append(f"gn_{i}.node_label = ?")
-                params.append(subj['value'])
-            else:
-                # For literals as subjects (uncommon), we'd need special handling
-                conditions.append(f"gn_{i}.node_properties LIKE ?")
-                params.append(f'%{subj["value"]}%')
-
-            # Predicate condition
-            if pred['type'] == 'variable':
-                if pred['value'] not in variable_mappings:
-                    variable_mappings[pred['value']] = f"rel_{i}"
-                conditions.append(f"gr_{i}.relationship_type = ?")
-            elif pred['type'] == 'uri':
-                conditions.append(f"gr_{i}.relationship_type = ?")
-                params.append(pred['value'])
-            else:
-                # Literal as predicate - not standard SPARQL
-                conditions.append(f"gr_{i}.relationship_properties LIKE ?")
-                params.append(f'%{pred["value"]}%')
-
-            # Object condition
-            if obj['type'] == 'variable':
-                if obj['value'] not in variable_mappings:
-                    variable_mappings[obj['value']] = f"node_{i}_target"
-                conditions.append(f"gn_{i}_target.node_id = ?")
-            elif obj['type'] == 'uri':
-                conditions.append(f"gn_{i}_target.node_label = ?")
-                params.append(obj['value'])
-            elif obj['type'] == 'literal':
-                conditions.append(f"gn_{i}_target.node_properties LIKE ?")
-                params.append(f'%{obj["value"]}%')
-            else:
-                # Unknown type - treat as literal
-                conditions.append(f"gn_{i}_target.node_properties LIKE ?")
-                params.append(f'%{obj["value"]}%')
-
-            # Add the basic join for this triple pattern
-            query_parts.append(f"""
-                JOIN graph_relationships gr_{i} ON
-                    {'gn_{i}.node_id = gr_{i}.source_node_id' if subj['type'] != 'variable' or obj['type'] != 'variable' else '1=1'}
-                JOIN graph_nodes gn_{i}_target ON
-                    gr_{i}.target_node_id = gn_{i}_target.node_id
-            """)
-
-            # Add the node table for the subject
-            query_parts.append(f"""
-                JOIN graph_nodes gn_{i} ON
-                    {'gn_{i}.node_id = gr_{i}.source_node_id' if subj['type'] != 'variable' else '1=1'}
-            """)
-
-            # Add the conditions for this pattern
-            if conditions:
-                query_parts.append(f"WHERE {' AND '.join(conditions)}")
-
-        # Build the complete SQL query
-        sql = f"""
-            SELECT DISTINCT {', '.join(f'gn_{i}.node_id as node_{i}_id, gn_{i}.node_label as node_{i}_label, gn_{i}.node_properties as node_{i}_props' for i in range(len(triple_patterns)))}
-            FROM graph_nodes gn_0
-            {' '.join(query_parts)}
-        """
-
-        # Execute the query
-        cursor = self.conn.cursor()
-        cursor.execute(sql, params)
-
-        # Process the results
-        results = []
-        for row in cursor.fetchall():
-            binding = {}
-
-            # Map the database results back to SPARQL variables
-            for var in variables:
-                if var in variable_mappings:
-                    mapping = variable_mappings[var]
-                    if mapping.startswith('node_'):
-                        # This is a node variable
-                        node_idx = int(mapping.split('_')[1])
-                        node_id = row[f'node_{node_idx}_id']
-                        node_label = row[f'node_{node_idx}_label']
-                        node_props = row[f'node_{node_idx}_props']
-
-                        if node_id is not None:
-                            # Parse properties if available
-                            props = {}
-                            if node_props:
-                                try:
-                                    props = json.loads(node_props)
-                                except json.JSONDecodeError:
-                                    pass
-
-                            # Determine the value type
-                            if node_label:
-                                # This is a URI-like value (our node label)
-                                binding[var] = {
-                                    'type': 'uri',
-                                    'value': node_label
-                                }
-                            else:
-                                # This is a literal value from properties
-                                # Find the first property that matches
-                                for prop_key, prop_value in props.items():
-                                    if prop_value:
-                                        binding[var] = {
-                                            'type': 'literal',
-                                            'value': str(prop_value)
-                                        }
-                                        break
-                    elif mapping.startswith('rel_'):
-                        # This is a relationship variable
-                        rel_idx = int(mapping.split('_')[1])
-                        # In our current query structure, we don't directly select relationship types
-                        # This would need to be enhanced in a full implementation
-                        pass
-
-            if binding:
-                results.append(binding)
-
-        return results
-
-    def _execute_ask_query(self, parsed_query: Dict[str, Any]) -> bool:
-        """
-        Executes an ASK SPARQL query.
-
-        Args:
-            parsed_query: The parsed query dictionary
-
-        Returns:
-            True if the query pattern matches, False otherwise
-        """
-        # For ASK queries, we just need to check if any results would be returned
-        try:
-            results = self._execute_select_query(parsed_query)
-            return len(results) > 0
-        except Exception:
-            return False
-
-    def _execute_construct_query(self, parsed_query: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Executes a CONSTRUCT SPARQL query.
-
-        Args:
-            parsed_query: The parsed query dictionary
-
-        Returns:
-            A list of triples representing the constructed graph
-        """
-        # For CONSTRUCT queries, we execute the WHERE part and then
-        # apply the CONSTRUCT template to the results
-
-        # First, execute the WHERE part as a SELECT query
-        select_query = {
-            'type': 'SELECT',
-            'variables': [],  # We'll capture all variables
-            'triple_patterns': parsed_query['triple_patterns'],
-            'original_query': parsed_query['original_query']
-        }
-
-        # Get all variables from the triple patterns
-        all_variables = set()
-        for pattern in parsed_query['triple_patterns']:
-            for component in ['subject', 'predicate', 'object']:
-                if pattern[component]['type'] == 'variable':
-                    all_variables.add(pattern[component]['value'])
-
-        select_query['variables'] = list(all_variables)
-
-        # Execute the SELECT query
-        results = self._execute_select_query(select_query)
-
-        # Now apply the CONSTRUCT template (which is in the triple_patterns)
-        constructed_graph = []
-
-        for result in results:
-            # For each result binding, create triples based on the CONSTRUCT template
-            for pattern in parsed_query['triple_patterns']:
-                subj = pattern['subject']
-                pred = pattern['predicate']
-                obj = pattern['object']
-
-                # Resolve variables in the pattern
-                subj_value = self._resolve_sparql_component(subj, result)
-                pred_value = self._resolve_sparql_component(pred, result)
-                obj_value = self._resolve_sparql_component(obj, result)
-
-                if subj_value and pred_value and obj_value:
-                    constructed_graph.append({
-                        'subject': subj_value,
-                        'predicate': pred_value,
-                        'object': obj_value
-                    })
-
-        return constructed_graph
-
-    def _execute_describe_query(self, parsed_query: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """
-        Executes a DESCRIBE SPARQL query.
-
-        Args:
-            parsed_query: The parsed query dictionary
-
-        Returns:
-            A list of triples describing the resources
-        """
-        # For DESCRIBE queries, we need to find all triples where the described
-        # resources appear as subject or object
-
-        # First, identify the resources to describe
-        resources_to_describe = []
-
-        for pattern in parsed_query['triple_patterns']:
-            for component in ['subject', 'object']:
-                comp = pattern[component]
-                if comp['type'] != 'variable':
-                    resources_to_describe.append(comp['value'])
-
-        # If no specific resources, use variables from the query
-        if not resources_to_describe:
-            for pattern in parsed_query['triple_patterns']:
-                for component in ['subject', 'object']:
-                    comp = pattern[component]
-                    if comp['type'] == 'variable':
-                        resources_to_describe.append(f'?{comp["value"]}')
-
-        # Now find all triples involving these resources
-        described_graph = []
-
-        for resource in resources_to_describe:
-            # Find triples where this resource is the subject
-            subject_triples = self._get_triples_for_resource(resource, as_subject=True)
-            described_graph.extend(subject_triples)
-
-            # Find triples where this resource is the object
-            object_triples = self._get_triples_for_resource(resource, as_subject=False)
-            described_graph.extend(object_triples)
-
-        return described_graph
-
-    def _get_triples_for_resource(self, resource: str, as_subject: bool = True) -> List[Dict[str, Any]]:
-        """
-        Gets all triples for a given resource.
-
-        Args:
-            resource: The resource URI or variable
-            as_subject: Whether to find triples where the resource is the subject
-
-        Returns:
-            A list of triples
-        """
-        triples = []
-
-        if resource.startswith('?'):
-            # This is a variable - we can't resolve it directly
-            return triples
-
-        # Build a query to find triples involving this resource
-        if as_subject:
-            # Find triples where this resource is the subject
-            sql = """
-                SELECT gr.relationship_type as predicate,
-                       gn_target.node_label as object_label,
-                       gn_target.node_properties as object_properties
-                FROM graph_relationships gr
-                JOIN graph_nodes gn_source ON gr.source_node_id = gn_source.node_id
-                JOIN graph_nodes gn_target ON gr.target_node_id = gn_target.node_id
-                WHERE gn_source.node_label = ?
-            """
-            params = [resource]
-        else:
-            # Find triples where this resource is the object
-            sql = """
-                SELECT gr.relationship_type as predicate,
-                       gn_source.node_label as subject_label,
-                       gn_source.node_properties as subject_properties
-                FROM graph_relationships gr
-                JOIN graph_nodes gn_source ON gr.source_node_id = gn_source.node_id
-                JOIN graph_nodes gn_target ON gr.target_node_id = gn_target.node_id
-                WHERE gn_target.node_label = ?
-            """
-            params = [resource]
-
-        cursor = self.conn.cursor()
-        cursor.execute(sql, params)
-
-        for row in cursor.fetchall():
-            if as_subject:
-                predicate = row['predicate']
-                object_label = row['object_label']
-                object_props = row['object_properties']
-
-                # Create the triple
-                obj_value = {
-                    'type': 'uri',
-                    'value': object_label
-                }
-
-                # If it's a literal (from properties)
-                if not object_label:
-                    props = {}
-                    if object_props:
-                        try:
-                            props = json.loads(object_props)
-                        except json.JSONDecodeError:
-                            pass
-
-                    for prop_key, prop_value in props.items():
-                        if prop_value:
-                            obj_value = {
-                                'type': 'literal',
-                                'value': str(prop_value)
-                            }
-                            break
-
-                triples.append({
-                    'subject': {'type': 'uri', 'value': resource},
-                    'predicate': {'type': 'uri', 'value': predicate},
-                    'object': obj_value
-                })
-            else:
-                predicate = row['predicate']
-                subject_label = row['subject_label']
-                subject_props = row['subject_properties']
-
-                # Create the triple
-                subj_value = {
-                    'type': 'uri',
-                    'value': subject_label
-                }
-
-                triples.append({
-                    'subject': subj_value,
-                    'predicate': {'type': 'uri', 'value': predicate},
-                    'object': {'type': 'uri', 'value': resource}
-                })
-
-        return triples
-
-    def _resolve_sparql_component(self, component: Dict[str, Any], binding: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """
-        Resolves a SPARQL component using a result binding.
-
-        Args:
-            component: The component to resolve
-            binding: The result binding from a SELECT query
-
-        Returns:
-            The resolved component or None if it can't be resolved
-        """
-        if component['type'] == 'variable':
-            var_name = component['value']
-            if var_name in binding:
-                return binding[var_name]
-            return None
-        else:
-            # It's already a concrete value
-            return component
+        with self.store._instance_lock, self.store._optional_file_lock_context(f"query_graph_hybrid: {query_text[:30]}"):
+            # 1. Retrieve Graph Subgraph and Linked Chunks
+            graph_result = self.query_graph(query_text, output_mode="full", top_k_nodes=top_k)
+            graph_chunks = graph_result.get("chunks", []) if isinstance(graph_result, dict) else []
+
+            # 2. Retrieve Dense Chunks
+            dense_chunks = self.store.query(query_text, top_k=top_k * 2)
+
+            # 3. Retrieve BM25 Chunks
+            from ..search.bm25 import BM25Retriever
+            from ..search.fusion import reciprocal_rank_fusion
+            bm25_retriever = BM25Retriever(self.conn)
+            bm25_chunks = bm25_retriever.search(query_text, top_k=top_k * 2)
+
+            # 4. Fuse all 3 modalities via Reciprocal Rank Fusion
+            fused_chunks = reciprocal_rank_fusion(
+                ranked_lists=[dense_chunks, bm25_chunks, graph_chunks],
+                weights=[dense_weight, bm25_weight, graph_weight],
+                k=rrf_k,
+                top_k=top_k
+            )
+
+            return {
+                "query": query_text,
+                "ranked_chunks": fused_chunks,
+                "subgraph": graph_result.get("graph", {"nodes": [], "relationships": []}) if isinstance(graph_result, dict) else {}
+            }
 
     def _empty_query_result(self, output_mode: str) -> Any:
         if output_mode == "chunks_summary": return []
@@ -1059,6 +509,59 @@ class GraphStore:
         with self.store._instance_lock:
             return db.get_node_details_db(self.conn, node_id)
 
+    def get_all_nodes(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Returns all graph nodes up to the specified limit."""
+        with self.store._instance_lock:
+            try:
+                cursor = self.conn.execute(
+                    "SELECT node_id, node_label, node_properties, unique_signature FROM graph_nodes LIMIT ?",
+                    (limit,)
+                )
+                nodes = []
+                for row in cursor.fetchall():
+                    nodes.append({
+                        "node_id": row[0],
+                        "label": row[1],
+                        "properties": json.loads(row[2]) if row[2] else {},
+                        "unique_signature": row[3]
+                    })
+                return nodes
+            except sqlite3.Error as e:
+                raise GraphDBError(f"Error fetching all nodes: {e}") from e
+
+    def get_all_nodes_for_visualization(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Alias for get_all_nodes to support graph visualization pipelines."""
+        return self.get_all_nodes(limit=limit)
+
+    def get_all_relationships(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Returns all graph relationships with source and target node metadata."""
+        with self.store._instance_lock:
+            try:
+                sql = """
+                SELECT r.relationship_id, r.source_node_id, r.target_node_id, r.relationship_type, r.relationship_properties,
+                       s.node_label as source_label, s.node_properties as source_properties,
+                       t.node_label as target_label, t.node_properties as target_properties
+                FROM graph_relationships r
+                JOIN graph_nodes s ON r.source_node_id = s.node_id
+                JOIN graph_nodes t ON r.target_node_id = t.node_id
+                LIMIT ?;
+                """
+                cursor = self.conn.execute(sql, (limit,))
+                relationships = []
+                for row in cursor.fetchall():
+                    relationships.append({
+                        "relationship_id": row[0],
+                        "source_node_id": row[1],
+                        "target_node_id": row[2],
+                        "type": row[3],
+                        "properties": json.loads(row[4]) if row[4] else {},
+                        "source_node": {"node_id": row[1], "label": row[5], "properties": json.loads(row[6]) if row[6] else {}},
+                        "target_node": {"node_id": row[2], "label": row[7], "properties": json.loads(row[8]) if row[8] else {}}
+                    })
+                return relationships
+            except sqlite3.Error as e:
+                raise GraphDBError(f"Error fetching all relationships: {e}") from e
+
     def update_node(self, node_id: int, label: Optional[str] = None, properties: Optional[Dict[str, Any]] = None) -> bool:
         if label is None and properties is None: return True
         with self.store._instance_lock, self.store._optional_file_lock_context(f"update_node: {node_id}"):
@@ -1079,7 +582,6 @@ class GraphStore:
                 updated_props = properties if properties is not None else current['properties']
                 self._vectorize_and_store_node_update(node_id, updated_label, updated_props)
                 self.conn.commit()
-                ASCIIColors.success(f"Node {node_id} updated successfully.")
                 return True
             except Exception as e:
                 if self.conn.in_transaction: self.conn.rollback()
@@ -1094,7 +596,6 @@ class GraphStore:
                     self.conn.rollback()
                     raise NodeNotFoundError(f"Node with ID {node_id} not found for deletion.")
                 self.conn.commit()
-                ASCIIColors.success(f"Node {node_id} and all associated data deleted.")
                 return True
             except Exception as e:
                 if self.conn.in_transaction: self.conn.rollback()
@@ -1107,7 +608,6 @@ class GraphStore:
                 props_json = json.dumps(properties or {})
                 rel_id = db.add_graph_relationship(self.conn, source_node_id, target_node_id, rel_type, props_json)
                 self.conn.commit()
-                ASCIIColors.success(f"Relationship added successfully with ID: {rel_id}")
                 return rel_id
             except Exception as e:
                 if self.conn.in_transaction: self.conn.rollback()
@@ -1160,7 +660,6 @@ class GraphStore:
                     (new_type, json.dumps(new_props), relationship_id)
                 )
                 self.conn.commit()
-                ASCIIColors.success(f"Relationship {relationship_id} updated successfully.")
                 return True
             except Exception as e:
                 if self.conn.in_transaction: self.conn.rollback()
@@ -1191,189 +690,3 @@ class GraphStore:
                     neighbor_nodes.append(node_data)
                     seen_ids.add(node_data["node_id"])
             return neighbor_nodes[:limit]
-
-    def get_all_nodes_for_visualization(self, limit: int = 1000) -> List[Dict[str, Any]]:
-        with self.store._instance_lock:
-            try:
-                cursor = self.conn.execute("SELECT node_id, node_label, node_properties FROM graph_nodes LIMIT ?", (limit,))
-                nodes = []
-                for row in cursor.fetchall():
-                    node_id, label, props_json = row
-                    properties = {}
-                    try:
-                        properties = json.loads(props_json)
-                        title = json.dumps(properties, indent=2)
-                    except json.JSONDecodeError:
-                        properties = {"error": "Could not parse properties JSON.", "raw": props_json}
-                        title = props_json
-
-                    nodes.append({
-                        "id": node_id,
-                        "label": label,
-                        "title": title,
-                        "properties": properties
-                    })
-                return nodes
-            except sqlite3.Error as e:
-                raise GraphDBError(f"Database error fetching all nodes: {e}") from e
-
-    def get_all_relationships_for_visualization(self, limit: int = 2000) -> List[Dict[str, Any]]:
-        with self.store._instance_lock:
-            try:
-                cursor = self.conn.execute(
-                    "SELECT relationship_id, source_node_id, target_node_id, relationship_type, relationship_properties FROM graph_relationships LIMIT ?",
-                    (limit,)
-                )
-                edges = []
-                for row in cursor.fetchall():
-                    rel_id, source_id, target_id, rel_type, props_json = row
-
-                    edge_label = rel_type
-                    try:
-                        properties = json.loads(props_json)
-                        if isinstance(properties, dict):
-                            if 'name' in properties and properties['name']:
-                                edge_label = str(properties['name'])
-                            elif 'label' in properties and properties['label']:
-                                edge_label = str(properties['label'])
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-
-                    edges.append({
-                        "id": rel_id,
-                        "from": source_id,
-                        "to": target_id,
-                        "label": edge_label,
-                    })
-                return edges
-            except sqlite3.Error as e:
-                raise GraphDBError(f"Database error fetching all relationships: {e}") from e
-
-    def get_chunks_for_node(self, node_id: int, limit: int = 10) -> List[Dict[str, Any]]:
-        with self.store._instance_lock:
-            chunk_ids = db.get_chunk_ids_for_nodes_db(self.conn, [node_id]).get(node_id, [])
-            return db.get_chunk_details_db(self.conn, chunk_ids[:limit], self.encryptor) if chunk_ids else []
-
-    def get_relationships(self, node_id: int, relationship_type: Optional[str] = None, direction: str = "any", limit: int = 50) -> List[Dict[str, Any]]:
-        with self.store._instance_lock:
-            return db.get_relationships_for_node_db(self.conn, node_id, relationship_type, direction, limit)
-
-    def clear_graph(self) -> None:
-        """Deletes all nodes, relationships, and associated data from the graph."""
-        with self.store._instance_lock, self.store._optional_file_lock_context("clear_graph"):
-            try:
-                self.conn.execute("BEGIN")
-                # Order matters: clean up linking tables and vector indexes first
-                optional_tables = ["graph_node_vectors", "graph_node_to_chunk_link"]
-                for table in optional_tables:
-                    try: self.conn.execute(f"DROP TABLE IF EXISTS {table}")
-                    except sqlite3.Error as e: ASCIIColors.warning(f"Could not drop table {table}: {e}")
-
-                self.conn.execute("DELETE FROM graph_relationships")
-                self.conn.execute("DELETE FROM graph_nodes")
-                self.conn.execute("UPDATE chunks SET graph_processed_at = NULL")
-
-                # Re-initialize the graph features to recreate dropped tables
-                embedder_instance = self.embedder
-                if embedder_instance.dim is not None:
-                    db.enable_vector_search_on_graph_nodes(self.conn, embedder_instance.dim)
-
-                self.conn.commit()
-                ASCIIColors.success("Graph has been completely cleared and re-initialized.")
-            except Exception as e:
-                if self.conn.in_transaction: self.conn.rollback()
-                raise GraphError(f"Error clearing the graph: {e}") from e
-
-    def delete_all_graph_data(self) -> None:
-        """
-        Completely removes all graph-related data from the database.
-
-        This method deletes all nodes, relationships, and resets the graph processing
-        status for all chunks. Unlike clear_graph(), this method does not attempt to
-        reinitialize the graph features, leaving the database in a state where graph
-        features are effectively disabled until explicitly re-enabled.
-        """
-        with self.store._instance_lock, self.store._optional_file_lock_context("delete_all_graph_data"):
-            try:
-                self.conn.execute("BEGIN")
-
-                # Remove all graph-related tables
-                tables_to_drop = [
-                    "graph_node_vectors",
-                    "graph_node_to_chunk_link",
-                    "graph_relationships",
-                    "graph_nodes"
-                ]
-
-                for table in tables_to_drop:
-                    try:
-                        self.conn.execute(f"DROP TABLE IF EXISTS {table}")
-                        ASCIIColors.info(f"Dropped table: {table}")
-                    except sqlite3.Error as e:
-                        ASCIIColors.warning(f"Could not drop table {table}: {e}")
-
-                # Reset graph processing status for all chunks
-                self.conn.execute("UPDATE chunks SET graph_processed_at = NULL")
-
-                # Remove graph features enabled flag
-                db.set_store_metadata(self.conn, self.GRAPH_FEATURES_ENABLED_KEY, "false")
-
-                self.conn.commit()
-                ASCIIColors.success("All graph data has been completely removed from the database.")
-            except Exception as e:
-                if self.conn.in_transaction: self.conn.rollback()
-                raise GraphError(f"Error deleting all graph data: {e}") from e
-
-    def remove_graph_elements_for_document(self, doc_id: int) -> None:
-        """
-        Removes all nodes and relationships that are exclusively derived from a specific document.
-        A node is considered exclusive if it is only linked to chunks from the given doc_id.
-        """
-        with self.store._instance_lock, self.store._optional_file_lock_context(f"remove_graph_for_doc_{doc_id}"):
-            try:
-                self.conn.execute("BEGIN")
-                doc_chunk_ids_cursor = self.conn.execute("SELECT chunk_id FROM chunks WHERE doc_id = ?", (doc_id,))
-                doc_chunk_ids = {row[0] for row in doc_chunk_ids_cursor}
-
-                if not doc_chunk_ids:
-                    ASCIIColors.info(f"No chunks found for document {doc_id}, nothing to remove from graph.")
-                    self.conn.commit()
-                    return
-
-                placeholders = ','.join('?' for _ in doc_chunk_ids)
-
-                # Find all nodes linked to this document's chunks
-                nodes_linked_to_doc_cursor = self.conn.execute(
-                    f"SELECT DISTINCT node_id FROM graph_node_to_chunk_link WHERE chunk_id IN ({placeholders})",
-                    list(doc_chunk_ids)
-                )
-                nodes_linked_to_doc = {row[0] for row in nodes_linked_to_doc_cursor}
-
-                nodes_to_delete = set()
-                if nodes_linked_to_doc:
-                    # For each linked node, check if it's linked to ANY OTHER chunk
-                    for node_id in nodes_linked_to_doc:
-                        other_links_cursor = self.conn.execute(
-                            f"SELECT 1 FROM graph_node_to_chunk_link WHERE node_id = ? AND chunk_id NOT IN ({placeholders}) LIMIT 1",
-                            [node_id] + list(doc_chunk_ids)
-                        )
-                        if other_links_cursor.fetchone() is None:
-                            nodes_to_delete.add(node_id)
-
-                # Unlink all chunks of the document from the graph
-                self.conn.execute(f"UPDATE chunks SET graph_processed_at = NULL WHERE doc_id = ?", (doc_id,))
-                self.conn.execute(f"DELETE FROM graph_node_to_chunk_link WHERE chunk_id IN ({placeholders})", list(doc_chunk_ids))
-
-                # Delete the exclusive nodes
-                if nodes_to_delete:
-                    ASCIIColors.info(f"Identified {len(nodes_to_delete)} exclusive nodes to delete for document {doc_id}.")
-                    for node_id in nodes_to_delete:
-                        db.delete_graph_node_and_relationships_db(self.conn, node_id)
-                else:
-                    ASCIIColors.info(f"No exclusive nodes found for document {doc_id}.")
-
-                self.conn.commit()
-                ASCIIColors.success(f"Successfully removed graph elements for document {doc_id}.")
-            except Exception as e:
-                if self.conn.in_transaction: self.conn.rollback()
-                raise GraphError(f"Failed to remove graph elements for document {doc_id}: {e}") from e
