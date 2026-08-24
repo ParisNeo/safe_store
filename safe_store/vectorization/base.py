@@ -1,7 +1,7 @@
 # safe_store/vectorization/base.py
 from abc import ABC, abstractmethod
 import numpy as np
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Tuple
 
 class BaseVectorizer(ABC):
     """
@@ -31,19 +31,24 @@ class BaseVectorizer(ABC):
     def get_tokenizer(self) -> Optional[Any]:
         """
         Returns the tokenizer associated with the vectorizer, if available.
-
-        The returned tokenizer should have `encode` and `decode` methods
-        compatible with libraries like Hugging Face's tokenizers.
-
-        Returns:
-            A tokenizer object or None if no tokenizer is available client-side.
         """
         return None
+
+    def supports_late_chunking(self) -> bool:
+        """Returns True if this vectorizer supports full-document late chunking."""
+        return False
+
+    def late_chunk_embed(self, text: str, chunk_spans: List[Tuple[int, int]]) -> np.ndarray:
+        """
+        Embeds the full document through the model first, then pools token embeddings
+        over the provided chunk character spans. Falls back to standard chunk encoding.
+        """
+        chunk_texts = [text[start:end] for start, end in chunk_spans]
+        return self.vectorize(chunk_texts)
 
     @staticmethod
     def list_models(**kwargs) -> List[str]:
         """
         Lists the available models for this vectorizer.
-        This method should be overridden by subclasses that support model listing.
         """
         return []

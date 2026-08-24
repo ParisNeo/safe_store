@@ -483,6 +483,81 @@ Typical benchmarks measured on consumer hardware (Intel i7 / 16GB RAM / SSD):
 | **Tabular Mapping** | 10,000 CSV Rows | ~1.2 s | Batch Transactional Insertion |
 | **Document Ingestion (ST)** | 1 MB Text (~300 pages) | ~3.5 s | Parsing + Token Chunking + Embedding |
 
+
+---
+### 6. The 8 RAG Chunking Strategies (Beyond the Basics)
+
+Retrieval quality is decided at cut time. `safe_store` implements a complete suite of **8 distinct chunking strategies**:
+
+```
+ 1. Fixed-Size [====][====][====]  -> Slices at fixed intervals (fast, baseline)
+ 2. Overlap    [====--]            -> Rescues broken sentences across boundaries
+                  [--====--]
+ 3. Recursive  Document            -> Splits paragraphs -> sentences -> words
+               ├── Para 1
+               └── Para 2 -> S1, S2
+ 4. Semantic   ───📉───📉───       -> Cuts at cosine similarity valleys (topic shifts)
+ 5. Contextual [Prefix] + [Chunk]  -> Prepends full-document situating context (Anthropic)
+ 6. Structure  # H1 > ## H2        -> Injects section breadcrumb paths [H1 > H2]
+ 7. Late       Tokens ──[Transformer]──> Contextual Embeddings ──[Mean Pool]──> Vectors
+ 8. Graph      Entities & Relations-> Tri-Tier Multi-Hop Graph Traversal
+```
+
+| Strategy | Flag | Ideal For | Mechanics & Key Benefit |
+|:---|:---|:---|:---|
+| **Token Window** | `'token'` *(Default)* | Standard RAG | Slices by tokenizer limits (`tiktoken`/HF) with offset mapping preserving all `\n` line breaks. |
+| **Recursive Tree** | `'recursive'` | General Docs & Code | Hierarchically splits by `\n\n` $\rightarrow$ `# Headers` $\rightarrow$ `\n` $\rightarrow$ sentences $\rightarrow$ words. Best all-around balance. |
+| **Structure-Aware** | `'structure'` / `'markdown'` | Technical Manuals & Specs | Parses Markdown `# H1` $\rightarrow$ `## H2` $\rightarrow$ `### H3` stacks, attaching lineage breadcrumbs `[H1 > H2]`. |
+| **Semantic Valley** | `'semantic'` | Long Essays & Narrative | Embeds sentences and cuts where adjacent cosine similarity drops below threshold (topic boundary). |
+| **Contextual Retrieval**| `'contextual'` | Complex Knowledge Bases | Injects full-document situating summaries before storage (Anthropic pattern), eliminating ambiguous pronouns. |
+| **Late Chunking** | `'late'` | Dense Technical Context | Passes the entire document through the transformer *first*, then mean-pools chunk token representations (Jina AI pattern). |
+| **Paragraph** | `'paragraph'` | Articles & Prose | Groups double-newline paragraph blocks up to `chunk_size` without mid-thought cuts. |
+| **Fixed Character** | `'character'` | Raw Log Streams | Fast character slicing with sliding window overlap. |
+
+#### Strategy Implementation Examples
+
+```python
+from safe_store import SafeStore
+
+# Strategy A: Structure-Aware Markdown with Breadcrumbs
+store_md = SafeStore(
+    "manual.db",
+    vectorizer_name="st",
+    chunk_size=200,
+    chunking_strategy="structure" # Injects [Section: Architecture > Storage > WAL] into chunks
+)
+
+# Strategy B: Semantic Chunking (Topic Shift Detection)
+store_sem = SafeStore(
+    "research.db",
+    vectorizer_name="st",
+    chunk_size=300,
+    chunking_strategy="semantic", # Splits at cosine similarity valleys
+    chunking_kwargs={"similarity_threshold": 0.65}
+)
+
+# Strategy C: Contextual Retrieval (Anthropic Pattern)
+def my_context_enricher(full_doc: str, chunk: str) -> str:
+    # Optional LLM or heuristic summary
+    return f"From document '{full_doc[:40]}...': Topic covers database storage engine."
+
+store_ctx = SafeStore(
+    "enterprise.db",
+    vectorizer_name="st",
+    chunk_size=256,
+    chunking_strategy="contextual",
+    context_enricher=my_context_enricher
+)
+
+# Strategy D: Context Expansion Windowing
+store_exp = SafeStore(
+    "logs.db",
+    vectorizer_name="st",
+    chunk_size=128,
+    expand_before=30, # Injects 30 tokens of preceding context into LLM prompt
+    expand_after=30   # Injects 30 tokens of succeeding context into LLM prompt
+)
+```
 ---
 
 ## 🗺️ Roadmap

@@ -60,11 +60,13 @@ class SafeStore:
         custom_vectorizers_path: Optional[str] = None,
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
-        chunking_strategy: Optional[Literal['character', 'token', 'paragraph', 'semantic', 'recursive']] = None,
+        chunking_strategy: Optional[Literal['character', 'token', 'paragraph', 'semantic', 'recursive', 'structure', 'markdown', 'contextual', 'late']] = None,
         custom_tokenizer: Optional[Dict[str, Any]] = None,
         expand_before: Optional[int] = None,
         expand_after: Optional[int] = None,
         text_cleaner: Optional[Union[str, Callable[[str], str]]] = None,
+        remove_line_returns: bool = False,
+        context_enricher: Optional[Callable[[str, str], str]] = None,
         name: Optional[str] = None,
         description: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -86,6 +88,7 @@ class SafeStore:
         if expand_before is not None: explicit_kwargs['expand_before'] = expand_before
         if expand_after is not None: explicit_kwargs['expand_after'] = expand_after
         if text_cleaner is not None: explicit_kwargs['text_cleaner'] = text_cleaner
+        if remove_line_returns: explicit_kwargs['remove_line_returns'] = remove_line_returns
         if name is not None: explicit_kwargs['name'] = name
         if description is not None: explicit_kwargs['description'] = description
         if metadata is not None: explicit_kwargs['metadata'] = metadata
@@ -116,8 +119,10 @@ class SafeStore:
         self.custom_tokenizer = merged_config.get('custom_tokenizer', None)
         self.expand_before = merged_config.get('expand_before', 0)
         self.expand_after = merged_config.get('expand_after', 0)
+        self.remove_line_returns = merged_config.get('remove_line_returns', False)
+        self.context_enricher = context_enricher
         self.text_cleaner_name = merged_config.get('text_cleaner', 'basic')
-        self.text_cleaner = get_cleaner(self.text_cleaner_name)
+        self.text_cleaner = get_cleaner(self.text_cleaner_name, remove_line_returns=self.remove_line_returns)
         self.chunking_kwargs = merged_config.get('chunking_kwargs', {})
 
         self.name = merged_config.get('name', name)
@@ -385,6 +390,7 @@ class SafeStore:
         vectorize_with_metadata: bool = True,
         chunk_processor: Optional[Callable[[str, Dict[str, Any]], str]] = None,
         skip_chunking: bool = False,
+        remove_line_returns: Optional[bool] = None,
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
         chunking_strategy: Optional[str] = None
@@ -416,6 +422,7 @@ class SafeStore:
         vectorize_with_metadata: bool = True,
         chunk_processor: Optional[Callable[[str, Dict[str, Any]], str]] = None,
         skip_chunking: bool = False,
+        remove_line_returns: Optional[bool] = None,
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
         chunking_strategy: Optional[str] = None
@@ -437,7 +444,7 @@ class SafeStore:
                 op_chunking_strategy=chunking_strategy
             )
 
-    def _add_content_impl(self, content_id, content_loader, hash_loader, metadata, tags, force_reindex, vectorize_with_metadata, chunk_processor, skip_chunking, op_chunk_size=None, op_chunk_overlap=None, op_chunking_strategy=None) -> Dict[str, int]:
+    def _add_content_impl(self, content_id, content_loader, hash_loader, metadata, tags, force_reindex, vectorize_with_metadata, chunk_processor, skip_chunking, remove_line_returns=None, op_chunk_size=None, op_chunk_overlap=None, op_chunking_strategy=None) -> Dict[str, int]:
         self._ensure_connection()
         assert self.conn and self.vectorizer is not None
         filename_for_log = Path(content_id).name
@@ -500,7 +507,9 @@ class SafeStore:
                     if self.conn.in_transaction: self.conn.rollback()
                  return {"num_chunks_added": 0, "num_chunks_ignored": 0}
 
-            cleaned_text = self.text_cleaner(full_text)
+            should_remove_lr = self.remove_line_returns if remove_line_returns is None else remove_line_returns
+            cleaner = get_cleaner(self.text_cleaner_name, remove_line_returns=should_remove_lr) if should_remove_lr != self.remove_line_returns else self.text_cleaner
+            cleaned_text = cleaner(full_text)
             
             c_size = op_chunk_size if op_chunk_size is not None else self.chunk_size
             c_overlap = op_chunk_overlap if op_chunk_overlap is not None else self.chunk_overlap

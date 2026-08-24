@@ -2,22 +2,21 @@
 import re
 from typing import Callable, Union
 
-def basic_text_cleaner(text: str) -> str:
+def basic_text_cleaner(text: str, remove_line_returns: bool = False) -> str:
     """
-    An enhanced text cleaner that performs several common cleanup tasks, designed
-    to be safe for code and structured text while improving quality for LLMs.
+    An enhanced text cleaner designed to be safe for code, markdown, and structured text.
 
-    - Normalizes all line endings to a single newline character (`\n`).
-    - Removes non-printable ASCII control characters (except tab and newline) that
-      can break LLM tokenizers.
-    - Preserves leading whitespace (indentation) on each line, which is crucial for code.
-    - Replaces repetitive dot sequences (e.g., '....') with a standard ellipsis ('...').
-    - Collapses multiple spaces *within* a line into a single space, but leaves indentation untouched.
-    - Reduces three or more consecutive newlines down to just two, preserving paragraph
-      breaks without creating excessive empty space. Single newlines are kept.
+    - Normalizes all line endings to `\n`.
+    - Preserves all line returns by default (deactivated removal).
+    - Removes non-printable ASCII control characters (except tab and newline).
+    - Preserves leading whitespace and indentation on each line.
+    - Replaces repetitive dot sequences with a standard ellipsis (`...`).
+    - Collapses multiple spaces within a line without altering line breaks.
+    - Optionally flattens line returns into spaces when `remove_line_returns=True`.
 
     Args:
         text: The input string to clean.
+        remove_line_returns: If True, replaces newlines with single spaces. Defaults to False.
 
     Returns:
         The cleaned string.
@@ -25,56 +24,62 @@ def basic_text_cleaner(text: str) -> str:
     if not isinstance(text, str):
         return ""
 
-    # 1. Normalize line endings to \n.
+    # 1. Normalize line endings to \n
     text = text.replace('\r\n', '\n').replace('\r', '\n')
 
-    # 2. Remove non-printable control characters except for tab, newline.
+    # 2. Remove non-printable control characters except for tab and newline
     text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
 
-    # 3. Replace long sequences of dots with a standard ellipsis.
+    # 3. Replace long sequences of dots with standard ellipsis
     text = re.sub(r'\.{4,}', '...', text)
-    
-    # 4. Process line by line to preserve indentation while cleaning inline spaces.
+
+    # 4. Optional line return removal (deactivated by default)
+    if remove_line_returns:
+        text = re.sub(r'\s*\n\s*', ' ', text)
+        text = re.sub(r' {2,}', ' ', text)
+        return text.strip()
+
+    # 5. Process line-by-line to preserve indentation and line returns
     lines = text.split('\n')
     cleaned_lines = []
     for line in lines:
-        # Separate leading whitespace (indentation) from the rest of the content
         match = re.match(r'^(\s*)', line)
         leading_whitespace = match.group(1) if match else ""
         content = line[len(leading_whitespace):]
-        
-        # Collapse multiple spaces in the content part only
         cleaned_content = re.sub(r' {2,}', ' ', content)
-        
         cleaned_lines.append(leading_whitespace + cleaned_content)
-    
+
     text = '\n'.join(cleaned_lines)
 
-    # 5. Reduce 3 or more newlines to a maximum of two.
+    # 6. Reduce excessive blank lines (3+ down to maximum of 2)
     text = re.sub(r'\n{3,}', '\n\n', text)
-    
+
     return text.strip()
 
 
-def get_cleaner(cleaner: Union[str, Callable[[str], str], None]) -> Callable[[str], str]:
+def get_cleaner(
+    cleaner: Union[str, Callable[[str], str], None],
+    remove_line_returns: bool = False
+) -> Callable[[str], str]:
     """
-    Returns a callable cleaner function.
+    Returns a callable cleaner function configured with line return preferences.
 
     Args:
-        cleaner: Can be the name of a predefined cleaner ('basic') or a custom
-                 callable function. If None, returns an identity function that
-                 does nothing.
+        cleaner: Name of cleaner ('basic'), custom callable, or None.
+        remove_line_returns: Whether line returns should be flattened. Defaults to False.
 
     Returns:
-        A callable function that takes a string and returns a string.
+        A callable function (str -> str).
     """
     if cleaner is None:
-        return lambda x: x # Identity function
+        if remove_line_returns:
+            return lambda x: re.sub(r'\s*\n\s*', ' ', str(x)).strip() if isinstance(x, str) else ""
+        return lambda x: x
     if callable(cleaner):
         return cleaner
     if isinstance(cleaner, str):
         if cleaner == 'basic':
-            return basic_text_cleaner
+            return lambda x: basic_text_cleaner(x, remove_line_returns=remove_line_returns)
         else:
             raise ValueError(f"Unknown predefined cleaner: '{cleaner}'")
     raise TypeError("cleaner must be a string, a callable, or None")

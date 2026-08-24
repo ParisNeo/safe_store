@@ -1,6 +1,6 @@
 # safe_store/vectorization/methods/st.py
 import numpy as np
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from safe_store.vectorization.base import BaseVectorizer
 from safe_store.core.exceptions import ConfigurationError, VectorizationError
 from safe_store.processing.tokenizers import HuggingFaceTokenizerWrapper
@@ -70,6 +70,68 @@ class STVectorizer(BaseVectorizer):
         if hasattr(self.model, 'tokenizer'):
             return HuggingFaceTokenizerWrapper(self.model.tokenizer)
         return None
+
+    def supports_late_chunking(self) -> bool:
+        return self.model is not None
+
+    def late_chunk_embed(self, text: str, chunk_spans: List[Tuple[int, int]]) -> np.ndarray:
+        """
+        Late Chunking: Encodes the full document through the transformer to obtain
+        full-context token embeddings, then mean-pools tokens across each chunk boundary.
+        """
+        if not self.model or not chunk_spans:
+            return np.empty((0, self.dim), dtype=self.dtype)
+
+        try:
+            import torch
+            tokenizer = getattr(self.model, 'tokenizer', None)
+            if tokenizer is None:
+                chunk_texts = [text[s:e] for s, e in chunk_spans]
+                return self.vectorize(chunk_texts)
+
+            encoded = tokenizer(
+                text,
+                return_tensors="pt",
+                return_offsets_mapping=True,
+                truncation=True,
+                max_length=8192
+            )
+
+            offsets = encoded.pop("offset_mapping")[0].cpu().numpy()
+            device = self.model.device
+            inputs = {k: v.to(device) for k, v in encoded.items()}
+
+            with torch.no_grad():
+                transformer_module = self.model[0]
+                outputs = transformer_module.auto_model(**inputs)
+                token_embeddings = outputs.last_hidden_state[0]
+
+            vectors = []
+            for start_char, end_char in chunk_spans:
+                token_indices = []
+                for tok_idx, (tok_start, tok_end) in enumerate(offsets):
+                    if tok_start == 0 and tok_end == 0:
+                        continue
+                    if tok_start < end_char and tok_end > start_char:
+                        token_indices.append(tok_idx)
+
+                if token_indices:
+                    span_tokens = token_embeddings[token_indices]
+                    chunk_vec = span_tokens.mean(dim=0).cpu().numpy()
+                    norm = np.linalg.norm(chunk_vec)
+                    if norm > 0:
+                        chunk_vec = chunk_vec / norm
+                else:
+                    chunk_vec = self.vectorize([text[start_char:end_char]])[0]
+
+                vectors.append(chunk_vec)
+
+            return np.array(vectors, dtype=self.dtype)
+
+        except Exception as e:
+            ASCIIColors.warning(f"Late chunking fallback: {e}")
+            chunk_texts = [text[s:e] for s, e in chunk_spans]
+            return self.vectorize(chunk_texts)
 
     def vectorize(self, texts: List[str]) -> np.ndarray:
         if not texts:

@@ -37,6 +37,18 @@ class HuggingFaceTokenizerWrapper(TokenizerWrapper):
         # Hugging Face tokenizers use skip_special_tokens
         return self.tokenizer.decode(tokens, skip_special_tokens=True)
 
+    def encode_with_offsets(self, text: str) -> tuple:
+        """Encodes text and returns token IDs along with exact character offset spans."""
+        try:
+            encoded = self.tokenizer(text, return_offsets_mapping=True, add_special_tokens=False)
+            tokens = encoded.get("input_ids", [])
+            offsets = encoded.get("offset_mapping", [])
+            if tokens and offsets and len(tokens) == len(offsets):
+                return tokens, offsets
+        except Exception:
+            pass
+        return self.encode(text), []
+
 
 def get_tokenizer(config: Dict[str, Any]) -> TokenizerWrapper:
     """
