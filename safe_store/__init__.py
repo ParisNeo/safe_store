@@ -10,11 +10,13 @@ and Tri-Modal Reciprocal Rank Fusion.
 
 from .store import SafeStore, LogLevel, TEMP_FILE_DB_INDICATOR, IN_MEMORY_DB_INDICATOR, DEFAULT_LOCK_TIMEOUT
 from .graph.graph_store import GraphStore
+from .graph.cognitive_memory import CognitiveMemoryStore
 from .graph.ontology.tbox import TBoxManager
 from .graph.mapping.tabular_mapper import TabularMapper
 from .graph.sparql.engine import SparqlEngine
 from .search.bm25 import BM25Retriever
 from .search.fusion import reciprocal_rank_fusion, weighted_score_fusion
+from .datalake.viewer import DatalakeViewer
 from .core.exceptions import (
     SafeStoreError,
     DatabaseError,
@@ -47,12 +49,14 @@ __version__ = "3.6.0"
 __all__ = [
     "SafeStore",
     "GraphStore",
+    "CognitiveMemoryStore",
     "TBoxManager",
     "TabularMapper",
     "SparqlEngine",
     "BM25Retriever",
     "reciprocal_rank_fusion",
     "weighted_score_fusion",
+    "DatalakeViewer",
     "ASCIIColors",
     "LogLevel",
     # Exceptions

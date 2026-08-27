@@ -71,16 +71,16 @@ class TestBM25Retriever:
 class TestRankFusionAlgorithms:
 
     def test_reciprocal_rank_fusion_logic(self):
-        """Test RRF mathematical formula: RRF(d) = sum(w / (k + rank))."""
+        """Test score-calibrated RRF generates valid 0-100 relevance grades."""
         list_a = [
-            {"chunk_id": 1, "score": 0.95},
-            {"chunk_id": 2, "score": 0.85},
-            {"chunk_id": 3, "score": 0.70},
+            {"chunk_id": 1, "relevance_score": 95.0},
+            {"chunk_id": 2, "relevance_score": 85.0},
+            {"chunk_id": 3, "relevance_score": 70.0},
         ]
         list_b = [
-            {"chunk_id": 2, "score": 12.5},
-            {"chunk_id": 1, "score": 8.0},
-            {"chunk_id": 4, "score": 5.0},
+            {"chunk_id": 2, "relevance_score": 90.0},
+            {"chunk_id": 1, "relevance_score": 80.0},
+            {"chunk_id": 4, "relevance_score": 50.0},
         ]
 
         fused = reciprocal_rank_fusion(
@@ -91,11 +91,28 @@ class TestRankFusionAlgorithms:
         )
 
         assert len(fused) == 4
-        # Chunk 1: rank 1 in list_a (1/(60+1)), rank 2 in list_b (1/(60+2))
-        # Chunk 2: rank 2 in list_a (1/(60+2)), rank 1 in list_b (1/(60+1))
-        # Chunk 1 and Chunk 2 should have identical fused score
-        assert abs(fused[0]["fused_score"] - fused[1]["fused_score"]) < 1e-6
+        for item in fused:
+            assert "relevance_score" in item
+            assert "raw_rrf_score" in item
+            assert 0.0 <= item["relevance_score"] <= 100.0
+
+        # Chunk 1 and Chunk 2 have dual-channel support and high scores
         assert {fused[0]["chunk_id"], fused[1]["chunk_id"]} == {1, 2}
+        assert fused[0]["relevance_score"] > 80.0
+
+    def test_rrf_threshold_filtering(self):
+        """Test that RRF rejects low-relevance results when threshold is applied."""
+        poor_list_a = [{"chunk_id": 99, "relevance_score": 8.0}]
+        poor_list_b = []
+
+        fused = reciprocal_rank_fusion(
+            ranked_lists=[poor_list_a, poor_list_b],
+            weights=[0.5, 0.5],
+            min_relevance_percent=30.0
+        )
+        # Even though chunk 99 is rank 1, its calibrated score is ~5.6% < 30%, so it is excluded
+        assert fused == []
+
 
     def test_weighted_score_fusion_logic(self):
         """Test normalized convex combination of heterogeneous score lists."""

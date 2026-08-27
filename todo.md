@@ -1,7 +1,11 @@
 - [x] Add Full W3C SPARQL 1.1 Engine (SELECT, ASK, CONSTRUCT, DESCRIBE)
+- [x] Universal 0–100 Relevance Grading and Threshold Filtering (`min_relevance_percent`) across all query types to prevent pulling irrelevant noise
 - [x] TBox and ABox Ontology Management (RDFS/OWL, class hierarchy reasoning, prompt schemas)
 - [x] Declarative Tabular-to-Graph Mapping (CSV, XLSX, SQLite tables to RDF triples)
 - [x] Tri-Modal Hybrid Retrieval with BM25 Lexical (SQLite FTS5) + Dense Vectors + RRF Rank Fusion
 - [x] Robust per-chunk savepoints so single failed entries do not break batch ingestion
 - [x] Minimal write-locking and automatic stale lock file recovery
+- [x] High-performance Semantic Datalake Viewer with PCA, t-SNE, 2D/3D projections, persistent SQLite caching, lazy streaming, and standalone HTML export
+- [x] Full Document Querying (`query_full_documents`), Context Window Expansion (`query_document_content_window`), and Chunk Pagination (`get_document_content_paginated`)
+- [x] SPARQL 1.1 Update Engine (`execute_sparql_update`), Cognitive Episodic & Associative Memory (`CognitiveMemoryStore`), Provenance Grounding, and LLM Tool Dispatching
 - [ ] Use SigLIP / CLIP to encode images and support multi-modal image vector database storage

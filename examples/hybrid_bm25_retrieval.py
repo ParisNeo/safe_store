@@ -121,18 +121,34 @@ def main():
         # ---------------------------------------------------------------------
         hybrid_query_text = "troubleshooting kubelet supervisor crash ERR-9021 memory limits"
         print("-" * 70)
-        print(f"[Query C - Hybrid (Dense + Sparse Fusion)]: '{hybrid_query_text}'")
+        print(f"[Query C - Hybrid with 0-100 Relevance Grade]: '{hybrid_query_text}' (Threshold: 35%)")
         print("-" * 70)
         hybrid_results = store.hybrid_query(
             query_text=hybrid_query_text,
             top_k=3,
             dense_weight=0.5,
             bm25_weight=0.5,
-            rrf_k=60
+            rrf_k=60,
+            min_relevance_percent=35.0
         )
         for i, r in enumerate(hybrid_results, 1):
-            print(f"  Rank {i} | Fused RRF Score: {r['fused_score']:.5f} | Source: {r['file_path']}")
+            print(f"  Rank {i} | Relevance: {r['relevance_score']:.1f}% (Raw RRF: {r['raw_rrf_score']:.5f}) | Source: {r['file_path']}")
             print(f"  Preview: {r['chunk_text'][:95]}...\n")
+
+        # ---------------------------------------------------------------------
+        # Comparison 4: Non-matching Query with Threshold (Clean Empty List)
+        # ---------------------------------------------------------------------
+        unrelated_query = "quantum mechanical laser spectroscopy in superfluid helium"
+        print("-" * 70)
+        print(f"[Query D - Unrelated Query with Threshold]: '{unrelated_query}' (Threshold: 40%)")
+        print("-" * 70)
+        empty_hybrid = store.hybrid_query(
+            query_text=unrelated_query,
+            top_k=3,
+            min_relevance_percent=40.0
+        )
+        print(f"  Results Returned: {len(empty_hybrid)} (Clean empty list! Prevents pulling false positives into LLM context).\n")
+
 
     # Cleanup artifacts after demo
     store.close()

@@ -4,7 +4,7 @@ import threading
 import json
 import uuid
 from pathlib import Path
-from typing import Optional, Callable, Dict, List, Any, Tuple, TYPE_CHECKING, Set
+from typing import Optional, Callable, Dict, List, Any, Tuple, TYPE_CHECKING, Set, Union
 
 from ascii_colors import ASCIIColors, trace_exception
 from ..core import db
@@ -18,6 +18,7 @@ from .sparql.engine import SparqlEngine
 
 if TYPE_CHECKING:
     from ..store import SafeStore
+    from .cognitive_memory import CognitiveMemoryStore
 
 # Callback signatures
 LLMExecutorCallback = Callable[[str], str]
@@ -55,8 +56,16 @@ class GraphStore:
         self.query_parsing_prompt_template = query_parsing_prompt_template or self.DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE
         self.entity_fusion_prompt_template = entity_fusion_prompt_template or self.DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE
         self._sparql_engine: Optional[SparqlEngine] = None
+        self._cognitive_memory: Optional[CognitiveMemoryStore] = None
         ASCIIColors.info(f"Initializing GraphStore with shared SafeStore for database: {self.store.db_path}")
         self._initialize_graph_features()
+
+    @property
+    def memory(self) -> CognitiveMemoryStore:
+        if self._cognitive_memory is None:
+            from .cognitive_memory import CognitiveMemoryStore
+            self._cognitive_memory = CognitiveMemoryStore(self)
+        return self._cognitive_memory
 
     @property
     def conn(self) -> sqlite3.Connection:
@@ -374,6 +383,22 @@ class GraphStore:
         with self.store._instance_lock, self.store._optional_file_lock_context(f"query_sparql: {sparql_query[:30]}"):
             return self.sparql_engine.execute_query(sparql_query)
 
+    def execute_sparql_update(self, sparql_update: str) -> Dict[str, Any]:
+        """
+        Executes a W3C SPARQL 1.1 UPDATE command (INSERT DATA, DELETE DATA, DELETE WHERE)
+        and synchronizes changes with SQLite graph tables.
+        """
+        with self.store._instance_lock, self.store._optional_file_lock_context("execute_sparql_update"):
+            return self.sparql_engine.execute_update(sparql_update)
+
+    def get_tool_definitions(self) -> List[Dict[str, Any]]:
+        """Returns standard function-calling tool schemas for LLM memory manipulation."""
+        return self.memory.get_llm_tool_definitions()
+
+    def dispatch_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """Executes a function-calling tool requested by the LLM."""
+        return self.memory.dispatch_llm_tool(tool_name, arguments)
+
     def query_graph(self, natural_language_query: str, output_mode: str = "chunks_summary", top_k_nodes: int = 5) -> Any:
         with self.store._instance_lock, self.store._optional_file_lock_context(f"query_graph: {natural_language_query[:30]}"):
             if output_mode not in ["chunks_summary", "graph_only", "full"]: raise ValueError("Invalid output_mode.")
@@ -429,32 +454,31 @@ class GraphStore:
         dense_weight: float = 0.4,
         bm25_weight: float = 0.3,
         graph_weight: float = 0.3,
-        rrf_k: int = 60
+        rrf_k: int = 60,
+        min_relevance_percent: float = 0.0
     ) -> Dict[str, Any]:
         """
         Unified Tri-Modal Retrieval combining Graph Traversal (SPARQL/Neighborhood),
-        Dense Vector Similarity, and Sparse BM25 Lexical search via Reciprocal Rank Fusion.
+        Dense Vector Similarity, and Sparse BM25 Lexical search via Reciprocal Rank Fusion
+        with standardized 0-100 relevance grades and threshold filtering.
         """
         with self.store._instance_lock, self.store._optional_file_lock_context(f"query_graph_hybrid: {query_text[:30]}"):
-            # 1. Retrieve Graph Subgraph and Linked Chunks
             graph_result = self.query_graph(query_text, output_mode="full", top_k_nodes=top_k)
             graph_chunks = graph_result.get("chunks", []) if isinstance(graph_result, dict) else []
 
-            # 2. Retrieve Dense Chunks
             dense_chunks = self.store.query(query_text, top_k=top_k * 2)
 
-            # 3. Retrieve BM25 Chunks
             from ..search.bm25 import BM25Retriever
             from ..search.fusion import reciprocal_rank_fusion
             bm25_retriever = BM25Retriever(self.conn)
             bm25_chunks = bm25_retriever.search(query_text, top_k=top_k * 2)
 
-            # 4. Fuse all 3 modalities via Reciprocal Rank Fusion
             fused_chunks = reciprocal_rank_fusion(
                 ranked_lists=[dense_chunks, bm25_chunks, graph_chunks],
                 weights=[dense_weight, bm25_weight, graph_weight],
                 k=rrf_k,
-                top_k=top_k
+                top_k=top_k,
+                min_relevance_percent=min_relevance_percent
             )
 
             return {

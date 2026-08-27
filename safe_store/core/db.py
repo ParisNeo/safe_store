@@ -172,6 +172,60 @@ def get_document_id_by_path(conn: sqlite3.Connection, file_path: str) -> Optiona
     result = cursor.fetchone()
     return result[0] if result else None
 
+def get_document_record_by_id(conn: sqlite3.Connection, doc_id: int) -> Optional[Tuple]:
+    """Fetches a document row by doc_id returning bytes for text/metadata."""
+    sql = "SELECT doc_id, file_path, file_hash, full_text, metadata, is_encrypted, added_timestamp FROM documents WHERE doc_id = ?"
+    original_factory = conn.text_factory
+    conn.text_factory = bytes
+    cursor = conn.cursor()
+    row = cursor.execute(sql, (doc_id,)).fetchone()
+    conn.text_factory = original_factory
+    return row
+
+def get_document_chunks_by_seq_range(
+    conn: sqlite3.Connection,
+    doc_id: int,
+    start_seq: int,
+    end_seq: int
+) -> List[Tuple]:
+    """Fetches chunks for a document within a sequence range [start_seq, end_seq] inclusive."""
+    sql = """
+        SELECT chunk_id, doc_id, chunk_text, start_pos, end_pos, chunk_seq, tags, is_encrypted
+        FROM chunks
+        WHERE doc_id = ? AND chunk_seq BETWEEN ? AND ?
+        ORDER BY chunk_seq ASC
+    """
+    original_factory = conn.text_factory
+    conn.text_factory = bytes
+    cursor = conn.cursor()
+    rows = cursor.execute(sql, (doc_id, start_seq, end_seq)).fetchall()
+    conn.text_factory = original_factory
+    return rows
+
+def get_document_chunks_paginated(
+    conn: sqlite3.Connection,
+    doc_id: int,
+    offset: int,
+    limit: int
+) -> Tuple[List[Tuple], int]:
+    """Fetches a paginated slice of chunks for a document and returns (rows, total_chunks)."""
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM chunks WHERE doc_id = ?", (doc_id,))
+    total_count = cursor.fetchone()[0] or 0
+
+    sql = """
+        SELECT chunk_id, doc_id, chunk_text, start_pos, end_pos, chunk_seq, tags, is_encrypted
+        FROM chunks
+        WHERE doc_id = ?
+        ORDER BY chunk_seq ASC
+        LIMIT ? OFFSET ?
+    """
+    original_factory = conn.text_factory
+    conn.text_factory = bytes
+    rows = cursor.execute(sql, (doc_id, limit, offset)).fetchall()
+    conn.text_factory = original_factory
+    return rows, total_count
+
 def add_chunk_record(conn: sqlite3.Connection, doc_id: int, text: Union[str, bytes], start: int, end: int, seq: int, tags: Optional[str] = None, is_encrypted: bool = False, encryption_metadata: Optional[bytes] = None) -> int:
     sql = "INSERT INTO chunks (doc_id, chunk_text, start_pos, end_pos, chunk_seq, tags, is_encrypted, encryption_metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     cursor = conn.cursor()
@@ -199,6 +253,8 @@ def add_vector_record(conn: sqlite3.Connection, chunk_id: int, vector: np.ndarra
 # --- Metadata Functions ---
 def set_store_metadata(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.execute("INSERT OR REPLACE INTO store_metadata (key, value) VALUES (?, ?)", (key, value))
+    if not conn.in_transaction:
+        conn.commit()
 
 def get_store_metadata(conn: sqlite3.Connection, key: str) -> Optional[str]:
     cursor = conn.execute("SELECT value FROM store_metadata WHERE key = ?", (key,))
@@ -478,3 +534,13 @@ def get_all_vectors_with_doc_info(conn: sqlite3.Connection) -> List[Tuple]:
     results = cursor.execute(sql).fetchall()
     conn.text_factory = original_factory
     return results
+
+def clear_projection_cache(conn: sqlite3.Connection) -> int:
+    """Invalidates all cached datalake projections in store_metadata."""
+    try:
+        cursor = conn.execute("DELETE FROM store_metadata WHERE key LIKE 'datalake_cache_%'")
+        if not conn.in_transaction:
+            conn.commit()
+        return cursor.rowcount
+    except sqlite3.Error:
+        return 0

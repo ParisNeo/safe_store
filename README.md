@@ -8,10 +8,12 @@
 
 1. 🧠 **Dense Semantic Vector Search**: Embeddings powered by Sentence-Transformers, Ollama, OpenAI, Cohere, Lollms, or TF-IDF.
 2. ⚡ **Sparse Lexical Search (BM25)**: Native SQLite FTS5 full-text indexing for exact technical identifiers, part numbers, and error codes.
-3. 🕸️ **Knowledge Graph & W3C SPARQL 1.1 Engine**: Native TBox/ABox ontology management, declarative tabular mapping, and full SPARQL (`SELECT`, `ASK`, `CONSTRUCT`, `DESCRIBE`).
-4. 🔀 **Tri-Modal Reciprocal Rank Fusion (RRF)**: Merges dense similarity, lexical BM25, and symbolic graph traversals into unified, context-rich results.
-5. 🔐 **Zero-Leakage Local Encryption**: End-to-end AES-128/HMAC (Fernet) encryption at rest inside a single, portable `.db` file.
-
+3. 📖 **Full Document & Context Window Retrieval**: Query entire documents aggregated from chunk hits, retrieve surrounding chunk neighborhoods with window expansion, or paginate through document content.
+4. 🕸️ **Knowledge Graph & W3C SPARQL 1.1 Query & Update Engine**: Native TBox/ABox ontology management, declarative tabular mapping, and full SPARQL (`SELECT`, `ASK`, `CONSTRUCT`, `DESCRIBE`, and `INSERT/DELETE DATA` updates).
+5. 🧠 **LLM Cognitive Memory & Thought Reorganization**: Episodic memory logging, associative semantic traversal, grounded text chunk evidence linking, and native function-calling tool dispatching.
+6. 🔀 **Tri-Modal Reciprocal Rank Fusion (RRF)**: Merges dense similarity, lexical BM25, and symbolic graph traversals into unified, context-rich results.
+7. 📊 **Semantic Datalake & Point Cloud Engine**: 2D/3D PCA & t-SNE projections with persistent SQLite caching, streaming lazy loading (`IncrementalPCA`), and interactive HTML visualizer exports.
+8. 🔐 **Zero-Leakage Local Encryption**: End-to-end AES-128/HMAC (Fernet) encryption at rest inside a single, portable `.db` file.
 ---
 
 ## 📦 Installation
@@ -71,6 +73,47 @@ store = safe_store.SafeStore(
     chunk_size=128,
     chunk_overlap=16
 )
+```
+
+---
+
+### 1.1 Full Document & Neighborhood Context Window Retrieval
+
+When an LLM needs complete document context or the continuous paragraph surrounding a chunk match:
+
+```python
+with store:
+    # 1. Full Document Retrieval: Discovers matching chunks, aggregates scores on 0-100 grade,
+    #    and excludes documents under the relevance threshold (e.g. min_relevance_percent=50.0)
+    full_docs = store.query_full_documents(
+        query_text="memory leak troubleshooting",
+        top_k_docs=1,
+        search_mode='hybrid',
+        min_relevance_percent=50.0 # Prevents retrieving irrelevant docs
+    )
+    if full_docs:
+        print(f"Top Document: {full_docs[0]['document_title']} (Relevance: {full_docs[0]['relevance_score']:.1f}%)")
+        print(f"Full Text:\n{full_docs[0]['full_text']}\n")
+    else:
+        print("No document exceeded the 50% relevance threshold.")
+
+    # 2. Window Expansion Retrieval: Expands matching chunks by window_before / window_after chunks
+    windows = store.query_document_content_window(
+        query_text="ERR-4091 supervisor daemon",
+        top_k_hits=1,
+        window_before=1,
+        window_after=1,
+        min_relevance_percent=40.0
+    )
+    if windows:
+        print(f"Stitched Window Text:\n{windows[0]['stitched_window_text']}\n")
+
+    # 3. Document Chunk Pagination: Browse chunks page by page with sequence tracking
+    page_data = store.get_document_content_paginated("incident_001", page=1, page_size=5)
+    print(f"Page {page_data['page']} of {page_data['total_pages']} (Total Chunks: {page_data['total_chunks']})")
+    print(f"Stitched Page Text:\n{page_data['stitched_text']}")
+```
+
 
 with store:
     # Index unstructured technical documents
@@ -87,23 +130,70 @@ with store:
         metadata={"doc_type": "Runbook"}
     )
 
-    # Hybrid Query: Fuses Dense Semantic Similarity with BM25 Sparse Lexical Score via RRF
+    # Hybrid Query: Score-Calibrated Fusion of Dense Semantic Similarity with BM25 Sparse Lexical Score
     results = store.hybrid_query(
         query_text="troubleshooting memory failure ERR-4091",
         top_k=2,
         dense_weight=0.5,
         bm25_weight=0.5,
-        rrf_k=60
+        rrf_k=60,
+        min_relevance_percent=40.0 # Standard 0-100 threshold filter
     )
 
     for r in results:
-        print(f"[{r['file_path']}] (Fused Score: {r['fused_score']:.4f})")
+        print(f"[{r['file_path']}] (Relevance: {r['relevance_score']:.1f}% | Raw RRF: {r['raw_rrf_score']:.5f})")
         print(f"Content: {r['chunk_text']}\n")
+
 ```
 
 ---
 
-### 2. W3C SPARQL 1.1 Knowledge Graph Engine
+### 2. LLM Cognitive Memory & SPARQL 1.1 Reorganization
+
+Empower LLM agents to reorganize thoughts, record episodic memory events, and traverse associative concept graphs grounded in physical document chunks:
+
+```python
+from safe_store import SafeStore, GraphStore
+
+store = SafeStore(db_path="agent_memory.db", vectorizer_name="st")
+graph = GraphStore(store=store)
+
+# 1. LLM Reorganizes Knowledge Graph via SPARQL 1.1 UPDATE
+graph.execute_sparql_update("""
+PREFIX ont: <http://example.org/ontology/>
+PREFIX ex: <http://example.org/>
+INSERT DATA {
+    ex:Alice a ont:Architect ;
+             ont:name "Alice Smith" ;
+             ont:leadsProject ex:ProjectPhoenix .
+    ex:ProjectPhoenix a ont:Project ;
+                      ont:status "Active" .
+}
+""")
+
+# 2. Record an Episodic Event with Chunk Grounding
+episode_id = graph.memory.record_episode(
+    title="Architecture Design Review",
+    description="Alice presented the decentralized ledger protocol for Project Phoenix.",
+    participants=["Alice Smith"],
+    outcome="Approved",
+    source_chunk_ids=[1] # Grounded in chunk #1
+)
+
+# 3. Associative Recall: Traverse Semantic Neighborhoods & Evidence
+memory_view = graph.memory.recall_associative("Alice Smith", max_hops=2)
+print("Associated Entities:", [e['properties']['name'] for e in memory_view['associated_entities']])
+print("Source Chunk Evidence:", memory_view['grounded_chunks'][0]['chunk_text'])
+
+# 4. Expose Standard Function-Calling Tools to LLM Agents
+llm_tools = graph.get_tool_definitions()
+# Pass llm_tools directly to OpenAI, Anthropic, Ollama, or Lollms tool definitions!
+```
+
+---
+
+### 3. W3C SPARQL 1.1 Knowledge Graph Engine
+
 
 `safe_store` provides a full, standards-compliant SPARQL 1.1 engine supporting `SELECT`, `ASK`, `CONSTRUCT`, and `DESCRIBE` queries across multi-hop relational graphs.
 
@@ -568,6 +658,7 @@ store_exp = SafeStore(
 - [x] TBox & ABox Ontology Management (OWL / RDFS introspection)
 - [x] Declarative Tabular Mapping for CSV, XLSX, and SQLite tables
 - [x] Tri-Modal Hybrid Retrieval Engine (BM25 FTS5 + Dense Vectors + RRF)
+- [x] Semantic Datalake Point Cloud Engine (2D/3D PCA, t-SNE, persistent caching, lazy streaming, and HTML visualizer)
 - [x] AES-128/HMAC Authenticated Encryption at Rest
 - [ ] Multi-Modal Image Vector Database using SigLIP / CLIP embeddings
 - [ ] Web-based Visual Knowledge Graph Studio & Inspector

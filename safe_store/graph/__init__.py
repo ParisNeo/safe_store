@@ -1,6 +1,7 @@
-# safe_store/graph/__init__.py
 from .graph_store import GraphStore
+from .cognitive_memory import CognitiveMemoryStore
 
 __all__ = [
     "GraphStore",
+    "CognitiveMemoryStore",
 ]

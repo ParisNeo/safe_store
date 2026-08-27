@@ -5,4 +5,5 @@ sentence-transformers
 scikit-learn
 pandas
 plotly
+rdflib
 lollms_client

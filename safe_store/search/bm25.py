@@ -36,33 +36,41 @@ class BM25Retriever:
         except Exception:
             return False
 
-    def search(self, query_text: str, top_k: int = 5) -> List[Dict[str, Any]]:
+    def search(
+        self,
+        query_text: str,
+        top_k: int = 5,
+        min_relevance_percent: float = 0.0
+    ) -> List[Dict[str, Any]]:
         """
-        Searches the database for chunks matching query_text using BM25.
-        Returns a list of dictionaries with chunk metadata and scores.
+        Searches the database for chunks matching query_text using BM25 with a 0-100 relevance grade.
+        Results falling below min_relevance_percent are excluded.
         """
         clean_query = query_text.strip()
         if not clean_query:
             return []
 
+        raw_results = []
         if self._fts_available:
             try:
-                return self._search_fts5(clean_query, top_k)
+                raw_results = self._search_fts5(clean_query, top_k * 2)
             except Exception as e:
                 ASCIIColors.warning(f"FTS5 query failed, falling back to LIKE: {e}")
-                return self._search_fallback(clean_query, top_k)
+                raw_results = self._search_fallback(clean_query, top_k * 2)
         else:
-            return self._search_fallback(clean_query, top_k)
+            raw_results = self._search_fallback(clean_query, top_k * 2)
+
+        # Apply threshold filter on normalized 0-100 relevance grade
+        filtered = [r for r in raw_results if r["relevance_score"] >= min_relevance_percent]
+        return filtered[:top_k] if top_k > 0 else filtered
 
     def _search_fts5(self, query_text: str, top_k: int) -> List[Dict[str, Any]]:
-        # Sanitize query tokens for FTS5 syntax
         tokens = [t.replace('"', '""') for t in query_text.split() if t.strip()]
         if not tokens:
             return []
 
-        # Join tokens with OR or AND matching
         fts_query = " OR ".join(f'"{t}"' for t in tokens)
-        
+
         sql = """
             SELECT c.chunk_id, c.doc_id, c.chunk_text, c.start_pos, c.end_pos,
                    d.file_path, bm25(chunks_fts) as rank_score
@@ -84,9 +92,13 @@ class BM25Retriever:
 
         for row in rows:
             chunk_id, doc_id, chunk_text_bytes, start, end, file_path_bytes, rank_score = row
-            
-            # FTS5 bm25 returns lower (more negative) values for better matches; invert for standard positive score
+
+            # Invert FTS5 negative rank score
             norm_score = float(-rank_score) if rank_score is not None else 1.0
+
+            # Map BM25 saturation score to 0-100 grade
+            relevance_pct = round(min(100.0, (norm_score / (norm_score + 0.4)) * 100.0), 2) if norm_score > 0 else 0.0
+
 
             results.append({
                 "chunk_id": chunk_id,
@@ -96,7 +108,9 @@ class BM25Retriever:
                 "end_pos": end,
                 "file_path": file_path_bytes.decode('utf-8', errors='ignore'),
                 "score": norm_score,
-                "similarity_score": norm_score
+                "similarity_score": norm_score,
+                "similarity_percent": relevance_pct,
+                "relevance_score": relevance_pct
             })
 
         return results
@@ -111,7 +125,7 @@ class BM25Retriever:
             FROM chunks c
             JOIN documents d ON c.doc_id = d.doc_id
         """
-        
+
         original_factory = self.conn.text_factory
         self.conn.text_factory = bytes
         cursor = self.conn.cursor()
@@ -120,13 +134,14 @@ class BM25Retriever:
         self.conn.text_factory = original_factory
 
         scored = []
+        total_tokens = max(1, len(tokens))
         for row in rows:
             chunk_id, doc_id, chunk_text_bytes, start, end, file_path_bytes = row
             text = chunk_text_bytes.decode('utf-8', errors='ignore').lower()
-            
-            # Count term frequencies
-            match_count = sum(text.count(token) for token in tokens if token in text)
-            if match_count > 0:
+
+            matched_count = sum(1 for token in tokens if token in text)
+            if matched_count > 0:
+                relevance_pct = round(min(100.0, (float(matched_count) / float(total_tokens)) * 100.0), 2)
                 scored.append({
                     "chunk_id": chunk_id,
                     "doc_id": doc_id,
@@ -134,9 +149,11 @@ class BM25Retriever:
                     "start_pos": start,
                     "end_pos": end,
                     "file_path": file_path_bytes.decode('utf-8', errors='ignore'),
-                    "score": float(match_count),
-                    "similarity_score": float(match_count)
+                    "score": float(matched_count),
+                    "similarity_score": float(matched_count),
+                    "similarity_percent": relevance_pct,
+                    "relevance_score": relevance_pct
                 })
 
-        scored.sort(key=lambda x: x["score"], reverse=True)
+        scored.sort(key=lambda x: x["relevance_score"], reverse=True)
         return scored[:top_k]

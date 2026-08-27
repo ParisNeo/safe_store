@@ -21,6 +21,7 @@ from safe_store.indexing.page_index import PageIndex
 from safe_store.search import similarity
 from safe_store.search.bm25 import BM25Retriever
 from safe_store.search.fusion import reciprocal_rank_fusion
+from .datalake.viewer import DatalakeViewer
 from safe_store.vectorization.manager import VectorizationManager
 from safe_store.vectorization.base import BaseVectorizer
 from safe_store.vectorization.utils import load_vectorizer_module
@@ -149,6 +150,7 @@ class SafeStore:
         self.vectorizer: BaseVectorizer
         self.tokenizer_for_chunking: Optional[Any] = None
         self._page_index: Optional[PageIndex] = None
+        self._datalake_viewer: Optional[DatalakeViewer] = None
 
         try:
             self._connect_and_initialize()
@@ -366,6 +368,67 @@ class SafeStore:
             self._page_index = PageIndex(self)
         return self._page_index
 
+    @property
+    def datalake(self) -> DatalakeViewer:
+        if self._datalake_viewer is None:
+            self._datalake_viewer = DatalakeViewer(self)
+        return self._datalake_viewer
+
+    def get_properties(self) -> Dict[str, Any]:
+        """Returns the high-level configuration and metadata of the store."""
+        with self._instance_lock:
+            self._ensure_connection()
+            return {
+                "name": self.name,
+                "description": self.description,
+                "metadata": self.metadata,
+                "vectorizer_name": self.vectorizer_name,
+                "vectorizer_config": self.vectorizer_config,
+                "chunk_size": self.chunk_size,
+                "chunk_overlap": self.chunk_overlap,
+                "chunking_strategy": self.chunking_strategy
+            }
+
+    def update_properties(
+        self,
+        properties: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        overwrite_metadata: bool = False
+    ) -> None:
+        """Updates store description or metadata properties with persistence."""
+        with self._instance_lock, self._optional_file_lock_context("update_properties"):
+            self._ensure_connection()
+            assert self.conn is not None
+            try:
+                self.conn.execute("BEGIN")
+                if properties:
+                    if "name" in properties:
+                        self.name = properties["name"]
+                        db.set_store_metadata(self.conn, "store_name", self.name or "")
+                    if "description" in properties:
+                        self.description = properties["description"]
+                        db.set_store_metadata(self.conn, "store_description", self.description or "")
+                    if "metadata" in properties:
+                        metadata = properties["metadata"]
+                if metadata is not None:
+                    if overwrite_metadata or self.metadata is None:
+                        self.metadata = metadata
+                    else:
+                        self.metadata.update(metadata)
+                    db.set_store_metadata(self.conn, "store_metadata", json.dumps(self.metadata))
+                self.conn.commit()
+            except Exception as e:
+                if self.conn.in_transaction:
+                    self.conn.rollback()
+                raise SafeStoreError(f"Failed to update store properties: {e}") from e
+
+    def clear_datalake_cache(self) -> int:
+        """Clears cached 2D/3D projections from the database."""
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+            return db.clear_projection_cache(self.conn)
+
     def _get_file_hash(self, file_path: Path) -> str:
         hasher = self._file_hasher()
         with open(file_path, 'rb') as f:
@@ -559,7 +622,8 @@ class SafeStore:
             vectors = self.vectorizer.vectorize(vector_texts)
 
             try:
-                self.conn.execute("BEGIN")
+                if not self.conn.in_transaction:
+                    self.conn.execute("BEGIN")
                 doc_id = db.get_document_id_by_path(self.conn, content_id)
                 if doc_id:
                     self.conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
@@ -578,6 +642,7 @@ class SafeStore:
                     cid = db.add_chunk_record(self.conn, doc_id, t_store, 0, 0, i, tags=tags_str, is_encrypted=self.encryptor.is_enabled)
                     db.add_vector_record(self.conn, cid, np.ascontiguousarray(vectors[i], dtype=self.vectorizer.dtype))
 
+                self.clear_datalake_cache()
                 self.conn.commit()
 
                 if doc_id and hasattr(self.vectorizer, 'on_document_indexed') and callable(getattr(self.vectorizer, 'on_document_indexed')):
@@ -592,21 +657,28 @@ class SafeStore:
             except Exception as e:
                 if self.conn and self.conn.in_transaction: self.conn.rollback()
                 raise SafeStoreError(f"Database transaction failed for '{content_id}': {e}") from e
-        
+
     def query(
         self,
         query_text: str,
         top_k: int = 5,
-        min_similarity_percent: float = 0.0
+        min_relevance_percent: float = 0.0,
+        min_similarity_percent: Optional[float] = None
     ) -> List[Dict[str, Any]]:
+        """
+        Queries the vector store using dense vector similarity.
+        Every result contains a standardized 0-100 grade (relevance_score & similarity_percent).
+        Results below min_relevance_percent are excluded.
+        """
+        threshold = min_similarity_percent if min_similarity_percent is not None else min_relevance_percent
         with self._instance_lock:
-            ASCIIColors.info(f"Received query. Searching with '{self.vectorizer_name}', top_k={top_k}")
+            ASCIIColors.info(f"Received query. Searching with '{self.vectorizer_name}', top_k={top_k}, threshold={threshold}%")
 
             self._ensure_connection()
             assert self.conn and self.vectorizer is not None
             custom_search = getattr(self.vectorizer, 'custom_search', None)
             if callable(custom_search):
-                return custom_search(self.conn, query_text, top_k, min_similarity_percent)
+                return custom_search(self.conn, query_text, top_k, threshold)
 
             query_vector = self.vectorizer.vectorize([query_text])[0]
 
@@ -616,24 +688,29 @@ class SafeStore:
                 all_vectors_data = self.conn.execute("SELECT v.chunk_id, v.vector_data FROM vectors v").fetchall()
 
             if not all_vectors_data: 
-                ASCIIColors.warning(f"No vectors found in the database for method '{self.vectorizer_name}'. Cannot perform query.")
                 return []
 
             chunk_ids, vector_blobs = zip(*all_vectors_data)
             candidate_vectors = np.array([db.reconstruct_vector(blob, self.vectorizer.dtype.name) for blob in vector_blobs])
 
             scores = similarity.cosine_similarity(query_vector, candidate_vectors)
-            score_threshold = (min_similarity_percent / 50.0) - 1.0
-            pass_mask = scores >= score_threshold
-            
-            if not np.any(pass_mask): return []
-                
+
+            # Map cosine similarity [-1.0, 1.0] to [0.0, 100.0]% grade
+            percent_grades = np.clip(((scores + 1.0) / 2.0) * 100.0, 0.0, 100.0)
+            pass_mask = percent_grades >= threshold
+
+            if not np.any(pass_mask): 
+                return []
+
             scores_passing = scores[pass_mask]
+            grades_passing = percent_grades[pass_mask]
             chunk_ids_passing = np.array(chunk_ids)[pass_mask]
-            
+
             k = min(top_k, len(scores_passing)) if top_k > 0 else len(scores_passing)
-            top_indices = np.argsort(scores_passing)[::-1][:k]
-            top_chunk_ids, top_scores = chunk_ids_passing[top_indices], scores_passing[top_indices]
+            top_indices = np.argsort(grades_passing)[::-1][:k]
+            top_chunk_ids = chunk_ids_passing[top_indices]
+            top_scores = scores_passing[top_indices]
+            top_grades = grades_passing[top_indices]
 
             with self._optional_file_lock_context("query - fetch details"):
                 self._ensure_connection()
@@ -642,7 +719,8 @@ class SafeStore:
                 sql = f"""
                     SELECT c.chunk_id, c.chunk_text, c.start_pos, c.end_pos,
                            c.is_encrypted AS chunk_is_encrypted, d.file_path,
-                           d.metadata AS doc_metadata, d.is_encrypted AS doc_is_encrypted
+                           d.metadata AS doc_metadata, d.is_encrypted AS doc_is_encrypted,
+                           c.doc_id
                     FROM chunks c JOIN documents d ON c.doc_id = d.doc_id
                     WHERE c.chunk_id IN ({placeholders})
                 """
@@ -654,7 +732,7 @@ class SafeStore:
                 self.conn.text_factory = original_factory
 
             for row in details_raw:
-                chunk_id, chunk_text_data, start, end, chunk_is_enc, path, doc_meta_data, doc_is_enc = row
+                chunk_id, chunk_text_data, start, end, chunk_is_enc, path, doc_meta_data, doc_is_enc, doc_id = row
                 
                 chunk_text: str
                 if chunk_is_enc:
@@ -687,14 +765,23 @@ class SafeStore:
                     doc_metadata_text += "------------------------\n\n"
 
                 details_map[chunk_id] = {
+                    "chunk_id": int(chunk_id),
+                    "doc_id": int(doc_id),
                     "chunk_text": doc_metadata_text + chunk_text, "start_pos": start, "end_pos": end,
                     "file_path": path.decode('utf-8'), "document_metadata": meta_dict
                 }
             
             ordered_results = []
-            for cid, s in zip(top_chunk_ids, top_scores):
-                res = details_map.get(cid, {})
-                res.update({"chunk_id": cid, "similarity_score": float(s), "similarity_percent": float(round(((s + 1) / 2) * 100, 2))})
+            for cid, s, g in zip(top_chunk_ids, top_scores, top_grades):
+                cid_int = int(cid)
+                res = dict(details_map.get(cid_int, {}))
+                grade_val = float(round(g, 2))
+                res.update({
+                    "chunk_id": cid_int,
+                    "similarity_score": float(s),
+                    "similarity_percent": grade_val,
+                    "relevance_score": grade_val
+                })
                 ordered_results.append(res)
             return ordered_results
 
@@ -704,28 +791,33 @@ class SafeStore:
         top_k: int = 5,
         dense_weight: float = 0.5,
         bm25_weight: float = 0.5,
-        rrf_k: int = 60
+        rrf_k: int = 60,
+        min_relevance_percent: float = 0.0,
+        min_similarity_percent: Optional[float] = None
     ) -> List[Dict[str, Any]]:
         """
         Executes a Tri-Modal Hybrid query combining Dense Vector search and Sparse BM25 lexical search via RRF.
+        Standardizes relevance onto a 0-100 grade and filters out results below the threshold.
         """
+        threshold = min_similarity_percent if min_similarity_percent is not None else min_relevance_percent
         with self._instance_lock:
             self._ensure_connection()
             assert self.conn is not None
 
-            # 1. Fetch Dense Vector Results
-            dense_results = self.query(query_text, top_k=top_k * 2)
+            # 1. Fetch Dense Vector Results (without early false-cutoff)
+            dense_results = self.query(query_text, top_k=top_k * 3, min_relevance_percent=0.0)
 
             # 2. Fetch BM25 Lexical Results
             bm25_retriever = BM25Retriever(self.conn)
-            bm25_results = bm25_retriever.search(query_text, top_k=top_k * 2)
+            bm25_results = bm25_retriever.search(query_text, top_k=top_k * 3, min_relevance_percent=0.0)
 
-            # 3. Fuse Results with Reciprocal Rank Fusion
+            # 3. Fuse Results with Score-Calibrated Reciprocal Rank Fusion
             fused = reciprocal_rank_fusion(
                 ranked_lists=[dense_results, bm25_results],
                 weights=[dense_weight, bm25_weight],
                 k=rrf_k,
-                top_k=top_k
+                top_k=top_k,
+                min_relevance_percent=threshold
             )
 
             return fused
@@ -744,6 +836,7 @@ class SafeStore:
             try:
                 self.conn.execute("BEGIN")
                 rows = self.conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+                self.clear_datalake_cache()
                 self.conn.commit()
                 if rows > 0: ASCIIColors.success(f"Deleted document ID {doc_id}.")
             except sqlite3.Error as e:
@@ -820,37 +913,332 @@ class SafeStore:
             "params": {}
         }]
 
-    def reconstruct_document_text(self, file_path: Union[str, Path]) -> Optional[str]:
-        _path_or_id = str(Path(file_path).resolve() if isinstance(file_path, Path) else file_path)
-        with self._instance_lock, self._optional_file_lock_context(f"reconstruct_document: {_path_or_id}"):
+    def _decrypt_payload(self, data: Optional[bytes], is_encrypted: bool, fallback_label: str = "Encrypted") -> Optional[str]:
+        """Helper to decrypt byte blobs safely or decode UTF-8."""
+        if data is None:
+            return None
+        if not is_encrypted:
+            return data.decode('utf-8', errors='ignore')
+        if not self.encryptor.is_enabled:
+            return f"[{fallback_label} - Key Unavailable]"
+        try:
+            return self.encryptor.decrypt(data)
+        except EncryptionError:
+            return f"[{fallback_label} - Decryption Failed]"
+
+    def reconstruct_document_text(self, file_path_or_id: Union[str, Path, int]) -> Optional[str]:
+        """Reconstructs the full document text by doc_id or path, decrypting safely."""
+        with self._instance_lock:
             self._ensure_connection()
             assert self.conn is not None
 
-            doc_id = db.get_document_id_by_path(self.conn, _path_or_id)
+            doc_id: Optional[int] = None
+            if isinstance(file_path_or_id, int):
+                doc_id = file_path_or_id
+            else:
+                _path_or_id = str(Path(file_path_or_id).resolve() if isinstance(file_path_or_id, Path) else file_path_or_id)
+                doc_id = db.get_document_id_by_path(self.conn, _path_or_id)
+
             if doc_id is None:
-                ASCIIColors.warning(f"Document not found for reconstruction: '{_path_or_id}'")
                 return None
-            
+
+            doc_row = db.get_document_record_by_id(self.conn, doc_id)
+            if not doc_row:
+                return None
+
+            _, _, _, full_text_bytes, _, doc_enc, _ = doc_row
+            if full_text_bytes:
+                decrypted_full = self._decrypt_payload(full_text_bytes, bool(doc_enc), "Encrypted Document")
+                if decrypted_full and not decrypted_full.startswith("[Encrypted"):
+                    return decrypted_full
+
+            # Fallback: Assemble from sequentially ordered chunks
             sql = "SELECT chunk_text, is_encrypted FROM chunks WHERE doc_id = ? ORDER BY chunk_seq ASC"
             original_factory = self.conn.text_factory
             self.conn.text_factory = bytes
-            cursor = self.conn.cursor()
-            rows = cursor.execute(sql, (doc_id,)).fetchall()
+            rows = self.conn.execute(sql, (doc_id,)).fetchall()
             self.conn.text_factory = original_factory
 
-            if not rows: return ""
+            if not rows:
+                return ""
 
-            decrypted_chunks = []
-            for chunk_text_data, is_enc in rows:
-                if is_enc:
-                    if self.encryptor.is_enabled:
-                        try: decrypted_chunks.append(self.encryptor.decrypt(chunk_text_data))
-                        except EncryptionError: decrypted_chunks.append("[Encrypted Chunk - Decryption Failed]")
-                    else: decrypted_chunks.append("[Encrypted Chunk - Key Unavailable]")
-                else:
-                    decrypted_chunks.append(chunk_text_data.decode('utf-8'))
-            
+            decrypted_chunks = [self._decrypt_payload(chunk_b, bool(c_enc), "Encrypted Chunk") or "" for chunk_b, c_enc in rows]
             return "\n".join(decrypted_chunks)
+
+    def query_full_documents(
+        self,
+        query_text: str,
+        top_k_docs: int = 3,
+        search_mode: Literal['dense', 'bm25', 'hybrid'] = 'hybrid',
+        top_k_chunks: int = 20,
+        min_relevance_percent: float = 0.0,
+        min_similarity_percent: Optional[float] = None,
+        include_hit_chunks: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Queries chunks across the database, aggregates hits by document, and returns the
+        highest-scoring documents along with their complete reconstructed full text.
+        Excludes documents whose aggregated relevance score is below min_relevance_percent.
+        """
+        threshold = min_similarity_percent if min_similarity_percent is not None else min_relevance_percent
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+
+            # Retrieve candidate chunks with a relaxed pre-filter so document-level aggregation can evaluate properly
+            chunk_retrieval_floor = max(0.0, threshold - 20.0) if threshold > 0 else 0.0
+
+            if search_mode == 'hybrid':
+                chunk_hits = self.hybrid_query(query_text, top_k=top_k_chunks * 2, min_relevance_percent=chunk_retrieval_floor)
+            elif search_mode == 'bm25':
+                bm25_retriever = BM25Retriever(self.conn)
+                chunk_hits = bm25_retriever.search(query_text, top_k=top_k_chunks * 2, min_relevance_percent=chunk_retrieval_floor)
+            elif search_mode == 'dense':
+                chunk_hits = self.query(query_text, top_k=top_k_chunks * 2, min_relevance_percent=chunk_retrieval_floor)
+            else:
+                raise ValueError(f"Unknown search_mode: '{search_mode}'. Supported: 'dense', 'bm25', 'hybrid'.")
+
+            if not chunk_hits:
+                return []
+
+            doc_hits_map: Dict[int, List[Dict[str, Any]]] = {}
+            doc_path_to_id: Dict[str, int] = {}
+
+            for hit in chunk_hits:
+                doc_id = hit.get("doc_id")
+                file_path = hit.get("file_path", "")
+                if doc_id is None and file_path:
+                    if file_path in doc_path_to_id:
+                        doc_id = doc_path_to_id[file_path]
+                    else:
+                        doc_id = db.get_document_id_by_path(self.conn, file_path)
+                        if doc_id:
+                            doc_path_to_id[file_path] = doc_id
+
+                if doc_id is None:
+                    continue
+
+                if doc_id not in doc_hits_map:
+                    doc_hits_map[doc_id] = []
+                doc_hits_map[doc_id].append(hit)
+
+            scored_documents = []
+            for doc_id, hits in doc_hits_map.items():
+                grades = [float(h.get("relevance_score", h.get("similarity_percent", 0.0))) for h in hits]
+                max_grade = max(grades) if grades else 0.0
+
+                # Composite aggregate relevance grade (0-100 scale)
+                agg_grade = min(100.0, max_grade + min(15.0, (len(hits) - 1) * 3.0))
+                agg_grade_rounded = round(agg_grade, 2)
+
+                if agg_grade_rounded < threshold:
+                    continue
+
+                # Filter matching chunks to those meeting the contextual relevance floor
+                filtered_hits = [h for h in hits if float(h.get("relevance_score", h.get("similarity_percent", 0.0))) >= chunk_retrieval_floor]
+
+                scored_documents.append({
+                    "doc_id": doc_id,
+                    "relevance_score": agg_grade_rounded,
+                    "similarity_percent": agg_grade_rounded,
+                    "top_chunk_score": round(max_grade, 2),
+                    "hit_count": len(hits),
+                    "chunk_hits": filtered_hits if filtered_hits else hits
+                })
+
+            scored_documents.sort(key=lambda d: d["relevance_score"], reverse=True)
+            top_docs = scored_documents[:top_k_docs]
+
+            results = []
+            for doc_entry in top_docs:
+                doc_id = doc_entry["doc_id"]
+                doc_row = db.get_document_record_by_id(self.conn, doc_id)
+                if not doc_row:
+                    continue
+
+                _, path_bytes, hash_bytes, full_text_bytes, meta_bytes, doc_enc, ts = doc_row
+                file_path = path_bytes.decode('utf-8', errors='ignore')
+                full_text = self.reconstruct_document_text(doc_id)
+
+                meta_dict = None
+                if meta_bytes:
+                    decrypted_meta = self._decrypt_payload(meta_bytes, bool(doc_enc), "Encrypted Metadata")
+                    if decrypted_meta:
+                        try:
+                            meta_dict = json.loads(decrypted_meta)
+                        except Exception:
+                            meta_dict = {"raw": decrypted_meta}
+
+                cursor = self.conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM chunks WHERE doc_id = ?", (doc_id,))
+                total_chunks = cursor.fetchone()[0] or 0
+
+                doc_payload = {
+                    "doc_id": doc_id,
+                    "file_path": file_path,
+                    "document_title": Path(file_path).name,
+                    "aggregate_score": doc_entry["relevance_score"],
+                    "relevance_score": doc_entry["relevance_score"],
+                    "similarity_percent": doc_entry["similarity_percent"],
+                    "top_chunk_score": doc_entry["top_chunk_score"],
+                    "hit_chunk_count": doc_entry["hit_count"],
+                    "total_chunk_count": total_chunks,
+                    "full_text": full_text,
+                    "metadata": meta_dict,
+                    "added_timestamp": ts
+                }
+                if include_hit_chunks:
+                    doc_payload["matching_chunks"] = doc_entry["chunk_hits"]
+
+                results.append(doc_payload)
+
+            return results
+
+    def query_document_content_window(
+        self,
+        query_text: str,
+        top_k_hits: int = 3,
+        window_before: int = 1,
+        window_after: int = 1,
+        search_mode: Literal['dense', 'bm25', 'hybrid'] = 'hybrid',
+        min_relevance_percent: float = 0.0,
+        min_similarity_percent: Optional[float] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Locates top matching chunks and expands their context window by retrieving
+        adjacent preceding and succeeding chunks in sequential order.
+        Excludes matches below min_relevance_percent.
+        """
+        threshold = min_similarity_percent if min_similarity_percent is not None else min_relevance_percent
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+
+            if search_mode == 'hybrid':
+                chunk_hits = self.hybrid_query(query_text, top_k=top_k_hits, min_relevance_percent=threshold)
+            elif search_mode == 'bm25':
+                bm25_retriever = BM25Retriever(self.conn)
+                chunk_hits = bm25_retriever.search(query_text, top_k=top_k_hits, min_relevance_percent=threshold)
+            elif search_mode == 'dense':
+                chunk_hits = self.query(query_text, top_k=top_k_hits, min_relevance_percent=threshold)
+            else:
+                raise ValueError(f"Unknown search_mode: '{search_mode}'")
+
+            results = []
+            for hit in chunk_hits:
+                chunk_id = hit.get("chunk_id")
+                if chunk_id is None:
+                    continue
+
+                cursor = self.conn.cursor()
+                cursor.execute("SELECT doc_id, chunk_seq FROM chunks WHERE chunk_id = ?", (chunk_id,))
+                c_row = cursor.fetchone()
+                if not c_row:
+                    continue
+
+                doc_id, target_seq = c_row
+                start_seq = max(0, target_seq - window_before)
+                end_seq = target_seq + window_after
+
+                window_rows = db.get_document_chunks_by_seq_range(self.conn, doc_id, start_seq, end_seq)
+                surrounding_chunks = []
+                stitched_parts = []
+
+                for cid, did, chunk_b, start_p, end_p, seq, tags, is_enc in window_rows:
+                    decrypted_txt = self._decrypt_payload(chunk_b, bool(is_enc), "Encrypted Chunk") or ""
+                    is_target = (seq == target_seq)
+                    surrounding_chunks.append({
+                        "chunk_id": cid,
+                        "chunk_seq": seq,
+                        "is_target_hit": is_target,
+                        "chunk_text": decrypted_txt
+                    })
+                    stitched_parts.append(decrypted_txt)
+
+                doc_row = db.get_document_record_by_id(self.conn, doc_id)
+                file_path = doc_row[1].decode('utf-8', errors='ignore') if doc_row else hit.get("file_path", "")
+
+                rel_grade = float(hit.get("relevance_score", hit.get("similarity_percent", 0.0)))
+
+                results.append({
+                    "target_chunk_id": chunk_id,
+                    "target_chunk_seq": target_seq,
+                    "doc_id": doc_id,
+                    "file_path": file_path,
+                    "document_title": Path(file_path).name,
+                    "hit_score": hit.get("fused_score", hit.get("similarity_score", hit.get("score", 0.0))),
+                    "similarity_percent": rel_grade,
+                    "relevance_score": rel_grade,
+                    "stitched_window_text": "\n\n".join(stitched_parts),
+                    "surrounding_chunks": surrounding_chunks
+                })
+
+            return results
+
+    def get_document_content_paginated(
+        self,
+        doc_id_or_path: Union[int, str, Path],
+        page: int = 1,
+        page_size: int = 5,
+        highlight_chunk_ids: Optional[List[int]] = None
+    ) -> Dict[str, Any]:
+        """
+        Returns a paginated slice of chunks for a document, along with pagination metadata
+        and continuous stitched page text.
+        """
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+
+            doc_id: Optional[int] = None
+            if isinstance(doc_id_or_path, int):
+                doc_id = doc_id_or_path
+            else:
+                _path_or_id = str(Path(doc_id_or_path).resolve() if isinstance(doc_id_or_path, Path) else doc_id_or_path)
+                doc_id = db.get_document_id_by_path(self.conn, _path_or_id)
+
+            if doc_id is None:
+                raise SafeStoreError(f"Document '{doc_id_or_path}' not found.")
+
+            if page < 1:
+                page = 1
+            if page_size < 1:
+                page_size = 5
+
+            offset = (page - 1) * page_size
+            rows, total_chunks = db.get_document_chunks_paginated(self.conn, doc_id, offset=offset, limit=page_size)
+
+            total_pages = max(1, (total_chunks + page_size - 1) // page_size)
+            highlight_set = set(highlight_chunk_ids or [])
+
+            chunks = []
+            stitched_parts = []
+            for cid, did, chunk_b, start_p, end_p, seq, tags, is_enc in rows:
+                text = self._decrypt_payload(chunk_b, bool(is_enc), "Encrypted Chunk") or ""
+                chunks.append({
+                    "chunk_id": cid,
+                    "chunk_seq": seq,
+                    "chunk_text": text,
+                    "is_highlighted": cid in highlight_set
+                })
+                stitched_parts.append(text)
+
+            doc_row = db.get_document_record_by_id(self.conn, doc_id)
+            file_path = doc_row[1].decode('utf-8', errors='ignore') if doc_row else ""
+
+            return {
+                "doc_id": doc_id,
+                "file_path": file_path,
+                "document_title": Path(file_path).name,
+                "page": page,
+                "page_size": page_size,
+                "total_pages": total_pages,
+                "total_chunks": total_chunks,
+                "has_previous_page": page > 1,
+                "has_next_page": page < total_pages,
+                "chunks": chunks,
+                "stitched_text": "\n\n".join(stitched_parts)
+            }
 
     def get_chunk_by_id(self, chunk_id: int) -> Optional[Dict[str, Any]]:
         with self._instance_lock, self._optional_file_lock_context(f"get_chunk_by_id: {chunk_id}"):
@@ -889,60 +1277,81 @@ class SafeStore:
                 "document_metadata": meta_dict
             }
 
-    def export_point_cloud(self, output_format: Literal['json_str', 'dict', 'csv'] = 'json_str') -> Union[str, List[Dict[str, Any]]]:
-        try:
-            from sklearn.decomposition import PCA
-            import pandas as pd
-        except ImportError:
-            raise ConfigurationError("'export_point_cloud' requires 'scikit-learn' and 'pandas'. Install with: pip install scikit-learn pandas")
-
+    def get_datalake_view(
+        self,
+        method: Literal['pca', 'tsne', 'umap', 'incremental_pca'] = 'pca',
+        n_components: int = 2,
+        use_cache: bool = True,
+        sample_size: Optional[int] = None,
+        filter_doc_ids: Optional[List[int]] = None,
+        output_format: Literal['dict', 'json_str', 'csv', 'dataframe'] = 'dict',
+        include_chunk_text: bool = True
+    ) -> Union[List[Dict[str, Any]], str, Any]:
+        """
+        Retrieves a 2D or 3D datalake semantic projection using PCA, t-SNE, or UMAP.
+        Supports instant cached retrieval, sampling, and filtering.
+        """
         with self._instance_lock:
-            with self._optional_file_lock_context("export_point_cloud - fetch data"):
-                self._ensure_connection()
-                assert self.conn and self.vectorizer is not None
-                all_data = db.get_all_vectors_with_doc_info(self.conn)
-                vectorizer_details = self.get_vectorization_details()
+            self._ensure_connection()
+            return self.datalake.get_datalake_view(
+                method=method,
+                n_components=n_components,
+                use_cache=use_cache,
+                sample_size=sample_size,
+                filter_doc_ids=filter_doc_ids,
+                output_format=output_format,
+                include_chunk_text=include_chunk_text
+            )
 
-            if not all_data: raise SafeStoreError("No vectors found in the store to export.")
-            if not vectorizer_details: raise SafeStoreError("Could not retrieve vectorizer details from the database.")
+    def stream_datalake_chunks(
+        self,
+        batch_size: int = 500,
+        method: Literal['pca', 'incremental_pca'] = 'incremental_pca',
+        n_components: int = 2
+    ):
+        """Streams datalake points in incremental batches without loading full vector matrices into RAM."""
+        with self._instance_lock:
+            self._ensure_connection()
+            return self.datalake.stream_datalake_chunks(
+                batch_size=batch_size,
+                method=method,
+                n_components=n_components
+            )
 
-            chunk_ids, vectors, doc_paths, doc_metadatas = [], [], [], []
-            dtype_str = vectorizer_details["dtype"]
+    def export_datalake_html(
+        self,
+        output_file: Union[str, Path] = "datalake_view.html",
+        title: str = "SafeStore Semantic Datalake Explorer",
+        method: Literal['pca', 'tsne', 'umap'] = 'pca',
+        n_components: int = 2,
+        sample_size: Optional[int] = None
+    ) -> Path:
+        """Exports a standalone, interactive HTML 2D/3D visualizer for the entire datalake."""
+        with self._instance_lock:
+            self._ensure_connection()
+            return self.datalake.export_datalake_html(
+                output_file=output_file,
+                title=title,
+                method=method,
+                n_components=n_components,
+                sample_size=sample_size
+            )
 
-            for row in all_data:
-                chunk_id, vector_blob, path_bytes, meta_blob, is_enc = row
-                chunk_ids.append(chunk_id)
-                vectors.append(db.reconstruct_vector(vector_blob, dtype_str))
-                doc_paths.append(path_bytes.decode('utf-8'))
-                
-                meta_dict = None
-                if meta_blob:
-                    if is_enc:
-                        if self.encryptor.is_enabled:
-                            try: meta_dict = json.loads(self.encryptor.decrypt(meta_blob))
-                            except (EncryptionError, json.JSONDecodeError): meta_dict = {"error": "decryption_failed"}
-                        else: meta_dict = {"error": "key_unavailable"}
-                    else:
-                        try: meta_dict = json.loads(meta_blob.decode('utf-8'))
-                        except json.JSONDecodeError: meta_dict = {"error": "parsing_failed"}
-                doc_metadatas.append(meta_dict or {})
-            
-            X = np.array(vectors)
-            pca = PCA(n_components=2, random_state=42)
-            X_2d = pca.fit_transform(X)
-
-            point_cloud_data = [{
-                "x": float(X_2d[i, 0]), "y": float(X_2d[i, 1]), "chunk_id": int(chunk_id),
-                "document_title": Path(doc_paths[i]).name, "document_path": doc_paths[i], "metadata": doc_metadatas[i]
-            } for i, chunk_id in enumerate(chunk_ids)]
-
-            if output_format == 'dict':
-                return point_cloud_data
-            elif output_format == 'csv':
-                df = pd.DataFrame(point_cloud_data)
-                if any(d['metadata'] for d in point_cloud_data):
-                    meta_df = pd.json_normalize([d['metadata'] for d in point_cloud_data]).add_prefix('meta_')
-                    df = pd.concat([df.drop('metadata', axis=1), meta_df], axis=1)
-                return df.to_csv(index=False)
-            else:
-                return json.dumps(point_cloud_data)
+    def export_point_cloud(
+        self,
+        output_format: Literal['json_str', 'dict', 'csv'] = 'json_str',
+        method: Literal['pca', 'tsne', 'umap'] = 'pca',
+        n_components: int = 2,
+        use_cache: bool = True
+    ) -> Union[str, List[Dict[str, Any]]]:
+        """
+        Exports a point-cloud projection of document chunks (backward-compatible and enhanced).
+        """
+        with self._instance_lock:
+            self._ensure_connection()
+            return self.datalake.get_datalake_view(
+                method=method,
+                n_components=n_components,
+                use_cache=use_cache,
+                output_format=output_format
+            )

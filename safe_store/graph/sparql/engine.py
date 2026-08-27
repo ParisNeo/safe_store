@@ -1,25 +1,26 @@
 import sqlite3
 import json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple, Union
 import pipmaster as pm
 from ascii_colors import ASCIIColors
 from ...core.exceptions import QueryError
+from ...core import db
 
 try:
     import rdflib
-    from rdflib import Graph, URIRef, Literal, Namespace, RDF
+    from rdflib import Graph, URIRef, Literal, Namespace, RDF, RDFS, OWL
     from rdflib.plugins.sparql.processor import SPARQLResult
 except ImportError:
     pm.ensure_packages(["rdflib"])
     import rdflib
-    from rdflib import Graph, URIRef, Literal, Namespace, RDF
+    from rdflib import Graph, URIRef, Literal, Namespace, RDF, RDFS, OWL
     from rdflib.plugins.sparql.processor import SPARQLResult
 
 
 class SparqlEngine:
     """
-    W3C SPARQL 1.1 Compliant Query Engine backed by SafeStore's SQLite Graph/Triple Store.
-    Supports SELECT, ASK, CONSTRUCT, and DESCRIBE.
+    W3C SPARQL 1.1 Compliant Query & Update Engine backed by SafeStore's SQLite Graph/Triple Store.
+    Supports SELECT, ASK, CONSTRUCT, DESCRIBE, and UPDATE commands (INSERT DATA, DELETE DATA, DELETE WHERE).
     """
 
     def __init__(self, conn: sqlite3.Connection, default_ns: str = "http://example.org/"):
@@ -34,6 +35,8 @@ class SparqlEngine:
         g.bind("ex", Namespace("http://example.org/"))
         g.bind("ont", Namespace("http://example.org/ontology/"))
         g.bind("rdf", RDF)
+        g.bind("rdfs", RDFS)
+        g.bind("owl", OWL)
 
         cursor = self.conn.cursor()
         
@@ -44,10 +47,8 @@ class SparqlEngine:
 
         for node_id, label, props_json in nodes_data:
             props = json.loads(props_json) if props_json else {}
-
             identifying_val = props.get("identifying_value") or props.get("name") or str(node_id)
 
-            # Determine canonical URI: priority to explicit URI, then identifying value, then node ID
             if props.get("uri"):
                 uri_str = props["uri"]
             elif identifying_val and not str(identifying_val).isdigit():
@@ -64,13 +65,12 @@ class SparqlEngine:
             g.add((node_uri, RDF.type, class_uri))
             g.add((node_uri, URIRef("http://example.org/ontology/label"), Literal(label)))
 
-            # Literal and URI property triples (avoid duplicate keys)
+            # Literal and URI property triples
             seen_properties = set()
             for k, v in props.items():
                 if k in ("uri", "identifying_value", "other_identifiers") or v is None or str(v).strip() == "":
                     continue
 
-                # Normalize property URI
                 if k.startswith("http://") or k.startswith("https://"):
                     prop_uri = URIRef(k)
                     prop_key = k
@@ -103,7 +103,6 @@ class SparqlEngine:
                 pred_uri = URIRef(pred_uri_str) if pred_uri_str else URIRef(f"http://example.org/{rel_type}")
                 
                 g.add((src_uri, pred_uri, tgt_uri))
-                # Also add ontology namespace alias
                 g.add((src_uri, URIRef(f"http://example.org/ontology/{rel_type}"), tgt_uri))
 
         return g
@@ -120,7 +119,6 @@ class SparqlEngine:
             g = self._hydrate_rdf_graph()
             qres = g.query(clean_query)
 
-            # 1. SELECT query
             if qres.type == "SELECT":
                 variables = [str(v) for v in qres.vars] if qres.vars else []
                 bindings = []
@@ -140,11 +138,9 @@ class SparqlEngine:
                     "results": {"bindings": bindings}
                 }
 
-            # 2. ASK query
             elif qres.type == "ASK":
                 return {"boolean": bool(qres.askAnswer)}
 
-            # 3. CONSTRUCT or DESCRIBE query
             elif qres.type in ("CONSTRUCT", "DESCRIBE"):
                 triples = []
                 for s, p, o in qres.graph:
@@ -163,3 +159,101 @@ class SparqlEngine:
         except Exception as e:
             ASCIIColors.error(f"SPARQL execution error: {e}")
             raise QueryError(f"SPARQL query failed: {e}") from e
+
+    def execute_update(self, sparql_update: str) -> Dict[str, Any]:
+        """
+        Executes a W3C SPARQL 1.1 Update command (INSERT DATA, DELETE DATA, DELETE WHERE,
+        MODIFY) and synchronizes all changes back to SQLite graph tables.
+        """
+        clean_update = sparql_update.strip()
+        if not clean_update:
+            raise QueryError("SPARQL update command cannot be empty.")
+
+        try:
+            g = self._hydrate_rdf_graph()
+            initial_count = len(g)
+            
+            g.update(clean_update)
+            final_count = len(g)
+
+            synced_nodes, synced_rels = self._sync_graph_to_sqlite(g)
+
+            return {
+                "status": "success",
+                "triples_before": initial_count,
+                "triples_after": final_count,
+                "nodes_synchronized": synced_nodes,
+                "relationships_synchronized": synced_rels
+            }
+
+        except QueryError:
+            raise
+        except Exception as e:
+            ASCIIColors.error(f"SPARQL update error: {e}")
+            raise QueryError(f"SPARQL update failed: {e}") from e
+
+    def _sync_graph_to_sqlite(self, g: Graph) -> Tuple[int, int]:
+        """
+        Synchronizes an updated RDF graph back into SQLite graph tables atomically.
+        """
+        cursor = self.conn.cursor()
+        
+        entities: Dict[URIRef, Dict[str, Any]] = {}
+        relationships: List[Tuple[URIRef, URIRef, str, Dict[str, Any]]] = []
+
+        for s, p, o in g:
+            s_uri = str(s)
+            
+            if p == RDF.type:
+                if s not in entities:
+                    entities[s] = {"label": "Thing", "properties": {"uri": s_uri, "identifying_value": s_uri.split('/')[-1].split('#')[-1]}}
+                entities[s]["label"] = str(o).split('/')[-1].split('#')[-1]
+
+            elif isinstance(o, Literal):
+                if s not in entities:
+                    entities[s] = {"label": "Thing", "properties": {"uri": s_uri, "identifying_value": s_uri.split('/')[-1].split('#')[-1]}}
+                prop_key = str(p).split('/')[-1].split('#')[-1]
+                entities[s]["properties"][prop_key] = o.toPython()
+
+            elif isinstance(o, URIRef):
+                if s not in entities:
+                    entities[s] = {"label": "Thing", "properties": {"uri": s_uri, "identifying_value": s_uri.split('/')[-1].split('#')[-1]}}
+                if o not in entities:
+                    entities[o] = {"label": "Thing", "properties": {"uri": str(o), "identifying_value": str(o).split('/')[-1].split('#')[-1]}}
+                
+                rel_label = str(p).split('/')[-1].split('#')[-1]
+                relationships.append((s, o, rel_label, {"uri": str(p)}))
+
+        uri_to_node_id: Dict[str, int] = {}
+        for uri_ref, data in entities.items():
+            label = data["label"]
+            props = data["properties"]
+            uri_str = str(uri_ref)
+            sig = f"{label}:{uri_str}"
+            
+            cursor.execute("SELECT node_id FROM graph_nodes WHERE unique_signature = ?", (sig,))
+            row = cursor.fetchone()
+            if row:
+                node_id = row[0]
+                cursor.execute("UPDATE graph_nodes SET node_label = ?, node_properties = ? WHERE node_id = ?", 
+                               (label, json.dumps(props), node_id))
+            else:
+                cursor.execute("INSERT INTO graph_nodes (node_label, node_properties, unique_signature) VALUES (?, ?, ?)",
+                               (label, json.dumps(props), sig))
+                node_id = cursor.lastrowid
+            
+            uri_to_node_id[uri_str] = node_id
+
+        cursor.execute("DELETE FROM graph_relationships")
+        for src_uri, tgt_uri, rel_type, rel_props in relationships:
+            src_id = uri_to_node_id.get(str(src_uri))
+            tgt_id = uri_to_node_id.get(str(tgt_uri))
+            if src_id and tgt_id:
+                cursor.execute(
+                    "INSERT INTO graph_relationships (source_node_id, target_node_id, relationship_type, relationship_properties) "
+                    "VALUES (?, ?, ?, ?)",
+                    (src_id, tgt_id, rel_type, json.dumps(rel_props))
+                )
+
+        self.conn.commit()
+        return len(entities), len(relationships)
