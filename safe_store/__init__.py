@@ -44,7 +44,7 @@ from .indexing.parser import SAFE_STORE_SUPPORTED_FILE_EXTENSIONS, parse_documen
 from .processing.text_cleaning import basic_text_cleaner
 from ascii_colors import ASCIIColors
 
-__version__ = "3.6.0"
+__version__ = "3.6.1"
 
 __all__ = [
     "SafeStore",

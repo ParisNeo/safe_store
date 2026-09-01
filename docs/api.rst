@@ -2,45 +2,68 @@
 API
 ===
 
-This section provides detailed documentation for the ``safe_store`` library's public API.
+This section provides detailed reference documentation for the ``safe_store`` library's public API.
 
-Core Class
+Core Store
 ----------
 
-.. automodule:: SafeStore.store
-   :members: SafeStore, LogLevel
+.. automodule:: safe_store.store
+   :members: SafeStore, LogLevel, DEFAULT_LOCK_TIMEOUT
    :undoc-members:
    :show-inheritance:
+
+Knowledge Graph & SPARQL
+------------------------
+
+.. automodule:: safe_store.graph.graph_store
+   :members: GraphStore
+   :undoc-members:
+
+.. automodule:: safe_store.graph.cognitive_memory
+   :members: CognitiveMemoryStore
+   :undoc-members:
+
+.. automodule:: safe_store.graph.ontology.tbox
+   :members: TBoxManager
+   :undoc-members:
+
+.. automodule:: safe_store.graph.mapping.tabular_mapper
+   :members: TabularMapper
+   :undoc-members:
+
+Search & Rank Fusion
+--------------------
+
+.. automodule:: safe_store.search.bm25
+   :members: BM25Retriever
+   :undoc-members:
+
+.. automodule:: safe_store.search.fusion
+   :members: reciprocal_rank_fusion, weighted_score_fusion
+   :undoc-members:
+
+Semantic Datalake
+-----------------
+
+.. automodule:: safe_store.datalake.viewer
+   :members: DatalakeViewer
+   :undoc-members:
 
 Exceptions
 ----------
 
-.. automodule:: SafeStore.core.exceptions
+.. automodule:: safe_store.core.exceptions
    :members:
    :undoc-members:
    :show-inheritance:
 
-Vectorizers
------------
+Vectorization
+-------------
 
-.. automodule:: SafeStore.vectorization.base
+.. automodule:: safe_store.vectorization.base
    :members: BaseVectorizer
    :undoc-members:
 
-.. automodule:: SafeStore.vectorization.methods.sentence_transformer
-   :members: SentenceTransformerVectorizer
+.. automodule:: safe_store.vectorization.manager
+   :members: VectorizationManager
    :undoc-members:
-
-.. automodule:: SafeStore.vectorization.methods.tfidf
-   :members: TfidfVectorizerWrapper
-   :undoc-members:
-
-Utilities
----------
-While primarily used internally, the ``ascii_colors`` library is exposed for configuration.
-
-.. automodule:: ascii_colors
-   :members: ASCIIColors, LogLevel, FileHandler, Formatter, JSONFormatter
-   :undoc-members:
-
-(Add other modules/classes as needed)

@@ -9,11 +9,13 @@
 1. 🧠 **Dense Semantic Vector Search**: Embeddings powered by Sentence-Transformers, Ollama, OpenAI, Cohere, Lollms, or TF-IDF.
 2. ⚡ **Sparse Lexical Search (BM25)**: Native SQLite FTS5 full-text indexing for exact technical identifiers, part numbers, and error codes.
 3. 📖 **Full Document & Context Window Retrieval**: Query entire documents aggregated from chunk hits, retrieve surrounding chunk neighborhoods with window expansion, or paginate through document content.
-4. 🕸️ **Knowledge Graph & W3C SPARQL 1.1 Query & Update Engine**: Native TBox/ABox ontology management, declarative tabular mapping, and full SPARQL (`SELECT`, `ASK`, `CONSTRUCT`, `DESCRIBE`, and `INSERT/DELETE DATA` updates).
-5. 🧠 **LLM Cognitive Memory & Thought Reorganization**: Episodic memory logging, associative semantic traversal, grounded text chunk evidence linking, and native function-calling tool dispatching.
-6. 🔀 **Tri-Modal Reciprocal Rank Fusion (RRF)**: Merges dense similarity, lexical BM25, and symbolic graph traversals into unified, context-rich results.
-7. 📊 **Semantic Datalake & Point Cloud Engine**: 2D/3D PCA & t-SNE projections with persistent SQLite caching, streaming lazy loading (`IncrementalPCA`), and interactive HTML visualizer exports.
-8. 🔐 **Zero-Leakage Local Encryption**: End-to-end AES-128/HMAC (Fernet) encryption at rest inside a single, portable `.db` file.
+4. 🕸️ **Dynamic & Ontology Knowledge Graph**: Open-ended concept/entity extraction from text files or strict TBox/OWL schema mapping, with live chunk extraction reporting.
+5. 🔍 **W3C SPARQL 1.1 Query & Update Engine**: Native TBox/ABox ontology management, declarative tabular mapping, and full SPARQL (`SELECT`, `ASK`, `CONSTRUCT`, `DESCRIBE`, and `INSERT/DELETE DATA` updates).
+6. 🧠 **LLM Cognitive Memory & Thought Reorganization**: Episodic memory logging, associative semantic traversal, grounded text chunk evidence linking, and native function-calling tool dispatching.
+7. 🔀 **Tri-Modal Reciprocal Rank Fusion (RRF)**: Merges dense similarity, lexical BM25, and symbolic graph traversals into unified results with universal 0–100 relevance grades.
+8. 🔍 **Database Diagnostics & Introspection (`store.info()`)**: Instant inspection of vectorizers, chunking parameters, document chunk counts, ontology schemas, and graph topology metrics.
+9. 📊 **Semantic Datalake & Point Cloud Engine**: 2D/3D PCA & t-SNE projections with persistent SQLite caching, streaming lazy loading (`IncrementalPCA`), and interactive HTML visualizer exports.
+10. 🔐 **Zero-Leakage Local Encryption**: End-to-end AES-128/HMAC (Fernet) encryption at rest inside a single, portable `.db` file.
 ---
 
 ## 📦 Installation
@@ -59,6 +61,29 @@ pip install safe_store
 
 ## 🚀 Quick Start
 
+### 0. Instant Database Introspection & Diagnostics (`store.info()`)
+
+You can inspect any database state, vectorizer configuration, per-document chunk counts, ontology schemas, and knowledge graph metrics with a single method call:
+
+```python
+import safe_store
+
+store = safe_store.SafeStore("knowledge.db")
+
+# 1. Print formatted diagnostics panel to console
+store.info()
+
+# 2. Or retrieve structured dictionary for APIs and dashboards
+db_info = store.get_database_info()
+print(f"Total Docs: {db_info['documents']['total_documents']}")
+for doc in db_info['documents']['list']:
+    print(f"  • {doc['document_title']}: {doc['chunk_count']} chunks")
+
+print(f"Knowledge Graph: {db_info['knowledge_graph']['total_nodes']} nodes, {db_info['knowledge_graph']['total_relationships']} edges")
+```
+
+---
+
 ### 1. Tri-Modal Hybrid Retrieval (Dense Vectors + BM25 Lexical + RRF)
 
 Combining dense embeddings with sparse BM25 guarantees precision for both fuzzy conceptual questions and exact code/identifier queries.
@@ -73,6 +98,9 @@ store = safe_store.SafeStore(
     chunk_size=128,
     chunk_overlap=16
 )
+
+# Inspect database summary and diagnostics anytime:
+store.info()
 ```
 
 ---
@@ -97,6 +125,40 @@ with store:
     else:
         print("No document exceeded the 50% relevance threshold.")
 
+    # 2. Window Expansion Retrieval: Expands matching chunks by window_before / window_after chunks
+```
+
+---
+
+### 1.2 Unstructured File Ingestion & Dynamic Knowledge Graph Construction
+
+`safe_store` allows you to extract rich knowledge graphs directly from unstructured files (Markdown, PDF, DOCX, Text) with live per-chunk extraction reporting:
+
+```python
+from safe_store import SafeStore, GraphStore
+
+store = SafeStore("project_kb.db", vectorizer_name="st")
+
+with store:
+    # 1. Ingest unstructured documents
+    store.add_document("architecture_notes.md", metadata={"source": "Design Team"})
+    store.add_document("incident_report.pdf", metadata={"source": "SRE"})
+
+    # 2. Initialize GraphStore
+    # When no ontology is supplied, it operates in dynamic extraction mode (concepts, tools, entities, relations)
+    graph = GraphStore(store=store, llm_executor_callback=my_llm_callback)
+
+    # 3. Build graph across all documents with real-time progress & node/edge reporting
+    stats = graph.build_graph_for_all_documents()
+    print(f"Graph build finished: {stats['nodes_created']} nodes, {stats['relationships_created']} relationships.")
+
+    # 4. Inspect graph statistics
+    graph_info = graph.get_graph_info()
+    print(f"Nodes by Label: {graph_info['nodes_by_label']}")
+    print(f"Edges by Type:  {graph_info['relationships_by_type']}")
+```
+
+```python
     # 2. Window Expansion Retrieval: Expands matching chunks by window_before / window_after chunks
     windows = store.query_document_content_window(
         query_text="ERR-4091 supervisor daemon",
@@ -324,7 +386,139 @@ print(f"Mapped {summary['records_processed']} records into {summary['triples_gen
 
 ---
 
-### 4. Tri-Modal Unified Graph Retrieval (`query_graph_hybrid`)
+### 4. Declarative Tabular-to-Graph Mapping (CSV / XLSX / SQLite)
+
+**Instant, Zero-LLM Knowledge Graph Construction from Structured Data**
+
+When your data already lives in structured tables (CSV exports, Excel sheets, or legacy SQLite databases), you don't need slow LLM-based extraction. `safe_store` provides a **declarative mapping engine** that transforms tabular records into grounded RDF knowledge graphs in milliseconds—no tokens consumed, no API latency.
+
+#### How It Works
+
+1. **Define Your Ontology (TBox)**: Load an RDFS/OWL schema that describes your domain classes and relationships.
+2. **Write Mapping Rules**: Declare how table columns map to entity classes, properties, and relationships using simple templates.
+3. **Bulk Ingest**: Point the mapper at your file or database table. It performs batch transactional insertion directly into the graph store.
+
+#### Complete Working Example
+
+```python
+from safe_store import SafeStore, TBoxManager, TabularMapper
+
+# 1. Initialize the store (no LLM required for mapping!)
+store = SafeStore(db_path="supply_chain.db")
+
+# 2. Load your domain ontology (Turtle format)
+tbox = TBoxManager()
+tbox.load_ontology("""
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix ex: <http://example.org/ontology/> .
+
+ex:Product a owl:Class .
+ex:Supplier a owl:Class .
+
+ex:suppliedBy a owl:ObjectProperty ;
+    rdfs:domain ex:Product ;
+    rdfs:range ex:Supplier .
+
+ex:hasPrice a owl:DatatypeProperty ;
+    rdfs:domain ex:Product .
+ex:hasName a owl:DatatypeProperty .
+""", format="turtle")
+
+# 3. Define declarative mapping rules
+mapping_rules = {
+    "entity_mappings": [
+        {
+            "class": "http://example.org/ontology/Product",
+            "subject_template": "http://example.org/product/{sku}",
+            "properties": {
+                "product_name": "http://example.org/ontology/hasName",
+                "unit_price": "http://example.org/ontology/hasPrice"
+            }
+        },
+        {
+            "class": "http://example.org/ontology/Supplier",
+            "subject_template": "http://example.org/supplier/{supplier_id}",
+            "properties": {
+                "supplier_name": "http://example.org/ontology/hasName"
+            }
+        }
+    ],
+    "relationship_mappings": [
+        {
+            "predicate": "http://example.org/ontology/suppliedBy",
+            "source_template": "http://example.org/product/{sku}",
+            "target_template": "http://example.org/supplier/{supplier_id}"
+        }
+    ]
+}
+
+# 4. Map your structured data instantly
+mapper = TabularMapper(store=store, tbox=tbox)
+
+# From CSV
+summary = mapper.map_csv("inventory.csv", mapping_rules=mapping_rules)
+print(f"CSV: {summary['records_processed']} rows -> {summary['entities_created']} entities")
+
+# From Excel (specific sheet)
+summary = mapper.map_excel("inventory.xlsx", mapping_rules=mapping_rules, sheet_name="Q3_Stock")
+
+# From SQLite table
+summary = mapper.map_sqlite_table("legacy.db", "products", mapping_rules=mapping_rules)
+```
+
+#### Input Format Examples
+
+**CSV Input (`inventory.csv`)**:
+```csv
+sku,product_name,unit_price,supplier_id,supplier_name
+WIDGET-001,Industrial Widget,49.99,SUP-ACME,Acme Manufacturing
+GADGET-002,Smart Gadget,199.99,SUP-TECH,TechParts Ltd
+```
+
+**Mapping Templates**:
+- `{sku}` → Replaced with value from the `sku` column
+- `{supplier_id}` → Replaced with value from the `supplier_id` column
+- Creates URIs like `http://example.org/product/WIDGET-001`
+
+#### Why Use Tabular Mapping?
+
+| Feature | LLM Extraction | Tabular Mapping |
+| :--- | :--- | :--- |
+| **Speed** | Slow (seconds per chunk) | Instant (thousands of rows/sec) |
+| **Cost** | High (API tokens) | Zero (local computation) |
+| **Accuracy** | Probabilistic | Deterministic |
+| **Ontology Compliance** | Prompt-dependent | Schema-enforced |
+| **Use Case** | Unstructured text | Structured tables |
+
+#### Integration with SPARQL
+
+Once mapped, your tabular data is immediately queryable via the full SPARQL 1.1 engine:
+
+```python
+from safe_store import GraphStore
+
+graph = GraphStore(store=store)
+
+# Find all products supplied by Acme
+results = graph.query_sparql("""
+PREFIX ex: <http://example.org/ontology/>
+SELECT ?productName ?price WHERE {
+    ?product a ex:Product ;
+             ex:hasName ?productName ;
+             ex:hasPrice ?price ;
+             ex:suppliedBy ?supplier .
+    ?supplier ex:hasName "Acme Manufacturing" .
+}
+""")
+
+for binding in results["results"]["bindings"]:
+    print(f"Product: {binding['productName']['value']}, Price: {binding['price']['value']}")
+```
+
+---
+
+### 5. Tri-Modal Unified Graph Retrieval (`query_graph_hybrid`)
 
 Execute multi-channel queries combining Graph Subgraph Exploration, Dense Vectors, and Sparse BM25 Lexical search in a single call.
 
@@ -349,6 +543,68 @@ print(f"Identified Subgraph Edges: {len(response['subgraph']['relationships'])}"
 ```
 
 ---
+
+## 🔄 Database Portability & Re-Vectorization
+
+`safe_store` allows you to migrate your entire knowledge base between different embedding models and export/import your database for backup or transfer.
+
+### Re-Vectorizing a Database
+
+If you want to switch from one vectorizer (e.g., Sentence-Transformers) to another (e.g., OpenAI or Ollama), you can re-vectorize the entire database in-place. This will decrypt chunks, re-embed them using the new model, and update the database metadata atomically.
+
+```python
+import safe_store
+
+store = safe_store.SafeStore("my_knowledge.db", vectorizer_name="st")
+
+# Re-vectorize using OpenAI's text-embedding-3-small
+store.revectorize_database(
+    new_vectorizer_name="openai",
+    new_vectorizer_config={"model": "text-embedding-3-small"}
+)
+
+print("Database successfully migrated to OpenAI embeddings.")
+```
+
+### Exporting and Importing Databases
+
+You can export the entire state of your database (documents, chunks, vectors, graphs, FTS indices) to a portable JSON file. This is useful for backups, sharing datasets, or migrating between machines.
+
+```python
+import safe_store
+
+# 1. Export the database
+store = safe_store.SafeStore("my_knowledge.db", vectorizer_name="st")
+store.export_database("backup.json", decrypt=False) # Set decrypt=True to export plaintext
+
+# 2. Import the database on another machine or into a new file
+new_store = safe_store.SafeStore.import_database(
+    input_path="backup.json",
+    db_path="restored_knowledge.db",
+    vectorizer_name="st" # Must match the exported vectorizer or be re-vectorized after import
+)
+```
+
+#### Handling Encrypted Databases
+
+If the database is encrypted, you can export it securely (keeping the encrypted blobs) or decrypt it during export. When importing, you must provide the `decryption_key` if the data was exported in its encrypted state.
+
+```python
+# Export encrypted data (requires key to read, but keeps it encrypted in JSON)
+store = safe_store.SafeStore("secure.db", encryption_key="secret123")
+store.export_database("secure_backup.json", decrypt=False)
+
+# Import encrypted data into a new encrypted store
+new_store = safe_store.SafeStore.import_database(
+    input_path="secure_backup.json",
+    db_path="restored_secure.db",
+    decryption_key="secret123", # Required to read the encrypted JSON blobs
+    encryption_key="newsecret456" # Optional: re-encrypt with a new key
+)
+```
+
+---
+
 ## 🔐 Zero-Leakage Encryption at Rest
 
 `safe_store` provides transparent, chunk-level authenticated encryption using **Fernet** (AES-128-CBC with HMAC-SHA256). User-supplied passwords are hardened via **PBKDF2-HMAC-SHA256** (600,000 iterations) before key derivation.
@@ -522,6 +778,85 @@ for p in [DB_FILE, f"{DB_FILE}.lock", f"{DB_FILE}-wal", f"{DB_FILE}-shm"]:
     Path(p).unlink(missing_ok=True)
 print("Encrypted lifecycle demo complete.")
 ```
+---
+
+## 📊 Semantic Datalake & Point Cloud Visualization
+
+`safe_store` includes a powerful **Semantic Datalake Engine** that allows you to visualize your entire knowledge base as an interactive 2D or 3D point cloud. This is essential for understanding data clustering, identifying outliers, and auditing the quality of your embeddings.
+
+### 1. Programmatic Projections (PCA, t-SNE, UMAP)
+
+You can reduce the high-dimensional vectors to 2D or 3D coordinates using PCA (Principal Component Analysis) or t-SNE (t-Distributed Stochastic Neighbor Embedding).
+
+```python
+import safe_store
+
+store = safe_store.SafeStore("my_knowledge.db", vectorizer_name="st")
+
+with store:
+    # Get 2D PCA projection as a list of dictionaries
+    points_2d = store.get_datalake_view(
+        method='pca', 
+        n_components=2, 
+        output_format='dict'
+    )
+
+    for p in points_2d:
+        print(f"Doc: {p['document_title']} | X: {p['x']:.2f}, Y: {p['y']:.2f}")
+
+    # Get 3D t-SNE projection
+    points_3d = store.get_datalake_view(
+        method='tsne', 
+        n_components=3, 
+        output_format='dict'
+    )
+```
+
+### 2. Persistent Caching for Instant Visualization
+
+Projecting 100,000+ vectors can take several seconds. `safe_store` automatically caches the projection results inside the SQLite database. The next time you call `get_datalake_view` with the same parameters, it returns instantly.
+
+```python
+# First call: Computes PCA and caches results (takes ~2s)
+store.get_datalake_view(method='pca', use_cache=True)
+
+# Second call: Returns instantly from SQLite cache
+store.get_datalake_view(method='pca', use_cache=True)
+```
+*Note: Cache is automatically invalidated whenever a document is added or deleted.*
+
+### 3. Lazy Streaming for Massive Datasets
+
+For extremely large databases that might not fit into RAM, use the lazy streaming generator. It uses `IncrementalPCA` to process vectors in batches.
+
+```python
+# Stream points in batches of 500
+stream = store.stream_datalake_chunks(batch_size=500, method='incremental_pca')
+
+for point in stream:
+    # Process point-by-point without loading the whole matrix
+    print(point['x'], point['y'])
+```
+
+### 4. Interactive HTML Visualizer Export
+
+The most powerful feature is the ability to export a **standalone, interactive HTML file** that you can share with others. It includes a Plotly-powered 3D canvas, search filtering, and a chunk inspector.
+
+```python
+store.export_datalake_html(
+    output_file="my_datalake.html",
+    title="Enterprise Knowledge Base Audit",
+    method='tsne',
+    n_components=3
+)
+```
+
+**Features of the exported HTML:**
+- **Interactive 3D/2D Canvas**: Rotate, zoom, and pan through your data.
+- **Hover Inspection**: See the actual text content and metadata of any point.
+- **Real-time Filtering**: Filter points by document title or metadata keywords.
+- **Zero Dependencies**: The exported file works offline in any modern browser.
+
 ---
 
 ## 🎯 Supported Vectorization Backends

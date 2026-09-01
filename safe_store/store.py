@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import base64
 from pathlib import Path
 import hashlib
 import threading
@@ -373,6 +374,177 @@ class SafeStore:
         if self._datalake_viewer is None:
             self._datalake_viewer = DatalakeViewer(self)
         return self._datalake_viewer
+
+    def get_database_info(self, print_summary: bool = False) -> Dict[str, Any]:
+        """
+        Gathers comprehensive diagnostics and metadata about the database:
+        - Vectorizer info (name, config, dimension, dtype)
+        - Chunking and cleaning configuration
+        - Documents summary with individual chunk counts and metadata
+        - Ontology schema presence & summary
+        - Knowledge Graph metrics (total nodes, relationships, label counts)
+        """
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+
+            cursor = self.conn.cursor()
+
+            # 1. Document metrics & chunk counts per document
+            cursor.execute("""
+                SELECT d.doc_id, d.file_path, d.file_hash, d.added_timestamp, d.is_encrypted,
+                       COUNT(c.chunk_id) AS chunk_count
+                FROM documents d
+                LEFT JOIN chunks c ON d.doc_id = c.doc_id
+                GROUP BY d.doc_id
+                ORDER BY d.doc_id ASC
+            """)
+            raw_docs = cursor.fetchall()
+
+            docs_info = []
+            total_chunks = 0
+            for r in raw_docs:
+                doc_id, f_path, f_hash, ts, is_enc, c_count = r
+                total_chunks += (c_count or 0)
+
+                # Fetch metadata for this doc
+                doc_row = db.get_document_record_by_id(self.conn, doc_id)
+                meta_dict = None
+                if doc_row and doc_row[4]:
+                    meta_b = doc_row[4]
+                    if is_enc and self.encryptor.is_enabled:
+                        try: meta_dict = json.loads(self.encryptor.decrypt(meta_b))
+                        except Exception: meta_dict = {"encrypted": True}
+                    elif not is_enc:
+                        try: meta_dict = json.loads(meta_b.decode('utf-8'))
+                        except Exception: meta_dict = {}
+
+                docs_info.append({
+                    "doc_id": doc_id,
+                    "file_path": f_path,
+                    "document_title": Path(f_path).name,
+                    "chunk_count": c_count or 0,
+                    "file_hash": f_hash,
+                    "added_timestamp": ts,
+                    "is_encrypted": bool(is_enc),
+                    "metadata": meta_dict
+                })
+
+            # 2. Vectorizer Details
+            v_details = self.get_vectorization_details() or {
+                "name": self.vectorizer_name,
+                "config": self.vectorizer_config,
+                "dim": getattr(self.vectorizer, 'dim', None),
+                "dtype": str(getattr(self.vectorizer, 'dtype', 'float32'))
+            }
+
+            # 3. Knowledge Graph Metrics
+            graph_info = None
+            try:
+                cursor.execute("SELECT COUNT(*) FROM graph_nodes")
+                total_nodes = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT COUNT(*) FROM graph_relationships")
+                total_rels = cursor.fetchone()[0] or 0
+
+                cursor.execute("SELECT node_label, COUNT(*) FROM graph_nodes GROUP BY node_label")
+                node_breakdown = {row[0]: row[1] for row in cursor.fetchall()}
+
+                cursor.execute("SELECT relationship_type, COUNT(*) FROM graph_relationships GROUP BY relationship_type")
+                rel_breakdown = {row[0]: row[1] for row in cursor.fetchall()}
+
+                cursor.execute("SELECT COUNT(*) FROM node_chunk_links")
+                total_links = cursor.fetchone()[0] or 0
+
+                graph_info = {
+                    "total_nodes": total_nodes,
+                    "total_relationships": total_rels,
+                    "total_provenance_links": total_links,
+                    "nodes_by_label": node_breakdown,
+                    "relationships_by_type": rel_breakdown
+                }
+            except Exception:
+                graph_info = {"total_nodes": 0, "total_relationships": 0, "nodes_by_label": {}, "relationships_by_type": {}}
+
+            # 4. Ontology Inspection
+            ontology_info = None
+            if self.metadata and isinstance(self.metadata, dict) and "ontology" in self.metadata:
+                ont = self.metadata["ontology"]
+                if isinstance(ont, dict):
+                    ontology_info = {
+                        "defined_classes": list(ont.get("nodes", {}).keys()),
+                        "defined_relationships": list(ont.get("relationships", {}).keys())
+                    }
+                else:
+                    ontology_info = {"raw": str(ont)[:300]}
+
+            info_payload = {
+                "database_path": self.db_path,
+                "store_name": self.name,
+                "store_description": self.description,
+                "is_in_memory": self._is_in_memory,
+                "encryption_enabled": self.encryptor.is_enabled,
+                "vectorizer": v_details,
+                "chunking_configuration": {
+                    "strategy": self.chunking_strategy,
+                    "chunk_size": self.chunk_size,
+                    "chunk_overlap": self.chunk_overlap,
+                    "expand_before": self.expand_before,
+                    "expand_after": self.expand_after,
+                    "text_cleaner": self.text_cleaner_name
+                },
+                "documents": {
+                    "total_documents": len(docs_info),
+                    "total_chunks": total_chunks,
+                    "list": docs_info
+                },
+                "knowledge_graph": graph_info,
+                "ontology": ontology_info
+            }
+
+            if print_summary:
+                self._print_database_info_summary(info_payload)
+
+            return info_payload
+
+    def info(self, print_summary: bool = True) -> Dict[str, Any]:
+        """Convenience alias for get_database_info(). Default prints formatted summary."""
+        return self.get_database_info(print_summary=print_summary)
+
+    def get_infos(self, print_summary: bool = False) -> Dict[str, Any]:
+        """Convenience alias for get_database_info()."""
+        return self.get_database_info(print_summary=print_summary)
+
+    def _print_database_info_summary(self, info: Dict[str, Any]) -> None:
+        """Prints a human-readable, diagnostic ASCII summary of the database state."""
+        ASCIIColors.panel(f"""[bold cyan]SafeStore Database Information[/bold cyan]
+Database Path : {info['database_path']}
+Store Name    : {info['store_name']} ({info['store_description'] or 'No description'})
+Encrypted     : {'[green]YES (Fernet)[/green]' if info['encryption_enabled'] else '[yellow]NO[/yellow]'}
+
+[bold yellow]── Vectorizer ──[/bold yellow]
+Name          : {info['vectorizer'].get('name', 'st')}
+Dimension     : {info['vectorizer'].get('dim', 'N/A')}
+Dtype         : {info['vectorizer'].get('dtype', 'N/A')}
+
+[bold yellow]── Chunking & Processing ──[/bold yellow]
+Strategy      : {info['chunking_configuration']['strategy']}
+Chunk Size    : {info['chunking_configuration']['chunk_size']} tokens/chars (Overlap: {info['chunking_configuration']['chunk_overlap']})
+Text Cleaner  : {info['chunking_configuration']['text_cleaner']}
+
+[bold yellow]── Documents ({info['documents']['total_documents']} docs, {info['documents']['total_chunks']} chunks) ──[/bold yellow]""" + "".join(
+    f"\n  • [ID {d['doc_id']}] {d['document_title']}: {d['chunk_count']} chunks ({'Encrypted' if d['is_encrypted'] else 'Plaintext'})"
+    for d in info['documents']['list']
+) + f"""
+
+[bold yellow]── Knowledge Graph ──[/bold yellow]
+Total Nodes   : {info['knowledge_graph']['total_nodes']} ({info['knowledge_graph']['nodes_by_label']})
+Total Edges   : {info['knowledge_graph']['total_relationships']} ({info['knowledge_graph']['relationships_by_type']})
+Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
+
+[bold yellow]── Ontology ──[/bold yellow]
+{info['ontology'] if info['ontology'] else 'None configured'}
+""", "[bold][magenta]DATABASE DIAGNOSTICS[/bold][/magenta]")
 
     def get_properties(self) -> Dict[str, Any]:
         """Returns the high-level configuration and metadata of the store."""
@@ -842,6 +1014,361 @@ class SafeStore:
             except sqlite3.Error as e:
                 if self.conn.in_transaction: self.conn.rollback()
                 raise DatabaseError from e
+
+    def revectorize_database(
+        self,
+        new_vectorizer_name: str,
+        new_vectorizer_config: Optional[Dict[str, Any]] = None,
+        batch_size: int = 50
+    ) -> None:
+        """
+        Re-embeds all chunks in the database using a new vectorizer.
+        Atomically updates the vectorizer info and all vector records.
+        """
+        with self._instance_lock, self._optional_file_lock_context("revectorize_database"):
+            self._ensure_connection()
+            assert self.conn is not None
+
+            ASCIIColors.info(f"Initializing new vectorizer '{new_vectorizer_name}' for re-vectorization...")
+            new_vectorizer = self.vectorizer_manager.get_vectorizer(new_vectorizer_name, new_vectorizer_config or {})
+
+            if new_vectorizer.dim is None:
+                raise ConfigurationError(f"Vectorizer '{new_vectorizer_name}' has an unknown dimension.")
+
+            # Fetch all chunks
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT chunk_id, chunk_text, is_encrypted FROM chunks ORDER BY chunk_id ASC")
+            all_chunks = cursor.fetchall()
+
+            if not all_chunks:
+                ASCIIColors.warning("No chunks found in the database to re-vectorize.")
+                return
+
+            ASCIIColors.info(f"Extracting and decrypting {len(all_chunks)} chunks...")
+            chunk_ids = []
+            texts_to_vectorize = []
+
+            for cid, text_data, is_enc in all_chunks:
+                if is_enc:
+                    if not self.encryptor.is_enabled:
+                        raise EncryptionError("Cannot re-vectorize encrypted chunks without the decryption key.")
+                    try:
+                        text = self.encryptor.decrypt(text_data)
+                    except EncryptionError as e:
+                        raise EncryptionError(f"Failed to decrypt chunk {cid} during re-vectorization: {e}")
+                else:
+                    text = text_data.decode('utf-8') if isinstance(text_data, bytes) else str(text_data)
+
+                chunk_ids.append(cid)
+                texts_to_vectorize.append(text)
+
+            # Vectorize in batches
+            new_vectors = []
+            total = len(texts_to_vectorize)
+            for i in range(0, total, batch_size):
+                batch = texts_to_vectorize[i:i + batch_size]
+                ASCIIColors.info(f"Vectorizing batch {i//batch_size + 1}/{(total//batch_size)+1} ({len(batch)} chunks)...")
+
+                if hasattr(new_vectorizer, 'fit') and not getattr(new_vectorizer, '_fitted', True):
+                    new_vectorizer.fit(batch)
+
+                batch_vecs = new_vectorizer.vectorize(batch)
+                new_vectors.extend(batch_vecs)
+
+            if len(new_vectors) != total:
+                raise VectorizationError(f"Vectorizer returned {len(new_vectors)} vectors, expected {total}.")
+
+            # Atomically update database
+            try:
+                self.conn.execute("BEGIN")
+
+                # Update vectorizer metadata
+                unique_name = self.vectorizer_manager._create_unique_name(new_vectorizer_name, new_vectorizer_config)
+                vectorizer_info = {
+                    "unique_name": unique_name,
+                    "name": new_vectorizer_name,
+                    "vectorizer_name": new_vectorizer_name,
+                    "vectorizer_config": new_vectorizer_config or {},
+                    "dim": new_vectorizer.dim,
+                    "dtype": new_vectorizer.dtype.name,
+                }
+                db.set_store_metadata(self.conn, "vectorizer_info", json.dumps(vectorizer_info))
+
+                # Store new config in store_config
+                raw_store_config = db.get_store_metadata(self.conn, "store_config")
+                store_config = json.loads(raw_store_config) if raw_store_config else {}
+                store_config['vectorizer_name'] = new_vectorizer_name
+                store_config['vectorizer_config'] = new_vectorizer_config or {}
+                db.set_store_metadata(self.conn, "store_config", json.dumps(store_config))
+
+                # Update vectors
+                ASCIIColors.info("Updating vector records in database...")
+                for cid, vec in zip(chunk_ids, new_vectors):
+                    contiguous_vec = np.ascontiguousarray(vec, dtype=new_vectorizer.dtype)
+                    self.conn.execute("UPDATE vectors SET vector_data = ? WHERE chunk_id = ?", (contiguous_vec, cid))
+
+                self.clear_datalake_cache()
+                self.conn.commit()
+
+                # Update instance state
+                self.vectorizer_name = new_vectorizer_name
+                self.vectorizer_config = new_vectorizer_config or {}
+                self.vectorizer = new_vectorizer
+
+                ASCIIColors.success(f"Database successfully re-vectorized using '{new_vectorizer_name}'.")
+
+            except Exception as e:
+                if self.conn.in_transaction: self.conn.rollback()
+                raise SafeStoreError(f"Failed to commit re-vectorization to database: {e}") from e
+
+    def export_database(self, output_path: Union[str, Path], decrypt: bool = False) -> None:
+        """
+        Exports the entire database state to a portable JSON file.
+        If decrypt is True, encrypted chunks and metadata are exported as plaintext.
+        """
+        with self._instance_lock, self._optional_file_lock_context("export_database"):
+            self._ensure_connection()
+            assert self.conn is not None
+
+            if decrypt and not self.encryptor.is_enabled:
+                # Check if there is actually encrypted data
+                cursor = self.conn.execute("SELECT 1 FROM chunks WHERE is_encrypted = 1 LIMIT 1")
+                if cursor.fetchone():
+                    raise EncryptionError("Cannot export decrypted data: encryption key not provided.")
+
+            export_data = {
+                "version": "3.6.0",
+                "metadata": {},
+                "documents": [],
+                "chunks": [],
+                "vectors": [],
+                "graph_nodes": [],
+                "graph_relationships": [],
+                "node_chunk_links": []
+            }
+
+            original_factory = self.conn.text_factory
+            self.conn.text_factory = bytes
+            cursor = self.conn.cursor()
+
+            try:
+                # Metadata
+                cursor.execute("SELECT key, value FROM store_metadata")
+                for k, v in cursor.fetchall():
+                    export_data["metadata"][k.decode('utf-8')] = v.decode('utf-8')
+
+                # Documents
+                cursor.execute("SELECT doc_id, file_path, file_hash, full_text, metadata, is_encrypted, added_timestamp FROM documents")
+                for row in cursor.fetchall():
+                    doc_id, path_b, hash_b, text_b, meta_b, is_enc, ts = row
+                    full_text = self._decrypt_payload(text_b, bool(is_enc), "Encrypted Document") if decrypt else (text_b.decode('utf-8') if text_b else None)
+                    metadata = self._decrypt_payload(meta_b, bool(is_enc), "Encrypted Metadata") if decrypt else (meta_b.decode('utf-8') if meta_b else None)
+
+                    export_data["documents"].append({
+                        "doc_id": doc_id,
+                        "file_path": path_b.decode('utf-8'),
+                        "file_hash": hash_b.decode('utf-8') if hash_b else None,
+                        "full_text": full_text,
+                        "metadata": metadata,
+                        "is_encrypted": bool(is_enc) if not decrypt else False,
+                        "added_timestamp": ts.decode('utf-8') if isinstance(ts, bytes) else ts
+                    })
+
+                # Chunks
+                cursor.execute("SELECT chunk_id, doc_id, chunk_text, start_pos, end_pos, chunk_seq, tags, is_encrypted, encryption_metadata, graph_processed_at FROM chunks")
+                for row in cursor.fetchall():
+                    cid, did, text_b, start, end, seq, tags_b, is_enc, enc_meta_b, gpa = row
+                    text = self._decrypt_payload(text_b, bool(is_enc), "Encrypted Chunk") if decrypt else (text_b.decode('utf-8') if text_b else "")
+
+                    export_data["chunks"].append({
+                        "chunk_id": cid,
+                        "doc_id": did,
+                        "chunk_text": text,
+                        "start_pos": start,
+                        "end_pos": end,
+                        "chunk_seq": seq,
+                        "tags": tags_b.decode('utf-8') if tags_b else None,
+                        "is_encrypted": bool(is_enc) if not decrypt else False,
+                        "encryption_metadata": enc_meta_b.decode('utf-8') if enc_meta_b else None,
+                        "graph_processed_at": gpa.decode('utf-8') if isinstance(gpa, bytes) else gpa
+                    })
+
+                # Vectors
+                cursor.execute("SELECT chunk_id, vector_data FROM vectors")
+                for cid, v_blob in cursor.fetchall():
+                    export_data["vectors"].append({
+                        "chunk_id": cid,
+                        "vector_data": base64.b64encode(v_blob).decode('utf-8')
+                    })
+
+                # Graph Nodes
+                cursor.execute("SELECT node_id, node_label, node_properties, unique_signature, node_vector FROM graph_nodes")
+                for nid, label, props, sig, vec_blob in cursor.fetchall():
+                    export_data["graph_nodes"].append({
+                        "node_id": nid,
+                        "node_label": label,
+                        "node_properties": props,
+                        "unique_signature": sig,
+                        "node_vector": base64.b64encode(vec_blob).decode('utf-8') if vec_blob else None
+                    })
+
+                # Graph Relationships
+                cursor.execute("SELECT relationship_id, source_node_id, target_node_id, relationship_type, relationship_properties FROM graph_relationships")
+                for rid, src, tgt, rtype, props in cursor.fetchall():
+                    export_data["graph_relationships"].append({
+                        "relationship_id": rid,
+                        "source_node_id": src,
+                        "target_node_id": tgt,
+                        "relationship_type": rtype,
+                        "relationship_properties": props
+                    })
+
+                # Node Chunk Links
+                cursor.execute("SELECT node_id, chunk_id FROM node_chunk_links")
+                for nid, cid in cursor.fetchall():
+                    export_data["node_chunk_links"].append({
+                        "node_id": nid,
+                        "chunk_id": cid
+                    })
+
+                out_path = Path(output_path)
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(json.dumps(export_data, indent=2), encoding='utf-8')
+                ASCIIColors.success(f"Database successfully exported to {out_path}")
+
+            finally:
+                self.conn.text_factory = original_factory
+
+    @classmethod
+    def import_database(
+        cls,
+        input_path: Union[str, Path],
+        db_path: Union[str, Path],
+        decryption_key: Optional[str] = None,
+        encryption_key: Optional[str] = None,
+        **kwargs
+    ) -> "SafeStore":
+        """
+        Imports a database state from a JSON export file.
+        If the data is encrypted, decryption_key must be provided.
+        If encryption_key is provided, the new database will be encrypted.
+        """
+        in_path = Path(input_path)
+        if not in_path.exists():
+            raise FileHandlingError(f"Import file not found: {in_path}")
+
+        try:
+            export_data = json.loads(in_path.read_text(encoding='utf-8'))
+        except json.JSONDecodeError as e:
+            raise SafeStoreError(f"Invalid import file format: {e}")
+
+        # Initialize new store
+        store = cls(db_path=db_path, encryption_key=encryption_key, **kwargs)
+
+        with store._instance_lock, store._optional_file_lock_context("import_database"):
+            store._ensure_connection()
+            assert store.conn is not None
+
+            try:
+                store.conn.execute("BEGIN")
+                cursor = store.conn.cursor()
+
+                # Import Metadata
+                for k, v in export_data.get("metadata", {}).items():
+                    db.set_store_metadata(store.conn, k, v)
+
+                # Import Documents
+                doc_id_map = {}
+                for doc in export_data.get("documents", []):
+                    full_text = doc["full_text"]
+                    metadata = doc["metadata"]
+                    is_enc = doc["is_encrypted"]
+
+                    if is_enc and decryption_key:
+                        temp_enc = Encryptor(decryption_key)
+                        full_text = temp_enc.decrypt(full_text.encode('utf-8')) if full_text else None
+                        metadata = temp_enc.decrypt(metadata.encode('utf-8')) if metadata else None
+                        is_enc = False
+
+                    # Re-encrypt if target store has encryption
+                    final_is_enc = store.encryptor.is_enabled
+                    t_store = store.encryptor.encrypt(full_text) if final_is_enc and full_text else full_text
+                    m_store = store.encryptor.encrypt(metadata) if final_is_enc and metadata else metadata
+
+                    cursor.execute(
+                        "INSERT INTO documents (file_path, file_hash, full_text, metadata, is_encrypted, added_timestamp) VALUES (?, ?, ?, ?, ?, ?)",
+                        (doc["file_path"], doc["file_hash"], t_store, m_store, 1 if final_is_enc else 0, doc["added_timestamp"])
+                    )
+                    doc_id_map[doc["doc_id"]] = cursor.lastrowid
+
+                # Import Chunks
+                chunk_id_map = {}
+                for chunk in export_data.get("chunks", []):
+                    text = chunk["chunk_text"]
+                    is_enc = chunk["is_encrypted"]
+
+                    if is_enc and decryption_key:
+                        temp_enc = Encryptor(decryption_key)
+                        text = temp_enc.decrypt(text.encode('utf-8'))
+                        is_enc = False
+
+                    final_is_enc = store.encryptor.is_enabled
+                    t_store = store.encryptor.encrypt(text) if final_is_enc else text
+
+                    cursor.execute(
+                        "INSERT INTO chunks (doc_id, chunk_text, start_pos, end_pos, chunk_seq, tags, is_encrypted, encryption_metadata, graph_processed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (doc_id_map[chunk["doc_id"]], t_store, chunk["start_pos"], chunk["end_pos"], chunk["chunk_seq"], chunk["tags"], 1 if final_is_enc else 0, chunk["encryption_metadata"], chunk["graph_processed_at"])
+                    )
+                    new_cid = cursor.lastrowid
+                    chunk_id_map[chunk["chunk_id"]] = new_cid
+
+                    # Sync FTS5
+                    try:
+                        cursor.execute("INSERT INTO chunks_fts(rowid, chunk_text) VALUES (?, ?)", (new_cid, text))
+                    except Exception:
+                        pass
+
+                # Import Vectors
+                for vec in export_data.get("vectors", []):
+                    if vec["chunk_id"] in chunk_id_map:
+                        v_blob = base64.b64decode(vec["vector_data"])
+                        cursor.execute("INSERT INTO vectors (chunk_id, vector_data) VALUES (?, ?)", (chunk_id_map[vec["chunk_id"]], v_blob))
+
+                # Import Graph Nodes
+                node_id_map = {}
+                for node in export_data.get("graph_nodes", []):
+                    vec_blob = base64.b64decode(node["node_vector"]) if node["node_vector"] else None
+                    cursor.execute(
+                        "INSERT INTO graph_nodes (node_label, node_properties, unique_signature, node_vector) VALUES (?, ?, ?, ?)",
+                        (node["node_label"], node["node_properties"], node["unique_signature"], vec_blob)
+                    )
+                    node_id_map[node["node_id"]] = cursor.lastrowid
+
+                # Import Graph Relationships
+                for rel in export_data.get("graph_relationships", []):
+                    if rel["source_node_id"] in node_id_map and rel["target_node_id"] in node_id_map:
+                        cursor.execute(
+                            "INSERT INTO graph_relationships (source_node_id, target_node_id, relationship_type, relationship_properties) VALUES (?, ?, ?, ?)",
+                            (node_id_map[rel["source_node_id"]], node_id_map[rel["target_node_id"]], rel["relationship_type"], rel["relationship_properties"])
+                        )
+
+                # Import Node Chunk Links
+                for link in export_data.get("node_chunk_links", []):
+                    if link["node_id"] in node_id_map and link["chunk_id"] in chunk_id_map:
+                        cursor.execute(
+                            "INSERT INTO node_chunk_links (node_id, chunk_id) VALUES (?, ?)",
+                            (node_id_map[link["node_id"]], chunk_id_map[link["chunk_id"]])
+                        )
+
+                store.conn.commit()
+                ASCIIColors.success(f"Database successfully imported from {in_path}")
+                return store
+
+            except Exception as e:
+                if store.conn.in_transaction: store.conn.rollback()
+                store.close()
+                Path(db_path).unlink(missing_ok=True)
+                raise SafeStoreError(f"Database import failed: {e}") from e
 
     def delete_document_by_path(self, file_path: Union[str, Path]) -> None:
         _path_or_id = str(Path(file_path).resolve() if isinstance(file_path, Path) else file_path)

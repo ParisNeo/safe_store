@@ -173,14 +173,18 @@ class GraphStore:
         """Extracts graph elements from a single chunk using LLM and saves to DB."""
         prompt = self._get_graph_extraction_prompt(chunk_text, guidance)
         raw_response = self.llm_executor(prompt)
+        if not raw_response:
+            ASCIIColors.warning(f"LLM extraction returned empty response for chunk {chunk_id}.")
+            return 0, 0
+
         try:
             parsed = robust_json_parser(raw_response)
         except Exception as e:
-            ASCIIColors.warning(f"Failed to parse LLM extraction response for chunk {chunk_id}: {e}")
+            ASCIIColors.warning(f"Failed to parse LLM extraction response for chunk {chunk_id}: {e}\nRaw Response preview: {str(raw_response)[:200]}")
             return 0, 0
 
-        nodes_data = parsed.get("nodes", [])
-        rels_data = parsed.get("relationships", [])
+        nodes_data = parsed.get("nodes", []) if isinstance(parsed, dict) else []
+        rels_data = parsed.get("relationships", []) if isinstance(parsed, dict) else []
 
         node_map: Dict[Tuple[str, str], int] = {}
         nodes_created = 0
@@ -227,6 +231,8 @@ class GraphStore:
                 db.add_graph_relationship(self.conn, src_id, tgt_id, rel_type, props_json)
                 rels_created += 1
 
+        if nodes_created > 0 or rels_created > 0:
+            ASCIIColors.info(f"Chunk #{chunk_id}: Extracted {nodes_created} node(s) and {rels_created} relationship(s).")
         return nodes_created, rels_created
 
     def build_graph_for_document(self, doc_id: int, guidance: Optional[str] = None) -> Dict[str, int]:
@@ -270,16 +276,18 @@ class GraphStore:
     def build_graph_for_all_documents(self, guidance: Optional[str] = None, progress_callback: Optional[ProgressCallback] = None) -> Dict[str, int]:
         """Builds graph nodes and relationships for all unprocessed chunks across all documents."""
         with self.store._instance_lock, self.store._optional_file_lock_context("build_graph_for_all_documents"):
-            cursor = self.conn.execute("SELECT chunk_id, chunk_text, is_encrypted, doc_id FROM chunks WHERE graph_processed_at IS NULL")
+            cursor = self.conn.execute("SELECT chunk_id, chunk_text, is_encrypted, doc_id FROM chunks WHERE graph_processed_at IS NULL ORDER BY chunk_id ASC")
             rows = cursor.fetchall()
             if not rows:
-                cursor = self.conn.execute("SELECT chunk_id, chunk_text, is_encrypted, doc_id FROM chunks")
+                cursor = self.conn.execute("SELECT chunk_id, chunk_text, is_encrypted, doc_id FROM chunks ORDER BY chunk_id ASC")
                 rows = cursor.fetchall()
 
             total_chunks = len(rows)
             if total_chunks == 0:
+                ASCIIColors.warning("No document chunks available to build graph from.")
                 return {"nodes_created": 0, "relationships_created": 0, "chunks_processed": 0}
 
+            ASCIIColors.info(f"Building knowledge graph across {total_chunks} chunk(s)...")
             total_nodes = 0
             total_rels = 0
             processed_chunk_ids = []
@@ -301,12 +309,14 @@ class GraphStore:
                 total_rels += r_cnt
                 processed_chunk_ids.append(chunk_id)
 
+                status_msg = f"Processed chunk {idx+1}/{total_chunks} (+{n_cnt} nodes, +{r_cnt} edges | total: {total_nodes} nodes, {total_rels} edges)"
                 if progress_callback:
-                    progress_callback((idx + 1) / total_chunks, f"Processed chunk {idx+1}/{total_chunks}")
+                    progress_callback((idx + 1) / total_chunks, status_msg)
 
             if processed_chunk_ids:
                 db.mark_chunks_graph_processed(self.conn, processed_chunk_ids)
 
+            ASCIIColors.success(f"Graph build finished: {total_nodes} nodes created, {total_rels} relationships created across {len(processed_chunk_ids)} chunks.")
             return {
                 "nodes_created": total_nodes,
                 "relationships_created": total_rels,
@@ -556,6 +566,47 @@ class GraphStore:
     def get_all_nodes_for_visualization(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Alias for get_all_nodes to support graph visualization pipelines."""
         return self.get_all_nodes(limit=limit)
+
+    def get_graph_info(self) -> Dict[str, Any]:
+        """Returns diagnostic metadata about the graph store, node labels, and relationship counts."""
+        with self.store._instance_lock:
+            self.store._ensure_connection()
+            cursor = self.conn.cursor()
+
+            cursor.execute("SELECT COUNT(*) FROM graph_nodes")
+            total_nodes = cursor.fetchone()[0] or 0
+
+            cursor.execute("SELECT COUNT(*) FROM graph_relationships")
+            total_relationships = cursor.fetchone()[0] or 0
+
+            cursor.execute("SELECT COUNT(*) FROM node_chunk_links")
+            total_provenance_links = cursor.fetchone()[0] or 0
+
+            cursor.execute("SELECT node_label, COUNT(*) FROM graph_nodes GROUP BY node_label")
+            nodes_by_label = {row[0]: row[1] for row in cursor.fetchall()}
+
+            cursor.execute("SELECT relationship_type, COUNT(*) FROM graph_relationships GROUP BY relationship_type")
+            relationships_by_type = {row[0]: row[1] for row in cursor.fetchall()}
+
+            ontology_info = None
+            if self.ontology:
+                if isinstance(self.ontology, dict):
+                    ontology_info = {
+                        "defined_node_types": list(self.ontology.get("nodes", {}).keys()),
+                        "defined_relationship_types": list(self.ontology.get("relationships", {}).keys())
+                    }
+                else:
+                    ontology_info = {"raw": str(self.ontology)[:300]}
+
+            return {
+                "graph_features_enabled": db.get_store_metadata(self.conn, self.GRAPH_FEATURES_ENABLED_KEY) == "true",
+                "total_nodes": total_nodes,
+                "total_relationships": total_relationships,
+                "total_provenance_links": total_provenance_links,
+                "nodes_by_label": nodes_by_label,
+                "relationships_by_type": relationships_by_type,
+                "ontology": ontology_info
+            }
 
     def get_all_relationships(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Returns all graph relationships with source and target node metadata."""

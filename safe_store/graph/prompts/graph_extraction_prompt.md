@@ -1,45 +1,52 @@
-**CRITICAL INSTRUCTION: You are a data extraction expert. Your task is to extract entities (nodes) and relationships from the provided text, strictly adhering to the ontology schema below.**
+**CRITICAL INSTRUCTION: You are an expert data and knowledge graph extractor. Your task is to extract meaningful entities (nodes) and their relationships from the provided text to construct a rich knowledge graph.**
 
-- **ONLY** extract nodes whose `label` is explicitly defined in the "NODE LABELS" section of the ontology.
-- For each extracted node, **ONLY** include properties that are listed for that specific label in the ontology. Be exhaustive and extract every property defined in the ontology that is present in the text.
-- **ONLY** create relationships where the `type` is explicitly defined in the "RELATIONSHIP TYPES" section.
-- You **MUST** respect the `Source` and `Target` constraints for relationships if they are specified.
-- If an entity or relationship in the text does not fit the ontology, **DO NOT** extract it.
-- Every node's `properties` object **MUST** contain an `identifying_value`. This is a unique name or identifier for the entity (e.g., "John Doe", "Acme Corporation") and is used to link relationships.
-- Format the output as a single JSON object inside a markdown code block.
+- **Node Extraction**: Extract key entities, concepts, persons, organizations, technologies, tools, software components, events, and objects mentioned in the text. Assign each node an appropriate `label` (e.g., `Concept`, `Person`, `Organization`, `Technology`, `Module`, `Tool`, `Method`, `Event`, `Document`).
+- **Mandatory Identifying Value**: Every node's `properties` dictionary **MUST** contain an `identifying_value` (e.g., the canonical name or specific term) to uniquely identify and link the entity.
+- **Properties**: Extract any relevant attributes, descriptions, or parameters present in the text into `properties`.
+- **Relationship Extraction**: Identify directed connections between extracted entities. Use descriptive, uppercase relationship types (e.g., `USES`, `DEPENDS_ON`, `CREATED_BY`, `PART_OF`, `DEFINES`, `RELATES_TO`, `INTEGRATES_WITH`, `MENTIONS`).
+- **Format**: Output strictly a single JSON object inside a markdown code block.
 
-**User Guidance (Follow these additional instructions within the ontology's constraints):**
+**User Guidance (Follow these additional instructions if provided):**
 {user_guidance}
+
 ---
 
 **Text to process:**
 {chunk_text}
+
 ---
 
-**JSON Output Structure (Populate this structure according to the rules):**
+**JSON Output Structure:**
 ```json
-{{
+{
     "nodes": [
-        {{
-            "label": "LabelFromOntology",
-            "properties": {{
-                "identifying_value": "A unique value for this entity (MANDATORY)",
-                "property_from_ontology": "Value from text",
-                "...": "..."
-            }}
-        }}
+        {
+            "label": "Technology",
+            "properties": {
+                "identifying_value": "SafeStore",
+                "description": "Local vector and graph database library",
+                "backend": "SQLite"
+            }
+        },
+        {
+            "label": "Concept",
+            "properties": {
+                "identifying_value": "Knowledge Graph",
+                "description": "Interconnected entity and relation graph"
+            }
+        }
     ],
     "relationships": [
-        {{
-            "source_node_label": "SourceLabelFromOntology",
-            "source_node_identifying_value": "Identifier of the source node",
-            "target_node_label": "TargetLabelFromOntology",
-            "target_node_identifying_value": "Identifier of the target node",
-            "type": "RelationshipTypeFromOntology",
-            "properties": {{
-                "role": "A role or description if applicable"
-            }}
-        }}
+        {
+            "source_node_label": "Technology",
+            "source_node_identifying_value": "SafeStore",
+            "target_node_label": "Concept",
+            "target_node_identifying_value": "Knowledge Graph",
+            "type": "IMPLEMENTS",
+            "properties": {
+                "details": "Provides native graph storage and SPARQL 1.1 query engine"
+            }
+        }
     ]
-}}
+}
 ```

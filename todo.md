@@ -8,4 +8,6 @@
 - [x] High-performance Semantic Datalake Viewer with PCA, t-SNE, 2D/3D projections, persistent SQLite caching, lazy streaming, and standalone HTML export
 - [x] Full Document Querying (`query_full_documents`), Context Window Expansion (`query_document_content_window`), and Chunk Pagination (`get_document_content_paginated`)
 - [x] SPARQL 1.1 Update Engine (`execute_sparql_update`), Cognitive Episodic & Associative Memory (`CognitiveMemoryStore`), Provenance Grounding, and LLM Tool Dispatching
+- [x] Comprehensive Database Diagnostics & Information method (`store.get_database_info()`, `store.info()`, `graph_store.get_graph_info()`) reporting vectorizer, document chunk counts, ontology schemas, and graph node/edge breakdowns
+- [x] Fix Graph Extraction Prompt to dynamically extract rich entity and relationship graphs from unstructured files when no static ontology is supplied
 - [ ] Use SigLIP / CLIP to encode images and support multi-modal image vector database storage

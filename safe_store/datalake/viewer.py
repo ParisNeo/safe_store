@@ -493,7 +493,7 @@ class DatalakeViewer:
             .replace("__METHOD__", method.upper())
             .replace("__COMPONENTS__", str(n_components))
             .replace("__POINT_COUNT__", str(len(data)))
-            .replace("__DATA_JSON__", data_json)
+            .replace("__DATA_JSON__", data_json.replace("</", "<\\/"))
             .replace("__IS_3D__", str(is_3d).lower())
             .replace("__PLOT_TYPE__", plot_type)
         )

@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - feat(vectorization): add detailed ASCII info for vectorizer initialization
 
+## [2026-09-01 00:59]
+
+- docs: update documentation and refine graph store implementation
+
 ## [2026-08-27 01:14]
 
 - feat(search): implement hybrid BM25 retrieval and graph store integration

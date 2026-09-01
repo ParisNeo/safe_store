@@ -1,99 +1,97 @@
+===========
 Graph Store
 ===========
 
-The ``GraphStore`` module provides capabilities to build and manage a knowledge graph within the SafeStore database. It supports automatic graph extraction from documents using LLMs, as well as manual management of nodes and relationships.
+The ``GraphStore`` module manages knowledge graphs within the SafeStore database. It supports dynamic and ontology-constrained LLM graph extraction, W3C SPARQL 1.1 query & update engines, declarative tabular mapping, and cognitive memory.
 
 Initialization
 --------------
 
 .. code-block:: python
 
-   from safe_store.graph import GraphStore
+   from safe_store import SafeStore, GraphStore
 
-   # Assuming 'store' is an initialized SafeStore instance
+   store = SafeStore(db_path="graph_kb.db", vectorizer_name="st")
    graph_store = GraphStore(
        store=store,
-       llm_executor_callback=my_llm_function,
-       ontology=my_ontology_dict  # Optional
+       llm_executor_callback=my_llm_callback,  # Optional for automatic extraction
+       ontology=my_ontology_schema            # Optional TBox/dict schema
    )
+
+Graph Diagnostics
+-----------------
+
+.. py:method:: get_graph_info() -> Dict[str, Any]
+
+   Returns diagnostic information about the graph store, including total nodes, total relationships, breakdown by label/type, and provenance links.
 
 Node Management
 ---------------
 
 .. py:method:: add_node(label: str, properties: Dict[str, Any]) -> int
 
-   Adds a new node to the graph.
+   Adds a new node to the graph and computes its vector embedding for semantic search.
 
-   :param label: The type/label of the node (e.g., "Person", "Company").
-   :param properties: A dictionary of properties for the node.
+   :param label: The type/label of the node (e.g., "Person", "Company", "Concept").
+   :param properties: A dictionary of properties (must include an `identifying_value` or `name`).
    :return: The ID of the newly created node.
 
 .. py:method:: get_node_details(node_id: int) -> Optional[Dict[str, Any]]
 
-   Retrieves the details of a specific node.
-
-   :param node_id: The ID of the node to retrieve.
-   :return: A dictionary containing the node's details, or None if not found.
+   Retrieves node details by ID.
 
 .. py:method:: update_node(node_id: int, label: Optional[str] = None, properties: Optional[Dict[str, Any]] = None) -> bool
 
-   Updates an existing node.
-
-   :param node_id: The ID of the node to update.
-   :param label: (Optional) A new label for the node.
-   :param properties: (Optional) A dictionary of properties to update (merges with existing).
-   :return: True if successful.
+   Updates an existing node's label and properties.
 
 .. py:method:: delete_node(node_id: int) -> bool
 
-   Deletes a node and all its connected relationships.
-
-   :param node_id: The ID of the node to delete.
-   :return: True if successful.
+   Deletes a node and its associated relationships.
 
 Relationship Management
 -----------------------
 
 .. py:method:: add_relationship(source_node_id: int, target_node_id: int, rel_type: str, properties: Optional[Dict[str, Any]] = None) -> int
 
-   Creates a relationship between two nodes.
-
-   :param source_node_id: The ID of the source node.
-   :param target_node_id: The ID of the target node.
-   :param rel_type: The type of relationship (e.g., "WORKS_FOR").
-   :param properties: (Optional) Properties for the relationship.
-   :return: The ID of the newly created relationship.
-
-.. py:method:: get_relationship(relationship_id: int) -> Optional[Dict[str, Any]]
-
-   Retrieves details of a specific relationship.
-
-   :param relationship_id: The ID of the relationship.
-   :return: A dictionary with relationship details or None.
-
-.. py:method:: update_relationship(relationship_id: int, rel_type: Optional[str] = None, properties: Optional[Dict[str, Any]] = None) -> bool
-
-   Updates an existing relationship.
-
-   :param relationship_id: The ID of the relationship to update.
-   :param rel_type: (Optional) New type for the relationship.
-   :param properties: (Optional) New properties to update.
-   :return: True if successful.
+   Creates a directed relationship between two nodes.
 
 .. py:method:: delete_relationship(relationship_id: int) -> bool
 
-   Deletes a specific relationship.
+   Deletes a specific relationship by ID.
 
-   :param relationship_id: The ID of the relationship to delete.
-   :return: True if successful.
+W3C SPARQL 1.1 Query & Update
+-----------------------------
 
-Graph Building & Querying
--------------------------
+.. py:method:: query_sparql(sparql_query: str) -> Dict[str, Any]
 
-.. py:method:: build_graph_for_document(doc_id: int, ...)
+   Executes standard W3C SPARQL 1.1 queries (``SELECT``, ``ASK``, ``CONSTRUCT``, ``DESCRIBE``).
 
-   extracts graph data from the chunks of a specific document using the configured LLM.
+.. py:method:: execute_sparql_update(sparql_update: str) -> Dict[str, Any]
 
-.. py:method:: query_graph(natural_language_query: str, ...)
+   Executes standard W3C SPARQL 1.1 update commands (``INSERT DATA``, ``DELETE DATA``, ``DELETE WHERE``) and synchronizes SQLite graph tables.
 
-   Performs a semantic search to find relevant nodes and then traverses the graph to answer the query.
+Tri-Modal Unified Graph Search
+------------------------------
+
+.. py:method:: query_graph_hybrid(query_text: str, top_k: int = 5, dense_weight: float = 0.4, bm25_weight: float = 0.3, graph_weight: float = 0.3, min_relevance_percent: float = 0.0) -> Dict[str, Any]
+
+   Executes tri-modal retrieval combining graph neighborhood exploration, dense vector similarity, and sparse BM25 lexical search using Reciprocal Rank Fusion.
+
+Cognitive Memory System (``graph_store.memory``)
+------------------------------------------------
+
+.. py:method:: memory.record_episode(title: str, description: str, participants: Optional[List[str]] = None, source_chunk_ids: Optional[List[int]] = None, ...) -> int
+
+   Records an episodic event with temporal metadata and source text chunk grounding.
+
+.. py:method:: memory.recall_associative(concept_or_entity: str, max_hops: int = 2) -> Dict[str, Any]
+
+   Explores associative memory pathways originating from an entity or concept.
+
+.. py:method:: memory.get_llm_tool_definitions() -> List[Dict[str, Any]]
+
+   Returns standard JSON tool schemas for LLM function calling.
+
+.. py:method:: memory.dispatch_llm_tool(tool_name: str, arguments: Dict[str, Any]) -> Any
+
+   Executes an LLM tool call and returns serializable results.
