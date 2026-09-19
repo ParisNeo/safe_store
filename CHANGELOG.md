@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - feat(vectorization): add detailed ASCII info for vectorizer initialization
 
+## [2026-09-19 17:13]
+
+- refactor(vectorization): restructure sentence transformer module
+
 ## [2026-09-08 22:04]
 
 - remove-deprecated-static-files-and-assets:
