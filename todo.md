@@ -11,3 +11,4 @@
 - [x] Comprehensive Database Diagnostics & Information method (`store.get_database_info()`, `store.info()`, `graph_store.get_graph_info()`) reporting vectorizer, document chunk counts, ontology schemas, and graph node/edge breakdowns
 - [x] Fix Graph Extraction Prompt to dynamically extract rich entity and relationship graphs from unstructured files when no static ontology is supplied
 - [ ] Use SigLIP / CLIP to encode images and support multi-modal image vector database storage
+- [ ] reconstruct overlapping chunks
