@@ -111,10 +111,14 @@ def reconstruct_document_chunks(
     if not doc_chunks:
         return {}
 
-    # Sort chunks by chunk_seq (chronological order in document)
+    # Sort chunks by chunk_seq (chronological order in document), safely handling None
     sorted_chunks = sorted(
         doc_chunks,
-        key=lambda c: (c.get("chunk_seq", 0), c.get("start_pos", 0), c.get("chunk_id", 0))
+        key=lambda c: (
+            c.get("chunk_seq") if c.get("chunk_seq") is not None else 0,
+            c.get("start_pos") if c.get("start_pos") is not None else 0,
+            c.get("chunk_id") if c.get("chunk_id") is not None else 0
+        )
     )
 
     # Deduplicate exact duplicate chunk IDs or sequences

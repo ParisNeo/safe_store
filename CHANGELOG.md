@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - feat(vectorization): add detailed ASCII info for vectorizer initialization
 
+## [2026-09-23 00:45]
+
+- a/pyproject.toml
+
 ## [2026-09-23 00:24]
 
 - `fix(bm25): enable BM25 search in sparse search components`

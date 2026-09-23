@@ -324,14 +324,15 @@ async def render_studio_page(client: Client, initial_path: str):
                 with ui.card().classes('w-full bg-slate-800/80 p-4 rounded-xl border border-slate-700 mb-6'):
                     with ui.row().classes('w-full gap-4 items-center'):
                         query_input = ui.input(placeholder='Enter semantic query or exact token (e.g. error code)...').classes('flex-1').props('dark standout')
+                        query_input.on('keydown.enter', lambda: execute_search())
                         search_mode = ui.select(['hybrid', 'dense', 'bm25'], value='hybrid', label='Mode').classes('w-36').props('dark dense standout')
                         top_k_input = ui.number('Top K', value=3, min=1, max=50).classes('w-24').props('dark dense standout')
-                        threshold_slider = ui.slider(min=0, max=100, value=20).classes('w-48')
+                        threshold_slider = ui.slider(min=0, max=100, value=0).classes('w-48')
                         ui.label().bind_text_from(threshold_slider, 'value', backward=lambda v: f'Min Rel: {v}%').classes('text-xs text-slate-400')
                         reconstruct_checkbox = ui.checkbox('Reconstruct Chunks', value=True).classes('text-teal-300 font-semibold')
                         ui.button('Search', icon='search', on_click=lambda: execute_search()).props('color=teal')
 
-            search_results_container = ui.column().classes('w-full space-y-4')
+                search_results_container = ui.column().classes('w-full space-y-4')
 
             # -----------------------------------------------------------------
             # TAB 5: Database Diagnostics
@@ -632,73 +633,83 @@ SELECT ?subject ?predicate ?object WHERE {
             ui.button('Execute SPARQL', icon='play_arrow', on_click=run_sparql).props('color=teal')
 
     async def execute_search():
-        query_text = query_input.value.strip()
-        search_results_container.clear()
+        raw_val = query_input.value
+        query_text = (raw_val or "").strip()
         if not query_text:
+            search_results_container.clear()
+            with search_results_container:
+                ui.label("Please enter a query in the search box.").classes('text-sm text-amber-400 italic')
             return
 
         mode = search_mode.value
-        k = int(top_k_input.value)
-        thresh = float(threshold_slider.value)
-        reconstruct = reconstruct_checkbox.value
+        k = int(top_k_input.value or 3)
+        thresh = float(threshold_slider.value or 0.0)
+        reconstruct = bool(reconstruct_checkbox.value)
 
+        # 1. Mount loading spinner cleanly inside container
+        search_results_container.clear()
         with search_results_container:
-            loading_row = ui.row().classes('items-center gap-2')
-            with loading_row:
+            with ui.row().classes('items-center gap-2 text-teal-400 p-2'):
                 ui.spinner('dots', size='md', color='teal')
-                ui.label(f"Executing {mode.upper()} search across embeddings...").classes('text-sm text-slate-400')
+                ui.label(f"Executing {mode.upper()} search across embeddings...").classes('text-sm text-slate-300')
 
-            try:
-                if mode == 'hybrid':
-                    hits = await asyncio.to_thread(
-                        state.store.hybrid_query,
-                        query_text,
-                        top_k=k,
-                        min_relevance_percent=thresh,
-                        reconstruct_overlapping_chunks=reconstruct
-                    )
-                elif mode == 'dense':
-                    hits = await asyncio.to_thread(
-                        state.store.query,
-                        query_text,
-                        top_k=k,
-                        min_relevance_percent=thresh,
-                        reconstruct_overlapping_chunks=reconstruct
-                    )
-                elif mode == 'bm25':
-                    from safe_store import BM25Retriever
-                    bm25 = BM25Retriever(state.store.conn)
-                    raw_hits = await asyncio.to_thread(bm25.search, query_text, top_k=k, min_relevance_percent=thresh)
-                    hits = await asyncio.to_thread(state.store.reconstruct_overlapping_chunks, raw_hits) if reconstruct else raw_hits
-
-                loading_row.clear()
-
-                ui.label(f"Query Results for: '{query_text}' ({mode.upper()} Search)").classes('text-lg font-bold text-teal-300')
-
-                if not hits:
-                    ui.label('No chunks passed the relevance threshold. Zero context pollution.').classes('text-sm text-slate-400 italic')
-                    return
-
-                for i, hit in enumerate(hits, 1):
-                    with ui.card().classes('w-full bg-slate-800/90 border border-slate-700 p-4 rounded-xl'):
-                        with ui.row().classes('w-full justify-between items-center mb-2'):
-                            with ui.row().classes('items-center gap-2'):
-                                ui.badge(f"Rank #{i}", color='slate-700')
-                                ui.label(hit.get('document_title', Path(hit.get('file_path', '')).name)).classes('font-bold text-teal-300')
-                            with ui.row().classes('items-center gap-2'):
-                                rel_grade = hit.get('relevance_score', hit.get('similarity_percent', 0.0))
-                                ui.badge(f"Relevance: {rel_grade:.1f}%", color='teal' if rel_grade >= 50 else 'cyan')
-                                if hit.get('is_reconstructed'):
-                                    ui.badge("Reconstructed Contiguous", color='indigo')
-
-                        if hit.get('fused_chunk_ids'):
-                            ui.label(f"Fused Chunks: IDs={hit['fused_chunk_ids']} | Sequences={hit.get('chunk_seqs')}").classes('text-xs text-slate-400 font-mono mb-2')
-
-                        with ui.scroll_area().classes('w-full max-h-48 p-3 bg-slate-900 rounded font-mono text-xs whitespace-pre-wrap border border-slate-700'):
-                            ui.label(hit['chunk_text'])
-            except Exception as e:
-                loading_row.clear()
+        # 2. Perform search in background thread OUTSIDE container context
+        try:
+            if mode == 'hybrid':
+                hits = await asyncio.to_thread(
+                    state.store.hybrid_query,
+                    query_text,
+                    top_k=k,
+                    min_relevance_percent=thresh,
+                    reconstruct_overlapping_chunks=reconstruct
+                )
+            elif mode == 'dense':
+                hits = await asyncio.to_thread(
+                    state.store.query,
+                    query_text,
+                    top_k=k,
+                    min_relevance_percent=thresh,
+                    reconstruct_overlapping_chunks=reconstruct
+                )
+            elif mode == 'bm25':
+                from safe_store import BM25Retriever
+                bm25 = BM25Retriever(state.store.conn)
+                raw_hits = await asyncio.to_thread(bm25.search, query_text, top_k=k, min_relevance_percent=thresh)
+                hits = await asyncio.to_thread(state.store.reconstruct_overlapping_chunks, raw_hits) if reconstruct else raw_hits
+            else:
+                hits = []
+        except Exception as e:
+            search_results_container.clear()
+            with search_results_container:
                 ui.label(f"Search Execution Error: {e}").classes('text-sm text-rose-400 font-mono')
+            return
+
+        # 3. Clear container and re-enter context to render results
+        search_results_container.clear()
+        with search_results_container:
+            ui.label(f"Query Results for: '{query_text}' ({mode.upper()} Search, {len(hits)} hit(s))").classes('text-lg font-bold text-teal-300')
+
+            if not hits:
+                ui.label(f"No results found matching '{query_text}' above the {thresh:.1f}% threshold.").classes('text-sm text-slate-400 italic')
+                return
+
+            for i, hit in enumerate(hits, 1):
+                with ui.card().classes('w-full bg-slate-800/90 border border-slate-700 p-4 rounded-xl shadow-lg'):
+                    with ui.row().classes('w-full justify-between items-center mb-2'):
+                        with ui.row().classes('items-center gap-2'):
+                            ui.badge(f"Rank #{i}", color='slate-700')
+                            ui.label(hit.get('document_title', Path(hit.get('file_path', '')).name)).classes('font-bold text-teal-300')
+                        with ui.row().classes('items-center gap-2'):
+                            rel_grade = float(hit.get('relevance_score', hit.get('similarity_percent', 0.0)))
+                            ui.badge(f"Relevance: {rel_grade:.1f}%", color='teal' if rel_grade >= 50 else 'cyan')
+                            if hit.get('is_reconstructed'):
+                                ui.badge("Reconstructed Contiguous", color='indigo')
+
+                    if hit.get('fused_chunk_ids'):
+                        ui.label(f"Fused Chunks: IDs={hit['fused_chunk_ids']} | Sequences={hit.get('chunk_seqs')}").classes('text-xs text-slate-400 font-mono mb-2')
+
+                    with ui.scroll_area().classes('w-full max-h-56 p-3 bg-slate-900 rounded font-mono text-xs whitespace-pre-wrap border border-slate-700 text-slate-200'):
+                        ui.label(hit.get('chunk_text', '(Empty chunk text)'))
 
     def refresh_diagnostics_view():
         diagnostics_content.clear()

@@ -968,7 +968,10 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
             ordered_results = []
             for cid, s, g in zip(top_chunk_ids, top_scores, top_grades):
                 cid_int = int(cid)
-                res = dict(details_map.get(cid_int, {}))
+                detail = details_map.get(cid_int)
+                if not detail:
+                    continue
+                res = dict(detail)
                 grade_val = float(round(g, 2))
                 res.update({
                     "chunk_id": cid_int,
