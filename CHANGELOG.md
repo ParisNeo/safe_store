@@ -10,6 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - feat(vectorization): add detailed ASCII info for vectorizer initialization
 
+## [2026-09-23 00:24]
+
+- `fix(bm25): enable BM25 search in sparse search components`
+
+## [2026-09-23 00:24]
+
+- fix(sparse-search): add BM25 support in safe_store/search/bm25.py
+
 ## [2026-09-19 17:13]
 
 - refactor(vectorization): restructure sentence transformer module
