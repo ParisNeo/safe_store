@@ -22,6 +22,7 @@ from safe_store.indexing.page_index import PageIndex
 from safe_store.search import similarity
 from safe_store.search.bm25 import BM25Retriever
 from safe_store.search.fusion import reciprocal_rank_fusion
+from safe_store.search.reconstruction import reconstruct_overlapping_chunks
 from .datalake.viewer import DatalakeViewer
 from safe_store.vectorization.manager import VectorizationManager
 from safe_store.vectorization.base import BaseVectorizer
@@ -830,18 +831,37 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                 if self.conn and self.conn.in_transaction: self.conn.rollback()
                 raise SafeStoreError(f"Database transaction failed for '{content_id}': {e}") from e
 
+    def reconstruct_overlapping_chunks(
+        self,
+        results: List[Dict[str, Any]],
+        add_metadata: bool = True
+    ) -> List[Dict[str, Any]]:
+        """
+        Reconstructs overlapping and fragmented query results into coherent, chronologically
+        ordered document texts with overlap deduplication, non-contiguous gap indicators ('...'),
+        and unified single metadata headers per document.
+        """
+        with self._instance_lock:
+            self._ensure_connection()
+            return reconstruct_overlapping_chunks(results, store=self, add_metadata=add_metadata)
+
     def query(
         self,
         query_text: str,
         top_k: int = 5,
         min_relevance_percent: float = 0.0,
-        min_similarity_percent: Optional[float] = None
+        min_similarity_percent: Optional[float] = None,
+        reconstruct_overlapping_chunks: bool = False,
+        add_metadata: bool = True,
+        **kwargs
     ) -> List[Dict[str, Any]]:
         """
         Queries the vector store using dense vector similarity.
         Every result contains a standardized 0-100 grade (relevance_score & similarity_percent).
         Results below min_relevance_percent are excluded.
+        If reconstruct_overlapping_chunks is True, overlapping chunks are fused in chronological order.
         """
+        should_reconstruct = reconstruct_overlapping_chunks or kwargs.get('reconstruct_chunks', False)
         threshold = min_similarity_percent if min_similarity_percent is not None else min_relevance_percent
         with self._instance_lock:
             ASCIIColors.info(f"Received query. Searching with '{self.vectorizer_name}', top_k={top_k}, threshold={threshold}%")
@@ -892,7 +912,7 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                     SELECT c.chunk_id, c.chunk_text, c.start_pos, c.end_pos,
                            c.is_encrypted AS chunk_is_encrypted, d.file_path,
                            d.metadata AS doc_metadata, d.is_encrypted AS doc_is_encrypted,
-                           c.doc_id
+                           c.doc_id, c.chunk_seq
                     FROM chunks c JOIN documents d ON c.doc_id = d.doc_id
                     WHERE c.chunk_id IN ({placeholders})
                 """
@@ -904,7 +924,7 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                 self.conn.text_factory = original_factory
 
             for row in details_raw:
-                chunk_id, chunk_text_data, start, end, chunk_is_enc, path, doc_meta_data, doc_is_enc, doc_id = row
+                chunk_id, chunk_text_data, start, end, chunk_is_enc, path, doc_meta_data, doc_is_enc, doc_id, chunk_seq = row
                 
                 chunk_text: str
                 if chunk_is_enc:
@@ -939,6 +959,8 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                 details_map[chunk_id] = {
                     "chunk_id": int(chunk_id),
                     "doc_id": int(doc_id),
+                    "chunk_seq": int(chunk_seq),
+                    "raw_chunk_text": chunk_text,
                     "chunk_text": doc_metadata_text + chunk_text, "start_pos": start, "end_pos": end,
                     "file_path": path.decode('utf-8'), "document_metadata": meta_dict
                 }
@@ -955,6 +977,9 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                     "relevance_score": grade_val
                 })
                 ordered_results.append(res)
+
+            if should_reconstruct:
+                return self.reconstruct_overlapping_chunks(ordered_results, add_metadata=add_metadata)
             return ordered_results
 
     def hybrid_query(
@@ -965,7 +990,10 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
         bm25_weight: float = 0.5,
         rrf_k: int = 60,
         min_relevance_percent: float = 0.0,
-        min_similarity_percent: Optional[float] = None
+        min_similarity_percent: Optional[float] = None,
+        reconstruct_overlapping_chunks: bool = False,
+        add_metadata: bool = True,
+        **kwargs
     ) -> List[Dict[str, Any]]:
         """
         Executes a Tri-Modal Hybrid query combining Dense Vector search and Sparse BM25 lexical search via RRF.
@@ -984,14 +1012,19 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
             bm25_results = bm25_retriever.search(query_text, top_k=top_k * 3, min_relevance_percent=0.0)
 
             # 3. Fuse Results with Score-Calibrated Reciprocal Rank Fusion
+            should_reconstruct = reconstruct_overlapping_chunks or kwargs.get('reconstruct_chunks', False)
+
             fused = reciprocal_rank_fusion(
                 ranked_lists=[dense_results, bm25_results],
                 weights=[dense_weight, bm25_weight],
                 k=rrf_k,
-                top_k=top_k,
+                top_k=top_k if not should_reconstruct else top_k * 2,
                 min_relevance_percent=threshold
             )
 
+            if should_reconstruct:
+                reconstructed = self.reconstruct_overlapping_chunks(fused, add_metadata=add_metadata)
+                return reconstructed[:top_k]
             return fused
 
     def get_vectorization_details(self) -> Optional[Dict[str, Any]]:
@@ -1393,7 +1426,7 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
 
             for r in rows:
                 doc_id, file_path_bytes, file_hash_bytes, ts, meta_blob, is_enc = r
-                
+
                 meta_dict = None
                 if meta_blob:
                     if is_enc:
@@ -1411,11 +1444,12 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                         except json.JSONDecodeError:
                             meta_dict = {"error": "Failed to parse metadata"}
 
+                ts_clean = ts.decode('utf-8', errors='ignore') if isinstance(ts, bytes) else str(ts)
                 docs.append({
                     "doc_id": doc_id,
                     "file_path": file_path_bytes.decode('utf-8'),
                     "file_hash": file_hash_bytes.decode('utf-8') if file_hash_bytes else None,
-                    "added_timestamp": ts,
+                    "added_timestamp": ts_clean,
                     "metadata": meta_dict
                 })
             return docs
@@ -1806,16 +1840,17 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
 
     def get_datalake_view(
         self,
-        method: Literal['pca', 'tsne', 'umap', 'incremental_pca'] = 'pca',
+        method: Literal['umap', 'pca', 'tsne', 'incremental_pca'] = 'umap',
         n_components: int = 2,
         use_cache: bool = True,
         sample_size: Optional[int] = None,
         filter_doc_ids: Optional[List[int]] = None,
         output_format: Literal['dict', 'json_str', 'csv', 'dataframe'] = 'dict',
-        include_chunk_text: bool = True
+        include_chunk_text: bool = True,
+        **kwargs
     ) -> Union[List[Dict[str, Any]], str, Any]:
         """
-        Retrieves a 2D or 3D datalake semantic projection using PCA, t-SNE, or UMAP.
+        Retrieves a 2D or 3D datalake semantic projection using UMAP, PCA, or t-SNE.
         Supports instant cached retrieval, sampling, and filtering.
         """
         with self._instance_lock:
@@ -1827,7 +1862,8 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                 sample_size=sample_size,
                 filter_doc_ids=filter_doc_ids,
                 output_format=output_format,
-                include_chunk_text=include_chunk_text
+                include_chunk_text=include_chunk_text,
+                **kwargs
             )
 
     def stream_datalake_chunks(
@@ -1849,9 +1885,10 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
         self,
         output_file: Union[str, Path] = "datalake_view.html",
         title: str = "SafeStore Semantic Datalake Explorer",
-        method: Literal['pca', 'tsne', 'umap'] = 'pca',
+        method: Literal['umap', 'pca', 'tsne'] = 'umap',
         n_components: int = 2,
-        sample_size: Optional[int] = None
+        sample_size: Optional[int] = None,
+        **kwargs
     ) -> Path:
         """Exports a standalone, interactive HTML 2D/3D visualizer for the entire datalake."""
         with self._instance_lock:
@@ -1861,15 +1898,17 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                 title=title,
                 method=method,
                 n_components=n_components,
-                sample_size=sample_size
+                sample_size=sample_size,
+                **kwargs
             )
 
     def export_point_cloud(
         self,
         output_format: Literal['json_str', 'dict', 'csv'] = 'json_str',
-        method: Literal['pca', 'tsne', 'umap'] = 'pca',
+        method: Literal['umap', 'pca', 'tsne'] = 'umap',
         n_components: int = 2,
-        use_cache: bool = True
+        use_cache: bool = True,
+        **kwargs
     ) -> Union[str, List[Dict[str, Any]]]:
         """
         Exports a point-cloud projection of document chunks (backward-compatible and enhanced).
@@ -1880,5 +1919,6 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                 method=method,
                 n_components=n_components,
                 use_cache=use_cache,
-                output_format=output_format
+                output_format=output_format,
+                **kwargs
             )

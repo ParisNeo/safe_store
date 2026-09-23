@@ -73,7 +73,7 @@ class BM25Retriever:
 
         sql = """
             SELECT c.chunk_id, c.doc_id, c.chunk_text, c.start_pos, c.end_pos,
-                   d.file_path, bm25(chunks_fts) as rank_score
+                   d.file_path, bm25(chunks_fts) as rank_score, c.chunk_seq
             FROM chunks_fts
             JOIN chunks c ON chunks_fts.rowid = c.chunk_id
             JOIN documents d ON c.doc_id = d.doc_id
@@ -91,7 +91,7 @@ class BM25Retriever:
         self.conn.text_factory = original_factory
 
         for row in rows:
-            chunk_id, doc_id, chunk_text_bytes, start, end, file_path_bytes, rank_score = row
+            chunk_id, doc_id, chunk_text_bytes, start, end, file_path_bytes, rank_score, chunk_seq = row
 
             # Invert FTS5 negative rank score
             norm_score = float(-rank_score) if rank_score is not None else 1.0
@@ -100,10 +100,13 @@ class BM25Retriever:
             relevance_pct = round(min(100.0, (norm_score / (norm_score + 0.4)) * 100.0), 2) if norm_score > 0 else 0.0
 
 
+            raw_text = chunk_text_bytes.decode('utf-8', errors='ignore')
             results.append({
                 "chunk_id": chunk_id,
                 "doc_id": doc_id,
-                "chunk_text": chunk_text_bytes.decode('utf-8', errors='ignore'),
+                "chunk_seq": chunk_seq,
+                "raw_chunk_text": raw_text,
+                "chunk_text": raw_text,
                 "start_pos": start,
                 "end_pos": end,
                 "file_path": file_path_bytes.decode('utf-8', errors='ignore'),
@@ -121,7 +124,7 @@ class BM25Retriever:
             return []
 
         sql = """
-            SELECT c.chunk_id, c.doc_id, c.chunk_text, c.start_pos, c.end_pos, d.file_path
+            SELECT c.chunk_id, c.doc_id, c.chunk_text, c.start_pos, c.end_pos, d.file_path, c.chunk_seq
             FROM chunks c
             JOIN documents d ON c.doc_id = d.doc_id
         """
@@ -136,16 +139,19 @@ class BM25Retriever:
         scored = []
         total_tokens = max(1, len(tokens))
         for row in rows:
-            chunk_id, doc_id, chunk_text_bytes, start, end, file_path_bytes = row
+            chunk_id, doc_id, chunk_text_bytes, start, end, file_path_bytes, chunk_seq = row
             text = chunk_text_bytes.decode('utf-8', errors='ignore').lower()
 
             matched_count = sum(1 for token in tokens if token in text)
             if matched_count > 0:
                 relevance_pct = round(min(100.0, (float(matched_count) / float(total_tokens)) * 100.0), 2)
+                raw_text = chunk_text_bytes.decode('utf-8', errors='ignore')
                 scored.append({
                     "chunk_id": chunk_id,
                     "doc_id": doc_id,
-                    "chunk_text": chunk_text_bytes.decode('utf-8', errors='ignore'),
+                    "chunk_seq": chunk_seq,
+                    "raw_chunk_text": raw_text,
+                    "chunk_text": raw_text,
                     "start_pos": start,
                     "end_pos": end,
                     "file_path": file_path_bytes.decode('utf-8', errors='ignore'),

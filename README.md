@@ -9,20 +9,51 @@
 1. 🧠 **Dense Semantic Vector Search**: Embeddings powered by Sentence-Transformers, Ollama, OpenAI, Cohere, Lollms, or TF-IDF.
 2. ⚡ **Sparse Lexical Search (BM25)**: Native SQLite FTS5 full-text indexing for exact technical identifiers, part numbers, and error codes.
 3. 📖 **Full Document & Context Window Retrieval**: Query entire documents aggregated from chunk hits, retrieve surrounding chunk neighborhoods with window expansion, or paginate through document content.
+4. 🧩 **Overlapping Chunk Reconstruction & Chronological Fusion**: Automatically fuses adjacent overlapping chunks in chronological order, deduplicating repetitive boundary seams, bridging gaps with `...`, and uniting metadata into a single context header.
+4. 🧩 **Overlapping Chunk Reconstruction & Chronological Fusion**: Automatically fuses adjacent overlapping chunks in chronological order, deduplicating repetitive boundary seams, bridging gaps with `...`, and uniting metadata into a single context header.
 4. 🕸️ **Dynamic & Ontology Knowledge Graph**: Open-ended concept/entity extraction from text files or strict TBox/OWL schema mapping, with live chunk extraction reporting.
 5. 🔍 **W3C SPARQL 1.1 Query & Update Engine**: Native TBox/ABox ontology management, declarative tabular mapping, and full SPARQL (`SELECT`, `ASK`, `CONSTRUCT`, `DESCRIBE`, and `INSERT/DELETE DATA` updates).
 6. 🧠 **LLM Cognitive Memory & Thought Reorganization**: Episodic memory logging, associative semantic traversal, grounded text chunk evidence linking, and native function-calling tool dispatching.
 7. 🔀 **Tri-Modal Reciprocal Rank Fusion (RRF)**: Merges dense similarity, lexical BM25, and symbolic graph traversals into unified results with universal 0–100 relevance grades.
 8. 🔍 **Database Diagnostics & Introspection (`store.info()`)**: Instant inspection of vectorizers, chunking parameters, document chunk counts, ontology schemas, and graph topology metrics.
-9. 📊 **Semantic Datalake & Point Cloud Engine**: 2D/3D PCA & t-SNE projections with persistent SQLite caching, streaming lazy loading (`IncrementalPCA`), and interactive HTML visualizer exports.
+9. 📊 **State-of-the-Art Semantic Datalake & Point Cloud Engine**: 2D/3D **UMAP** manifold projections (with cosine metric, plus PCA & t-SNE), persistent SQLite caching, streaming lazy loading (`IncrementalPCA`), and interactive HTML visualizer exports.
 10. 🔐 **Zero-Leakage Local Encryption**: End-to-end AES-128/HMAC (Fernet) encryption at rest inside a single, portable `.db` file.
+11. 🖥️ **SafeStore Studio Desktop & Web App**: Interactive UI built on NiceGUI and pywebview for VectorDB editing, 2D/3D point-cloud inspection, SPARQL console, and RAG testing.
 ---
 
 ## 📦 Installation
 
 ```bash
+# Core package
 pip install safe_store
+
+# With Desktop UI & Studio support
+pip install "safe_store[ui]"
 ```
+
+---
+
+## 🖥️ SafeStore Studio (Visual VectorDB & Graph RAG Desktop App)
+
+Launch the visual desktop editor directly from the command line:
+
+```bash
+# Launch with native desktop window (NiceGUI + pywebview)
+safe-store-studio my_knowledge.db
+
+# Or launch in web browser mode
+safe-store-studio my_knowledge.db --browser --port 8080
+
+# Or via python module syntax
+python -m safe_store my_knowledge.db
+```
+
+### Features in SafeStore Studio:
+- **File & Document Manager**: Inspect indexed documents, add custom files (`.pdf`, `.docx`, `.md`, `.txt`, `.csv`), browse chunks, and review reconstructed full text.
+- **Semantic Datalake Explorer**: Interactive 2D or 3D PCA/t-SNE scatter plots powered by Plotly with real-time hover chunk inspection.
+- **Knowledge Graph & SPARQL Console**: Inspect extracted entities and relationships, review class hierarchies, and execute live SPARQL 1.1 queries (`SELECT`, `ASK`, `CONSTRUCT`).
+- **RAG Search Studio**: Compare dense, BM25, and hybrid queries with live threshold sliders and toggle chronological chunk reconstruction.
+- **Database Switcher**: Dynamically switch or open different `.db` files without restarting.
 
 ---
 
@@ -74,6 +105,66 @@ store = safe_store.SafeStore("knowledge.db")
 store.info()
 
 # 2. Or retrieve structured dictionary for APIs and dashboards
+```
+
+---
+
+### 0.1 Overlapping Chunk Reconstruction & Anti-Hallucination Fusion
+
+In traditional vector retrieval, adjacent chunks from the same document often score in reverse order (e.g., chunk 3 before chunk 2), resulting in disjointed narrative flow, duplicated boundary phrases, and redundant metadata headers. 
+
+`safe_store` can automatically reconstruct contiguous chunks in their true chronological order, eliminate the overlapping boundary stutter, bridge non-contiguous passages with `...`, and prepend a single metadata header per document:
+
+```python
+import safe_store
+
+store = safe_store.SafeStore("docs.db")
+
+# Option A: Built into query() or hybrid_query()
+results = store.query(
+    "how to configure TLS encryption and supervisor daemon",
+    top_k=4,
+    reconstruct_overlapping_chunks=True
+)
+
+for doc in results:
+    print(f"Document: {doc['document_title']} (Peak Relevance: {doc['relevance_score']:.1f}%)")
+    print(f"Fused Chunk Seqs: {doc['chunk_seqs']}")
+    print(f"Content:\n{doc['chunk_text']}\n")
+
+# Option B: Run on any existing result list
+reconstructed = store.reconstruct_overlapping_chunks(raw_results, add_metadata=True)
+```
+```
+
+---
+
+### 0.1 Overlapping Chunk Reconstruction & Anti-Hallucination Fusion
+
+In traditional vector retrieval, adjacent chunks from the same document often score in reverse order (e.g., chunk 3 before chunk 2), resulting in disjointed narrative flow, duplicated boundary phrases, and redundant metadata headers. 
+
+`safe_store` can automatically reconstruct contiguous chunks in their true chronological order, eliminate the overlapping boundary stutter, bridge non-contiguous passages with `...`, and prepend a single metadata header per document:
+
+```python
+import safe_store
+
+store = safe_store.SafeStore("docs.db")
+
+# Option A: Built into query() or hybrid_query()
+results = store.query(
+    "how to configure TLS encryption and supervisor daemon",
+    top_k=4,
+    reconstruct_overlapping_chunks=True
+)
+
+for doc in results:
+    print(f"Document: {doc['document_title']} (Peak Relevance: {doc['relevance_score']:.1f}%)")
+    print(f"Fused Chunk Seqs: {doc['chunk_seqs']}")
+    print(f"Content:\n{doc['chunk_text']}\n")
+
+# Option B: Run on any existing result list
+reconstructed = store.reconstruct_overlapping_chunks(raw_results, add_metadata=True)
+```
 db_info = store.get_database_info()
 print(f"Total Docs: {db_info['documents']['total_documents']}")
 for doc in db_info['documents']['list']:
@@ -784,9 +875,9 @@ print("Encrypted lifecycle demo complete.")
 
 `safe_store` includes a powerful **Semantic Datalake Engine** that allows you to visualize your entire knowledge base as an interactive 2D or 3D point cloud. This is essential for understanding data clustering, identifying outliers, and auditing the quality of your embeddings.
 
-### 1. Programmatic Projections (PCA, t-SNE, UMAP)
+### 1. Programmatic Projections (UMAP, PCA, t-SNE)
 
-You can reduce the high-dimensional vectors to 2D or 3D coordinates using PCA (Principal Component Analysis) or t-SNE (t-Distributed Stochastic Neighbor Embedding).
+You can reduce high-dimensional vector embeddings to 2D or 3D coordinates using state-of-the-art **UMAP** (Uniform Manifold Approximation and Projection) with cosine distance, or classic PCA / t-SNE.
 
 ```python
 import safe_store
@@ -794,9 +885,9 @@ import safe_store
 store = safe_store.SafeStore("my_knowledge.db", vectorizer_name="st")
 
 with store:
-    # Get 2D PCA projection as a list of dictionaries
+    # Get 2D state-of-the-art UMAP projection (default)
     points_2d = store.get_datalake_view(
-        method='pca', 
+        method='umap', 
         n_components=2, 
         output_format='dict'
     )
@@ -804,9 +895,9 @@ with store:
     for p in points_2d:
         print(f"Doc: {p['document_title']} | X: {p['x']:.2f}, Y: {p['y']:.2f}")
 
-    # Get 3D t-SNE projection
+    # Get 3D UMAP projection
     points_3d = store.get_datalake_view(
-        method='tsne', 
+        method='umap', 
         n_components=3, 
         output_format='dict'
     )
@@ -817,11 +908,11 @@ with store:
 Projecting 100,000+ vectors can take several seconds. `safe_store` automatically caches the projection results inside the SQLite database. The next time you call `get_datalake_view` with the same parameters, it returns instantly.
 
 ```python
-# First call: Computes PCA and caches results (takes ~2s)
-store.get_datalake_view(method='pca', use_cache=True)
+# First call: Computes UMAP and caches results in SQLite
+store.get_datalake_view(method='umap', use_cache=True)
 
 # Second call: Returns instantly from SQLite cache
-store.get_datalake_view(method='pca', use_cache=True)
+store.get_datalake_view(method='umap', use_cache=True)
 ```
 *Note: Cache is automatically invalidated whenever a document is added or deleted.*
 
@@ -846,7 +937,7 @@ The most powerful feature is the ability to export a **standalone, interactive H
 store.export_datalake_html(
     output_file="my_datalake.html",
     title="Enterprise Knowledge Base Audit",
-    method='tsne',
+    method='umap',
     n_components=3
 )
 ```

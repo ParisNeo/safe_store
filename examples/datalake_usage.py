@@ -1,22 +1,19 @@
 """
 Example demonstrating SafeStore's Semantic Datalake Viewer:
 1. Multi-cluster document ingestion.
-2. 2D and 3D PCA / t-SNE dimensionality reduction.
+2. State-of-the-art 2D and 3D UMAP manifold projections (plus PCA/t-SNE).
 3. Bulk loading with persistent sub-millisecond SQLite caching.
 4. Lazy streaming loading for large vector collections.
 5. Exporting interactive standalone 2D/3D Plotly visualizers.
 """
 
 from pathlib import Path
-import shutil
 import time
 
 from safe_store import SafeStore, LogLevel
 
 
 def cleanup_db(db_file: str):
-    import gc
-    gc.collect()
     for ext in ["", ".lock", "-wal", "-shm"]:
         Path(f"{db_file}{ext}").unlink(missing_ok=True)
 
@@ -26,7 +23,7 @@ def main():
     cleanup_db(db_file)
 
     print("=" * 70)
-    print(" SafeStore Semantic Datalake Explorer Demo (PCA / t-SNE / 3D) ")
+    print(" SafeStore Semantic Datalake Explorer Demo (UMAP / PCA / 3D) ")
     print("=" * 70)
 
     # 1. Initialize SafeStore
@@ -70,29 +67,29 @@ def main():
         )
 
         # ---------------------------------------------------------------------
-        # 2. Bulk 2D PCA Projection with Persistent Caching
+        # 2. State-of-the-Art UMAP Manifold Projection with Persistent Caching
         # ---------------------------------------------------------------------
-        print("\n[Step 2] Computing 2D PCA Projection (Cold Run)...")
+        print("\n[Step 2] Computing State-of-the-Art 2D UMAP Projection (Cold Run)...")
         t0 = time.perf_counter()
-        pca_2d = store.get_datalake_view(method='pca', n_components=2, use_cache=True, output_format='dict')
+        umap_2d = store.get_datalake_view(method='umap', n_components=2, use_cache=True, output_format='dict')
         cold_time = (time.perf_counter() - t0) * 1000.0
-        print(f"  • Extracted {len(pca_2d)} 2D Points in {cold_time:.2f} ms")
+        print(f"  • Extracted {len(umap_2d)} UMAP Points in {cold_time:.2f} ms")
 
-        print("[Step 3] Fetching 2D PCA Projection (Warm Cached Run)...")
+        print("[Step 3] Fetching 2D UMAP Projection (Warm Cached Run)...")
         t1 = time.perf_counter()
-        cached_2d = store.get_datalake_view(method='pca', n_components=2, use_cache=True, output_format='dict')
+        cached_2d = store.get_datalake_view(method='umap', n_components=2, use_cache=True, output_format='dict')
         warm_time = (time.perf_counter() - t1) * 1000.0
         print(f"  • Warm cached fetch in {warm_time:.2f} ms (Instant Cache Hit!)")
 
-        for p in pca_2d[:3]:
+        for p in umap_2d[:3]:
             print(f"    Point [ID:{p['chunk_id']}] -> Doc: {p['document_title']} | X: {p['x']:.3f}, Y: {p['y']:.3f}")
 
         # ---------------------------------------------------------------------
-        # 3. 3D t-SNE Non-Linear Manifold Projection
+        # 3. 3D UMAP Manifold Projection
         # ---------------------------------------------------------------------
-        print("\n[Step 4] Computing 3D t-SNE Projection...")
-        tsne_3d = store.get_datalake_view(method='tsne', n_components=2, output_format='dict')
-        print(f"  • Computed t-SNE coordinates for {len(tsne_3d)} chunks.")
+        print("\n[Step 4] Computing 3D UMAP Projection...")
+        umap_3d = store.get_datalake_view(method='umap', n_components=3, output_format='dict')
+        print(f"  • Computed 3D UMAP coordinates for {len(umap_3d)} chunks.")
 
         # ---------------------------------------------------------------------
         # 4. Lazy Streaming Generator
@@ -105,9 +102,9 @@ def main():
         # ---------------------------------------------------------------------
         # 5. Exporting Standalone Interactive Visualizer HTML
         # ---------------------------------------------------------------------
-        print("\n[Step 6] Exporting Standalone Interactive Datalake Explorer...")
+        print("\n[Step 6] Exporting Standalone Interactive Datalake Explorer (UMAP)...")
         html_file = Path("datalake_explorer.html")
-        store.export_datalake_html(output_file=html_file, title="SafeStore Multi-Domain Datalake", method='pca', n_components=2)
+        store.export_datalake_html(output_file=html_file, title="SafeStore Multi-Domain Datalake", method='umap', n_components=2)
         print(f"  • Interactive web visualizer generated at: {html_file.resolve()}")
 
     store.close()

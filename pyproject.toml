@@ -45,9 +45,10 @@ dependencies = [
     "python-docx>=1.0",
     "beautifulsoup4>=4.11",
     "lxml>=4.9",
-    # Vectorizer Libraries
+    # Vectorizer & Projection Libraries
     "sentence-transformers>=3.0.0",
     "scikit-learn>=1.0",
+    "umap-learn>=0.5.0",
     "openai>=1.0",
     "ollama",
     "cohere",
@@ -56,7 +57,20 @@ dependencies = [
     "bcrypt>=4.0.0"
 ]
 
+[project.scripts]
+safe-store-studio = "safe_store.ui.app:main"
+safe-store-ui = "safe_store.ui.app:main"
+
 [project.optional-dependencies]
+ui = [
+    "nicegui>=1.4.0",
+    "pywebview>=4.0",
+    "plotly>=5.0",
+    "pandas"
+]
+lollms = [
+    "lollms-client>=1.3.0"
+]
 # Extra for development dependencies (testing, linting, building, docs)
 dev = [
     "pytest>=7.0",

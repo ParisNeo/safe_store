@@ -9,7 +9,9 @@ from ascii_colors import ASCIIColors
 from ..core.exceptions import ConfigurationError, EncryptionError
 from ..core import db
 
-ProjectionMethod = Literal['pca', 'tsne', 'umap', 'incremental_pca']
+import pipmaster as pm
+
+ProjectionMethod = Literal['umap', 'pca', 'tsne', 'incremental_pca']
 OutputFormat = Literal['dict', 'json_str', 'csv', 'dataframe']
 
 
@@ -50,7 +52,7 @@ class DatalakeViewer:
     def _compute_projections(
         self,
         vectors: np.ndarray,
-        method: ProjectionMethod = 'pca',
+        method: ProjectionMethod = 'umap',
         n_components: int = 2,
         random_state: int = 42,
         batch_size: int = 500,
@@ -115,24 +117,48 @@ class DatalakeViewer:
         elif method_lower == 'umap':
             try:
                 import umap
-                reducer = umap.UMAP(n_components=n_components, random_state=random_state, **kwargs)
-                return reducer.fit_transform(vectors).astype(np.float32)
             except ImportError:
-                ASCIIColors.warning("UMAP not installed ('umap-learn'). Falling back to t-SNE.")
-                return self._compute_projections(vectors, method='tsne', n_components=n_components, random_state=random_state, **kwargs)
+                try:
+                    pm.ensure_packages(["umap-learn>=0.5.0"])
+                    import umap
+                except Exception:
+                    umap = None
+
+            if umap is not None:
+                # State-of-the-art manifold projection for embeddings
+                n_neighbors = kwargs.get('n_neighbors', 15)
+                n_neighbors = min(n_neighbors, max(2, n_samples - 1))
+                metric = kwargs.get('metric', 'cosine')
+                min_dist = kwargs.get('min_dist', 0.1)
+
+                clean_kwargs = {k: v for k, v in kwargs.items() if k not in ('n_neighbors', 'min_dist', 'metric', 'verbose')}
+                reducer = umap.UMAP(
+                    n_components=n_components,
+                    n_neighbors=n_neighbors,
+                    min_dist=min_dist,
+                    metric=metric,
+                    random_state=random_state,
+                    verbose=False,
+                    **clean_kwargs
+                )
+                return reducer.fit_transform(vectors).astype(np.float32)
+            else:
+                ASCIIColors.warning("UMAP not installed ('umap-learn'). Falling back to PCA.")
+                return self._compute_projections(vectors, method='pca', n_components=n_components, random_state=random_state, **kwargs)
 
         else:
             raise ValueError(f"Unknown projection method: '{method}'. Supported: 'pca', 'tsne', 'umap', 'incremental_pca'.")
 
     def get_datalake_view(
         self,
-        method: ProjectionMethod = 'pca',
+        method: ProjectionMethod = 'umap',
         n_components: int = 2,
         use_cache: bool = True,
         sample_size: Optional[int] = None,
         filter_doc_ids: Optional[List[int]] = None,
         output_format: OutputFormat = 'dict',
-        include_chunk_text: bool = True
+        include_chunk_text: bool = True,
+        **kwargs
     ) -> Union[List[Dict[str, Any]], str, Any]:
         """
         Retrieves a complete datalake point-cloud view with 2D/3D semantic coordinates,
@@ -240,15 +266,30 @@ class DatalakeViewer:
                 chunk_texts.append("")
 
         X = np.array(vectors_list)
-        projections = self._compute_projections(X, method=method, n_components=n_components)
+        projections = self._compute_projections(X, method=method, n_components=n_components, **kwargs)
+
+        # Detect duplicate filenames across documents to disambiguate labels
+        all_basenames = [Path(p).name for p in file_paths]
+        name_counts: Dict[str, int] = {}
+        for b in all_basenames:
+            name_counts[b] = name_counts.get(b, 0) + 1
 
         datalake_points = []
         for i in range(len(chunk_ids)):
+            p_obj = Path(file_paths[i])
+            base_name = p_obj.name
+            if name_counts[base_name] > 1:
+                parent_dir = p_obj.parent.name
+                doc_title = f"{base_name} ({parent_dir}/ #{doc_ids[i]})" if parent_dir else f"{base_name} (#{doc_ids[i]})"
+            else:
+                doc_title = base_name
+
             pt = {
                 "chunk_id": int(chunk_ids[i]),
                 "doc_id": int(doc_ids[i]),
                 "document_path": file_paths[i],
-                "document_title": Path(file_paths[i]).name,
+                "document_title": doc_title,
+                "raw_filename": base_name,
                 "x": float(projections[i, 0]),
                 "y": float(projections[i, 1]),
                 "metadata": doc_metadatas[i]
@@ -362,9 +403,10 @@ class DatalakeViewer:
         self,
         output_file: Union[str, Path] = "datalake_view.html",
         title: str = "SafeStore Semantic Datalake Explorer",
-        method: ProjectionMethod = 'pca',
+        method: ProjectionMethod = 'umap',
         n_components: int = 2,
-        sample_size: Optional[int] = None
+        sample_size: Optional[int] = None,
+        **kwargs
     ) -> Path:
         """
         Generates an interactive standalone HTML datalake visualizer with 2D/3D Plotly canvas,
@@ -374,7 +416,8 @@ class DatalakeViewer:
             method=method,
             n_components=n_components,
             sample_size=sample_size,
-            output_format='dict'
+            output_format='dict',
+            **kwargs
         )
 
         data_json = json.dumps(data)

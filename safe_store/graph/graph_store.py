@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from typing import Optional, Callable, Dict, List, Any, Tuple, TYPE_CHECKING, Set, Union
 
+from typing import Optional, Callable, Dict, List, Any, Tuple, TYPE_CHECKING, Set, Union
 from ascii_colors import ASCIIColors, trace_exception
 from ..core import db
 from ..core.exceptions import (
@@ -44,15 +45,40 @@ class GraphStore:
         self,
         store: "SafeStore",
         llm_executor_callback: Optional[LLMExecutorCallback] = None,
+        lollms_client: Optional[Any] = None,
         ontology: Optional[Union[Dict[str, Any], str]] = None,
         graph_extraction_prompt_template: Optional[str] = None,
         query_parsing_prompt_template: Optional[str] = None,
         entity_fusion_prompt_template: Optional[str] = None,
     ):
         self.store = store
-        self.llm_executor = llm_executor_callback or (lambda p: '{"nodes": [], "relationships": []}')
         self.ontology = ontology
-        self.graph_extraction_prompt_template = graph_extraction_prompt_template or self.DEFAULT_GRAPH_EXTRACTION_PROMPT_TEMPLATE
+
+        # Soft, lazy resolution of lollms_client to avoid circular dependencies
+        self.lollms_client = lollms_client
+        if self.lollms_client is None:
+            self.lollms_client = self._try_resolve_lollms_client()
+
+        self.llm_executor = llm_executor_callback
+        if not self.llm_executor and not self.lollms_client:
+            self.llm_executor = lambda p: '{"nodes": [], "relationships": []}'
+
+    @staticmethod
+    def _try_resolve_lollms_client() -> Optional[Any]:
+        """Softly attempts to resolve an active LollmsClient without creating a hard dependency."""
+        try:
+            from lollms_client.lollms_config_cli_env import get_client_from_env
+            client = get_client_from_env()
+            if client and getattr(client, "llm", None):
+                ASCIIColors.info("GraphStore: Connected to active LOLLMS Client from environment.")
+                return client
+        except (ImportError, Exception):
+            pass
+        return None
+
+    def has_structured_lollms_support(self) -> bool:
+        """Returns True if an active LOLLMS client with structured generation is connected."""
+        return self.lollms_client is not None and hasattr(self.lollms_client, "generate_structured_content")
         self.query_parsing_prompt_template = query_parsing_prompt_template or self.DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE
         self.entity_fusion_prompt_template = entity_fusion_prompt_template or self.DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE
         self._sparql_engine: Optional[SparqlEngine] = None
@@ -169,19 +195,130 @@ class GraphStore:
             entity_label=label
         )
 
-    def _extract_and_insert_graph_for_chunk(self, chunk_id: int, chunk_text: str, guidance: Optional[str] = None) -> Tuple[int, int]:
-        """Extracts graph elements from a single chunk using LLM and saves to DB."""
-        prompt = self._get_graph_extraction_prompt(chunk_text, guidance)
-        raw_response = self.llm_executor(prompt)
-        if not raw_response:
-            ASCIIColors.warning(f"LLM extraction returned empty response for chunk {chunk_id}.")
-            return 0, 0
+    def get_structured_extraction_schema(self) -> Dict[str, Any]:
+        """
+        Builds a W3C-compliant JSON Schema for LOLLMS structured generation,
+        dynamically constrained by the ontology when provided.
+        """
+        node_label_schema: Dict[str, Any] = {
+            "type": "string",
+            "description": "The category or class of the entity (e.g. Person, Concept, Tool, Organization)"
+        }
+        rel_type_schema: Dict[str, Any] = {
+            "type": "string",
+            "description": "Uppercase relationship type (e.g. USES, PART_OF, CREATED_BY, RELATES_TO)"
+        }
 
-        try:
-            parsed = robust_json_parser(raw_response)
-        except Exception as e:
-            ASCIIColors.warning(f"Failed to parse LLM extraction response for chunk {chunk_id}: {e}\nRaw Response preview: {str(raw_response)[:200]}")
-            return 0, 0
+        # Apply enum constraints if an ontology dictionary is present
+        if isinstance(self.ontology, dict):
+            if "nodes" in self.ontology and self.ontology["nodes"]:
+                node_label_schema["enum"] = list(self.ontology["nodes"].keys())
+            if "relationships" in self.ontology and self.ontology["relationships"]:
+                rel_type_schema["enum"] = list(self.ontology["relationships"].keys())
+
+        return {
+            "type": "object",
+            "properties": {
+                "nodes": {
+                    "type": "array",
+                    "description": "List of key entities, tools, concepts, organizations, or individuals.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "label": node_label_schema,
+                            "properties": {
+                                "type": "object",
+                                "description": "Key-value attributes. Must include an identifying_value.",
+                                "properties": {
+                                    "identifying_value": {
+                                        "type": "string",
+                                        "description": "Canonical name or unique identifier of the entity"
+                                    },
+                                    "name": {"type": "string"},
+                                    "description": {"type": "string"}
+                                },
+                                "required": ["identifying_value"]
+                            }
+                        },
+                        "required": ["label", "properties"]
+                    }
+                },
+                "relationships": {
+                    "type": "array",
+                    "description": "Directed connections between extracted nodes.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source_node_label": {"type": "string"},
+                            "source_node_identifying_value": {"type": "string"},
+                            "target_node_label": {"type": "string"},
+                            "target_node_identifying_value": {"type": "string"},
+                            "type": rel_type_schema,
+                            "properties": {
+                                "type": "object",
+                                "description": "Optional attributes describing the relationship."
+                            }
+                        },
+                        "required": [
+                            "source_node_label",
+                            "source_node_identifying_value",
+                            "target_node_label",
+                            "target_node_identifying_value",
+                            "type"
+                        ]
+                    }
+                }
+            },
+            "required": ["nodes", "relationships"]
+        }
+
+    def _extract_and_insert_graph_for_chunk(self, chunk_id: int, chunk_text: str, guidance: Optional[str] = None) -> Tuple[int, int]:
+        """Extracts graph elements from a single chunk using LOLLMS structured generation or callback."""
+        parsed = None
+
+        # Priority 1: LOLLMS Structured Content Generation
+        if self.lollms_client is not None and hasattr(self.lollms_client, "generate_structured_content"):
+            try:
+                schema = self.get_structured_extraction_schema()
+                ontology_context = self._format_ontology_for_prompt()
+                system_prompt = (
+                    "You are an expert knowledge graph extraction engine. "
+                    "Extract all entities (nodes), their attributes, and directed relationships (triplets) "
+                    "from the document package, strictly conforming to the schema.\n\n"
+                    f"Ontology Schema / Constraints:\n{ontology_context}\n\n"
+                    f"Document Content:\n{chunk_text}"
+                )
+                user_prompt = "Create a complete knowledge graph representation of the text as structured triplets."
+                if guidance:
+                    user_prompt += f" Guidance: {guidance}"
+
+                structured = self.lollms_client.generate_structured_content(
+                    system_prompt=system_prompt,
+                    prompt=user_prompt,
+                    schema=schema
+                )
+
+                if isinstance(structured, dict):
+                    parsed = structured
+                elif isinstance(structured, str):
+                    parsed = robust_json_parser(structured)
+            except Exception as e:
+                ASCIIColors.warning(f"LOLLMS structured generation fallback for chunk {chunk_id}: {e}")
+                parsed = None
+
+        # Priority 2: Fallback to llm_executor callback
+        if parsed is None and self.llm_executor:
+            prompt = self._get_graph_extraction_prompt(chunk_text, guidance)
+            raw_response = self.llm_executor(prompt)
+            if not raw_response:
+                ASCIIColors.warning(f"LLM extraction returned empty response for chunk {chunk_id}.")
+                return 0, 0
+
+            try:
+                parsed = robust_json_parser(raw_response)
+            except Exception as e:
+                ASCIIColors.warning(f"Failed to parse LLM extraction response for chunk {chunk_id}: {e}\nRaw Response preview: {str(raw_response)[:200]}")
+                return 0, 0
 
         nodes_data = parsed.get("nodes", []) if isinstance(parsed, dict) else []
         rels_data = parsed.get("relationships", []) if isinstance(parsed, dict) else []

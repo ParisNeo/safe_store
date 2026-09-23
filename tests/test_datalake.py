@@ -77,10 +77,60 @@ class TestDatalakeViewer:
         assert "z" in first
         assert isinstance(first["z"], float)
 
+    def test_umap_2d_projection(self, populated_datalake_store: SafeStore):
+        """Test state-of-the-art UMAP 2D manifold projection."""
+        data = populated_datalake_store.get_datalake_view(method='umap', n_components=2, output_format='dict')
+
+        assert isinstance(data, list)
+        assert len(data) >= 3
+        first = data[0]
+        assert "chunk_id" in first
+        assert "x" in first
+        assert "y" in first
+        assert isinstance(first["x"], float)
+        assert isinstance(first["y"], float)
+
+    def test_umap_3d_projection(self, populated_datalake_store: SafeStore):
+        """Test state-of-the-art UMAP 3D manifold projection."""
+        data = populated_datalake_store.get_datalake_view(method='umap', n_components=3, output_format='dict')
+
+        assert isinstance(data, list)
+        assert len(data) >= 3
+        first = data[0]
+        assert "x" in first
+        assert "y" in first
+        assert "z" in first
+        assert isinstance(first["z"], float)
+
+    def test_umap_2d_projection(self, populated_datalake_store: SafeStore):
+        """Test state-of-the-art UMAP 2D manifold projection."""
+        data = populated_datalake_store.get_datalake_view(method='umap', n_components=2, output_format='dict')
+
+        assert isinstance(data, list)
+        assert len(data) >= 3
+        first = data[0]
+        assert "chunk_id" in first
+        assert "x" in first
+        assert "y" in first
+        assert isinstance(first["x"], float)
+        assert isinstance(first["y"], float)
+
+    def test_umap_3d_projection(self, populated_datalake_store: SafeStore):
+        """Test state-of-the-art UMAP 3D manifold projection."""
+        data = populated_datalake_store.get_datalake_view(method='umap', n_components=3, output_format='dict')
+
+        assert isinstance(data, list)
+        assert len(data) >= 3
+        first = data[0]
+        assert "x" in first
+        assert "y" in first
+        assert "z" in first
+        assert isinstance(first["z"], float)
+
     def test_tsne_2d_projection(self, populated_datalake_store: SafeStore):
         """Test t-SNE 2D clustering projection."""
         data = populated_datalake_store.get_datalake_view(method='tsne', n_components=2, output_format='dict')
-        
+
         assert isinstance(data, list)
         assert len(data) >= 3
         first = data[0]

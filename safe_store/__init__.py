@@ -16,6 +16,13 @@ from .graph.mapping.tabular_mapper import TabularMapper
 from .graph.sparql.engine import SparqlEngine
 from .search.bm25 import BM25Retriever
 from .search.fusion import reciprocal_rank_fusion, weighted_score_fusion
+from .search.reconstruction import (
+    reconstruct_overlapping_chunks,
+    reconstruct_document_chunks,
+    merge_overlapping_texts,
+    strip_metadata_header,
+    format_metadata_header
+)
 from .datalake.viewer import DatalakeViewer
 from .core.exceptions import (
     SafeStoreError,
@@ -56,6 +63,11 @@ __all__ = [
     "BM25Retriever",
     "reciprocal_rank_fusion",
     "weighted_score_fusion",
+    "reconstruct_overlapping_chunks",
+    "reconstruct_document_chunks",
+    "merge_overlapping_texts",
+    "strip_metadata_header",
+    "format_metadata_header",
     "DatalakeViewer",
     "ASCIIColors",
     "LogLevel",

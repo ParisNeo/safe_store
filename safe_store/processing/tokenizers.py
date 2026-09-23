@@ -31,16 +31,19 @@ class HuggingFaceTokenizerWrapper(TokenizerWrapper):
         self.tokenizer = tokenizer
 
     def encode(self, text: str) -> List[int]:
-        return self.tokenizer.encode(text)
+        try:
+            return self.tokenizer.encode(text, truncation=False)
+        except TypeError:
+            return self.tokenizer.encode(text)
 
     def decode(self, tokens: List[int]) -> str:
         # Hugging Face tokenizers use skip_special_tokens
         return self.tokenizer.decode(tokens, skip_special_tokens=True)
 
     def encode_with_offsets(self, text: str) -> tuple:
-        """Encodes text and returns token IDs along with exact character offset spans."""
+        """Encodes text and returns token IDs along with exact character offset spans without length warnings."""
         try:
-            encoded = self.tokenizer(text, return_offsets_mapping=True, add_special_tokens=False)
+            encoded = self.tokenizer(text, return_offsets_mapping=True, add_special_tokens=False, truncation=False)
             tokens = encoded.get("input_ids", [])
             offsets = encoded.get("offset_mapping", [])
             if tokens and offsets and len(tokens) == len(offsets):

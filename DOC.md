@@ -9,6 +9,7 @@
 2. [Installation & Dependencies](#2-installation--dependencies)
 3. [Quick Start](#3-quick-start)
 4. [Database Diagnostics & Inspection (`store.info()`)](#4-database-diagnostics--inspection)
+5. [SafeStore Studio (Desktop & Web GUI)](#5-safestore-studio-desktop--web-gui)
 5. [Vectorization Backends](#5-vectorization-backends)
 6. [The 8 RAG Chunking Strategies](#6-the-8-rag-chunking-strategies)
 7. [Search & Retrieval Modes](#7-search--retrieval-modes)
@@ -17,6 +18,7 @@
    * [7.3. Tri-Modal Hybrid Retrieval (`hybrid_query`)](#73-tri-modal-hybrid-retrieval)
    * [7.4. Universal 0–100 Relevance Grading & Thresholding](#74-universal-0100-relevance-grading--thresholding)
    * [7.5. Full Document & Context Window Retrieval](#75-full-document--context-window-retrieval)
+   * [7.6. Overlapping Chunk Reconstruction & Chronological Fusion](#76-overlapping-chunk-reconstruction--chronological-fusion)
 8. [Knowledge Graph & W3C SPARQL 1.1 Engine](#8-knowledge-graph--w3c-sparql-11-engine)
    * [8.1. Automatic Graph Extraction & Dynamic Extraction Prompt](#81-automatic-graph-extraction)
    * [8.2. W3C SPARQL 1.1 Query Engine (`query_sparql`)](#82-w3c-sparql-11-query-engine)
@@ -105,6 +107,26 @@ with store:
 ---
 
 ## 4. Database Diagnostics & Inspection
+```python
+from safe_store import SafeStore
+
+store = SafeStore("knowledge.db")
+store.info()
+```
+
+---
+
+## 5. SafeStore Studio (Desktop & Web GUI)
+
+Launch the interactive studio from the command line:
+
+```bash
+# Native desktop window (powered by pywebview and NiceGUI)
+safe-store-studio database.db
+
+# Browser mode
+safe-store-studio database.db --browser --port 8080
+```
 
 Inspect any store instance or `.db` file in one call with `store.info()` or `store.get_database_info()`:
 
@@ -190,6 +212,36 @@ windows = store.query_document_content_window("leader election", top_k_hits=1, w
 
 # Paginate through document chunks
 page_view = store.get_document_content_paginated("doc_id_or_path", page=1, page_size=5)
+```
+
+### 7.6. Overlapping Chunk Reconstruction & Chronological Fusion
+Eliminate chunk fragmentation and duplicate text at boundary seams:
+```python
+# 1. Enable directly in dense or hybrid queries
+reconstructed = store.query(
+    "supervisor daemon telemetry metrics",
+    top_k=5,
+    reconstruct_overlapping_chunks=True, # Seamless chronological fusion
+    add_metadata=True                   # Single unified metadata header per doc
+)
+
+# 2. Or post-process any query result set
+fused = store.reconstruct_overlapping_chunks(raw_results, add_metadata=True)
+```
+
+### 7.6. Overlapping Chunk Reconstruction & Chronological Fusion
+Eliminate chunk fragmentation and duplicate text at boundary seams:
+```python
+# 1. Enable directly in dense or hybrid queries
+reconstructed = store.query(
+    "supervisor daemon telemetry metrics",
+    top_k=5,
+    reconstruct_overlapping_chunks=True, # Seamless chronological fusion
+    add_metadata=True                   # Single unified metadata header per doc
+)
+
+# 2. Or post-process any query result set
+fused = store.reconstruct_overlapping_chunks(raw_results, add_metadata=True)
 ```
 
 ---
@@ -307,13 +359,16 @@ result = graph.dispatch_tool("recall_associative_memory", {"concept": "Alice Smi
 
 ## 10. Semantic Datalake & Point Cloud Engine
 
-Visualize multi-dimensional embeddings as 2D/3D point clouds with persistent SQLite caching:
+Visualize multi-dimensional embeddings as 2D/3D point clouds using state-of-the-art **UMAP** (Uniform Manifold Approximation and Projection) with native cosine distance metric and persistent SQLite caching:
 ```python
-# 2D PCA point cloud
-points = store.get_datalake_view(method='pca', n_components=2, use_cache=True)
+# 2D UMAP point cloud (State of the Art)
+points = store.get_datalake_view(method='umap', n_components=2, use_cache=True)
+
+# 3D UMAP point cloud
+points_3d = store.get_datalake_view(method='umap', n_components=3, use_cache=True)
 
 # Export standalone interactive HTML visualizer
-store.export_datalake_html(output_file="datalake.html", method='pca', n_components=2)
+store.export_datalake_html(output_file="datalake.html", method='umap', n_components=2)
 ```
 
 ---
@@ -346,7 +401,8 @@ restored = safe_store.SafeStore.import_database("backup.json", "restored.db", de
 | :--- | :--- |
 | **`store.info()`** / **`store.get_database_info()`** | Returns/prints comprehensive diagnostics: vectorizer info, per-document chunk counts, ontology schemas, and graph topology counts. |
 | **`SafeStore(db_path, ...)`** | Main SQLite vector, lexical, and hybrid database handle. |
-| `store.query(...)` | Dense vector similarity search with 0–100 relevance score. |
+| `store.query(...)` | Dense vector similarity search with 0–100 relevance score (supports `reconstruct_overlapping_chunks=True`). |
+| `store.reconstruct_overlapping_chunks(...)` | Reconstructs and chronologically fuses overlapping and non-contiguous chunks with single metadata header. |
 | `store.hybrid_query(...)` | Tri-Modal Reciprocal Rank Fusion (Dense + BM25). |
 | `store.query_full_documents(...)` | Full document retrieval aggregated from chunk hits. |
 | `store.query_document_content_window(...)` | Retrieves matching chunks with surrounding context window. |
