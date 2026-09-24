@@ -5,7 +5,7 @@ import asyncio
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Tuple
 import json
-
+import threading
 import pipmaster as pm
 
 # Ensure UI dependencies
@@ -122,6 +122,9 @@ def discover_local_stores() -> List[Dict[str, Any]]:
 
 # Inject vis-network into HTML head for interactive knowledge graph rendering
 VIS_NETWORK_HEADER = """
+<style>
+.vis-tooltip { display: none !important; }
+</style>
 <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
 <script>
 window.safeStoreNetwork = null;
@@ -756,53 +759,101 @@ async def render_studio_page(client: Client, initial_path: Optional[str] = None)
                                 placeholder='e.g. Focus on software architecture, dependencies, modules, APIs, and team owners.'
                             ).classes('w-full text-xs font-mono').props('dark standout rows=3')
 
-                            build_status_label = ui.label('').classes('text-xs text-teal-300 font-mono')
-                            build_progress_bar = ui.linear_progress(value=0.0).classes('w-full')
-                            build_progress_bar.set_visibility(False)
+                            resume_checkbox = ui.checkbox('Resume unprocessed documents only', value=True).classes('text-xs text-teal-300 font-mono')
+
+                            with ui.column().classes('w-full gap-1'):
+                                with ui.row().classes('w-full justify-between items-center text-xs text-slate-300 font-mono'):
+                                    build_status_label = ui.label('Ready').classes('text-xs text-teal-300 font-mono truncate flex-1')
+                                    build_percent_label = ui.label('0.0%').classes('text-xs font-bold text-teal-400 font-mono ml-2')
+                                build_progress_bar = ui.linear_progress(value=0.0, show_value=False).props('rounded size=14px color=teal track-color=slate-700').classes('w-full')
+
+                            active_extraction_stop = threading.Event()
+
+                            def request_stop_extraction():
+                                active_extraction_stop.set()
+                                build_status_label.text = "Stopping... finishing current document and saving progress."
+                                ui.notify("Stopping after current step completes...", color='warning')
+                                stop_btn.props('disabled')
 
                             async def run_fast_graph_build():
                                 if not state.graph_store:
                                     ui.notify("GraphStore not initialized on this store.", color='negative')
                                     return
 
+                                active_extraction_stop.clear()
                                 chosen_mode = mode_select.value
                                 chosen_batch = int(batch_size_slider.value)
                                 chosen_guidance = guidance_input.value.strip() or None
+                                should_resume = bool(resume_checkbox.value)
 
-                                build_progress_bar.set_visibility(True)
                                 build_progress_bar.value = 0.0
+                                build_percent_label.text = "0.0%"
                                 build_status_label.text = "Initializing extraction pipeline..."
-                                start_btn.props('disabled')
+
+                                start_btn.set_visibility(False)
+                                stop_btn.set_visibility(True)
+                                stop_btn.props(remove='disabled')
+                                close_btn.props('disabled')
 
                                 def _ui_progress(fraction, message):
-                                    build_progress_bar.value = fraction
-                                    build_status_label.text = message
+                                    with client:
+                                        clamped_f = max(0.0, min(1.0, float(fraction)))
+                                        build_progress_bar.value = clamped_f
+                                        build_percent_label.text = f"{clamped_f * 100.0:.1f}%"
+                                        build_status_label.text = message
 
                                 try:
-                                    ui.notify(f"Extracting graph using '{chosen_mode.upper()}' mode...", color='info')
+                                    action_name = "Resuming" if should_resume else "Starting fresh"
+                                    ui.notify(f"{action_name} graph extraction using '{chosen_mode.upper()}' mode...", color='info')
+
                                     stats = await asyncio.to_thread(
                                         state.graph_store.build_graph_for_all_documents,
                                         mode=chosen_mode,
                                         chunks_per_batch=chosen_batch,
                                         guidance=chosen_guidance,
-                                        progress_callback=_ui_progress
+                                        progress_callback=_ui_progress,
+                                        stop_event=active_extraction_stop,
+                                        resume=should_resume
                                     )
-                                    ui.notify(
-                                        f"Graph Ready: {stats['nodes_created']} nodes, {stats['relationships_created']} edges created!",
-                                        color='positive',
-                                        duration=5000
-                                    )
-                                    build_graph_dialog.close()
+
+                                    if stats.get("stopped"):
+                                        ui.notify(
+                                            f"Extraction paused. Saved: {stats['nodes_created']} nodes, {stats['relationships_created']} edges. You can resume anytime!",
+                                            color='warning',
+                                            duration=6000
+                                        )
+                                        build_status_label.text = f"Paused ({stats['nodes_created']} nodes, {stats['relationships_created']} edges saved). Ready to resume."
+                                        start_btn.text = "Resume Fast Extraction"
+                                    elif stats.get("all_completed"):
+                                        ui.notify("All documents in this store are already extracted into the knowledge graph!", color='positive', duration=5000)
+                                        build_status_label.text = "All documents already extracted."
+                                        build_progress_bar.value = 1.0
+                                        build_percent_label.text = "100.0%"
+                                    else:
+                                        ui.notify(
+                                            f"Graph Ready: {stats['nodes_created']} nodes, {stats['relationships_created']} edges created!",
+                                            color='positive',
+                                            duration=5000
+                                        )
+                                        build_status_label.text = f"Completed ({stats['nodes_created']} nodes, {stats['relationships_created']} edges created)."
+                                        build_progress_bar.value = 1.0
+                                        build_percent_label.text = "100.0%"
+                                        build_graph_dialog.close()
+
                                     await refresh_graph_view()
                                 except Exception as e:
                                     ui.notify(f"Graph extraction error: {e}", color='negative', duration=7000)
                                     build_status_label.text = f"Error: {e}"
                                 finally:
+                                    start_btn.set_visibility(True)
                                     start_btn.props(remove='disabled')
-                                    build_progress_bar.set_visibility(False)
+                                    stop_btn.set_visibility(False)
+                                    close_btn.props(remove='disabled')
 
                             with ui.row().classes('w-full justify-end gap-2 mt-4'):
-                                ui.button('Cancel', on_click=build_graph_dialog.close).props('flat text-color=grey')
+                                close_btn = ui.button('Cancel', on_click=build_graph_dialog.close).props('flat text-color=grey')
+                                stop_btn = ui.button('Stop Extraction', icon='stop', on_click=request_stop_extraction).props('color=negative')
+                                stop_btn.set_visibility(False)
                                 start_btn = ui.button('Start Fast Extraction', icon='bolt', on_click=run_fast_graph_build).props('color=teal')
 
                         ui.button('Add Node', icon='add', on_click=add_node_dialog.open).props('outline color=teal size=sm')
@@ -840,17 +891,18 @@ async def render_studio_page(client: Client, initial_path: Optional[str] = None)
                             node_search_input = ui.input(placeholder='Search node name...').classes('w-full text-xs').props('dark dense standout')
 
                             async def search_and_focus_node():
-                                val = node_search_input.value.strip().lower()
-                                if not val or not state.graph_store: return
-                                nodes = await asyncio.to_thread(state.graph_store.get_all_nodes, 1000)
-                                for n in nodes:
-                                    candidate_name = str(n['properties'].get('name') or n['properties'].get('identifying_value') or '').lower()
-                                    if val in candidate_name or val in n['label'].lower():
-                                        await ui.run_javascript(f"window.focusGraphNode({n['node_id']})")
-                                        show_node_inspector(n['node_id'])
-                                        ui.notify(f"Focused on [{n['label']}] {candidate_name}", color='info')
-                                        return
-                                ui.notify(f"No node matching '{val}' found.", color='warning')
+                                with client:
+                                    val = node_search_input.value.strip().lower()
+                                    if not val or not state.graph_store: return
+                                    nodes = await asyncio.to_thread(state.graph_store.get_all_nodes, 1000)
+                                    for n in nodes:
+                                        candidate_name = str(n['properties'].get('name') or n['properties'].get('identifying_value') or '').lower()
+                                        if val in candidate_name or val in n['label'].lower():
+                                            await client.run_javascript(f"window.focusGraphNode({n['node_id']})")
+                                            show_node_inspector(n['node_id'])
+                                            ui.notify(f"Focused on [{n['label']}] {candidate_name}", color='info')
+                                            return
+                                    ui.notify(f"No node matching '{val}' found.", color='warning')
 
                             node_search_input.on('keydown.enter', search_and_focus_node)
                             ui.button('Find & Focus', icon='search', on_click=search_and_focus_node).props('color=teal size=xs class="w-full"')
@@ -873,27 +925,125 @@ async def render_studio_page(client: Client, initial_path: Optional[str] = None)
                                 ui.label('Interactive Physics Canvas').classes('text-xs font-bold text-slate-200 uppercase tracking-wider')
 
                             with ui.row().classes('items-center gap-2 pointer-events-auto bg-slate-800/90 backdrop-blur px-2 py-1 rounded-lg border border-slate-700 shadow-lg'):
-                                ui.button(icon='filter_center_focus', on_click=lambda: ui.run_javascript('window.safeStoreNetwork && window.safeStoreNetwork.fit({animation: true})')).props('flat dense size=sm title="Fit Entire Network"')
+                                ui.button(icon='filter_center_focus', on_click=lambda: client.run_javascript('window.safeStoreNetwork && window.safeStoreNetwork.fit({animation: true})')).props('flat dense size=sm title="Fit Entire Network"')
                                 physics_toggle = ui.switch('Physics', value=True).props('dark dense').classes('text-xs text-slate-300')
-                                physics_toggle.on('update:model-value', lambda e: ui.run_javascript(f'window.toggleGraphPhysics({str(e.args).lower()})'))
-                                ui.button('Reset Colors', icon='restart_alt', on_click=lambda: ui.run_javascript('window.resetGraphHighlight()')).props('flat dense text-color=teal size=sm title="Reset Selection"')
+                                physics_toggle.on('update:model-value', lambda e: client.run_javascript(f'window.toggleGraphPhysics({str(e.args).lower()})'))
+                                ui.button('Reset Colors', icon='restart_alt', on_click=lambda: client.run_javascript('window.resetGraphHighlight()')).props('flat dense text-color=teal size=sm title="Reset Selection"')
 
                         # The HTML div where vis-network mounts with explicit height
                         graph_canvas_div = ui.element('div').classes('w-full flex-1').style('width: 100%; height: 100%; min-height: 560px;').props('id=graph-network-container')
+
+                        # Clipboard helper
+                        async def copy_to_clipboard(text: str, success_msg: str = "Copied to clipboard!"):
+                            with client:
+                                js_cmd = f"navigator.clipboard.writeText({json.dumps(text)});"
+                                await client.run_javascript(js_cmd)
+                                ui.notify(success_msg, color='positive', icon='content_paste')
+
+                        # Real Interactive Information Panel (Floating HUD on canvas)
+                        hud_info_card = ui.card().classes(
+                            'absolute bottom-4 left-4 z-30 bg-slate-850/95 backdrop-blur-md border border-teal-500/40 '
+                            'rounded-xl p-4 shadow-2xl max-w-sm w-96 space-y-3 transition-all duration-300'
+                        ).style('background-color: rgba(15, 23, 42, 0.95);')
+                        hud_info_card.set_visibility(False)
+
+                        def show_hud_node_info(node_id: int):
+                            if not state.graph_store: return
+                            node = state.graph_store.get_node_details(node_id)
+                            if not node: return
+
+                            hud_info_card.clear()
+                            hud_info_card.set_visibility(True)
+
+                            name = str(node['properties'].get('name') or node['properties'].get('identifying_value') or node['properties'].get('title') or node['label'])
+                            clean_props = {k: v for k, v in node['properties'].items() if k != "other_identifiers"}
+                            json_str = json.dumps(clean_props, indent=2, ensure_ascii=False)
+
+                            with hud_info_card:
+                                # Header Bar
+                                with ui.row().classes('w-full justify-between items-center'):
+                                    with ui.row().classes('items-center gap-1.5'):
+                                        ui.badge(node['label'], color='teal').classes('font-bold text-xs uppercase tracking-wider')
+                                        ui.badge(f"ID #{node['node_id']}", color='slate-700').classes('text-xs font-mono text-slate-300')
+                                    ui.button(icon='close', on_click=lambda: hud_info_card.set_visibility(False)).props('flat dense round size=xs text-color=grey')
+
+                                # Entity Title & Quick Copy
+                                with ui.row().classes('w-full justify-between items-start bg-slate-900/90 p-2.5 rounded-lg border border-slate-700/70'):
+                                    with ui.column().classes('flex-1 pr-2 gap-0'):
+                                        ui.label('Entity Name').classes('text-[10px] text-teal-400 font-mono uppercase tracking-wider')
+                                        ui.label(name).classes('text-sm font-bold text-slate-100 break-words')
+                                    ui.button(icon='content_copy', on_click=lambda n=name: asyncio.create_task(copy_to_clipboard(n, f"Copied '{n}'"))).props('flat dense size=sm text-color=teal title="Copy Name"')
+
+                                # Properties View
+                                with ui.column().classes('w-full gap-1'):
+                                    ui.label('Attributes & Properties').classes('text-[10px] text-slate-400 font-mono uppercase tracking-wider')
+                                    with ui.scroll_area().classes('w-full max-h-40 bg-slate-900/90 p-2 rounded-lg border border-slate-700/70 font-mono text-xs'):
+                                        for k, v in clean_props.items():
+                                            if k not in ("name", "identifying_value"):
+                                                with ui.row().classes('w-full justify-between items-start py-0.5 border-b border-slate-800/80'):
+                                                    ui.label(f"{k}:").classes('text-teal-300 font-semibold text-[11px]')
+                                                    ui.label(str(v)).classes('text-slate-300 text-[11px] break-all flex-1 text-right ml-2')
+
+                                # Bottom Action Toolbar
+                                with ui.row().classes('w-full justify-between items-center pt-1 border-t border-slate-700/60'):
+                                    ui.button('Copy JSON', icon='code', on_click=lambda j=json_str: asyncio.create_task(copy_to_clipboard(j, "Copied node JSON!"))).props('outline color=teal size=xs')
+                                    ui.button('Focus', icon='filter_center_focus', on_click=lambda nid=node_id: client.run_javascript(f"window.focusGraphNode({nid})")).props('outline color=cyan size=xs')
+                                    
+                                    def _inspect_more(nid=node_id):
+                                        show_node_inspector(nid)
+                                        right_tabs.value = rtab_inspector
+
+                                    ui.button('Inspect Evidence', icon='search', on_click=_inspect_more).props('color=teal size=xs')
+
+                        def show_hud_edge_info(edge_id: int):
+                            if not state.graph_store: return
+                            rel = state.graph_store.get_relationship(edge_id)
+                            if not rel: return
+
+                            src_n = state.graph_store.get_node_details(rel['source_node_id'])
+                            tgt_n = state.graph_store.get_node_details(rel['target_node_id'])
+
+                            src_name = src_n['properties'].get('name') or src_n['label'] if src_n else f"#{rel['source_node_id']}"
+                            tgt_name = tgt_n['properties'].get('name') or tgt_n['label'] if tgt_n else f"#{rel['target_node_id']}"
+                            json_str = json.dumps(rel.get('properties', {}), indent=2)
+
+                            hud_info_card.clear()
+                            hud_info_card.set_visibility(True)
+
+                            with hud_info_card:
+                                with ui.row().classes('w-full justify-between items-center'):
+                                    ui.badge(rel['type'], color='cyan').classes('font-bold text-xs')
+                                    ui.badge(f"Edge #{rel['relationship_id']}", color='slate-700').classes('text-xs font-mono')
+                                    ui.button(icon='close', on_click=lambda: hud_info_card.set_visibility(False)).props('flat dense round size=xs text-color=grey')
+
+                                with ui.column().classes('w-full bg-slate-900/90 p-2.5 rounded-lg border border-slate-700 font-mono text-xs gap-1'):
+                                    ui.label(f"From: {src_name}").classes('text-slate-200 font-bold')
+                                    ui.label(f"  ──[{rel['type']}]──►").classes('text-cyan-400')
+                                    ui.label(f"To:   {tgt_name}").classes('text-slate-200 font-bold')
+
+                                with ui.row().classes('w-full justify-end pt-1'):
+                                    ui.button('Copy JSON', icon='code', on_click=lambda j=json_str: asyncio.create_task(copy_to_clipboard(j, "Copied edge JSON!"))).props('outline color=cyan size=xs')
 
                         # Attach custom DOM event handlers
                         def on_canvas_node_clicked(e):
                             nid = e.args.get('node_id')
                             if nid is not None:
+                                show_hud_node_info(int(nid))
                                 show_node_inspector(int(nid))
 
                         def on_canvas_edge_clicked(e):
                             rid = e.args.get('edge_id')
                             if rid is not None:
+                                show_hud_edge_info(int(rid))
                                 show_edge_inspector(int(rid))
+
+                        def on_canvas_bg_clicked(e):
+                            hud_info_card.set_visibility(False)
 
                         graph_canvas_div.on('safestore_node_clicked', on_canvas_node_clicked)
                         graph_canvas_div.on('safestore_edge_clicked', on_canvas_edge_clicked)
+                        graph_canvas_div.on('safestore_background_clicked', on_canvas_bg_clicked)
+
 
                     # ---------------------------------------------------------
                     # PANEL 3: RIGHT SIDEBAR (SPARQL Runner & Inspector)
@@ -1021,7 +1171,7 @@ SELECT ?source ?relation ?target WHERE {
 
                                             # Visually highlight matching nodes on canvas!
                                             if matched_node_ids:
-                                                await ui.run_javascript(f"window.highlightGraphNodes({json.dumps(list(matched_node_ids))})")
+                                                await client.run_javascript(f"window.highlightGraphNodes({json.dumps(list(matched_node_ids))})")
 
                                             with sparql_results_drawer:
                                                 with ui.row().classes('w-full justify-between items-center mb-1'):
@@ -1055,7 +1205,7 @@ SELECT ?source ?relation ?target WHERE {
 
                                 with ui.row().classes('w-full justify-between items-center'):
                                     ui.button('Execute & Highlight', icon='play_arrow', on_click=execute_sparql_and_highlight).props('color=teal size=sm class="flex-1"')
-                                    ui.button(icon='restart_alt', on_click=lambda: ui.run_javascript('window.resetGraphHighlight()')).props('outline text-color=grey size=sm title="Reset Highlight"')
+                                    ui.button(icon='restart_alt', on_click=lambda: client.run_javascript('window.resetGraphHighlight()')).props('outline text-color=grey size=sm title="Reset Highlight"')
 
                                 sparql_results_drawer = ui.column().classes('w-full max-h-48 overflow-y-auto bg-slate-900/80 p-2 rounded-lg border border-slate-700/60')
 
@@ -1107,7 +1257,9 @@ SELECT ?source ?relation ?target WHERE {
                             ui.label(f'Grounded Evidence ({len(chunk_details)} chunks):').classes('text-xs text-slate-400 font-bold mt-2')
                             with ui.scroll_area().classes('w-full max-h-36 bg-slate-900/80 p-2 rounded border border-slate-700/60'):
                                 for c in chunk_details[:3]:
-                                    ui.label(f"[Chunk #{c['chunk_id']} from {Path(c['file_path']).name}]:").classes('text-teal-400 font-bold text-[10px]')
+                                    with ui.row().classes('w-full justify-between items-center'):
+                                        ui.label(f"[Chunk #{c['chunk_id']} from {Path(c['file_path']).name}]:").classes('text-teal-400 font-bold text-[10px]')
+                                        ui.button(icon='content_copy', on_click=lambda t=c['chunk_text']: asyncio.create_task(copy_to_clipboard(t, "Copied chunk text!"))).props('flat dense size=xs text-color=teal')
                                     ui.label(c['chunk_text'][:180] + '...').classes('text-slate-300 text-[11px] mb-2')
 
                         async def delete_inspected_node():
@@ -1414,65 +1566,64 @@ SELECT ?source ?relation ?target WHERE {
     async def refresh_graph_view():
         if not state.graph_store: return
 
-        info = await asyncio.to_thread(state.graph_store.get_graph_info)
-        graph_summary_badge.text = f"Nodes: {info['total_nodes']} | Edges: {info['total_relationships']} | Provenance: {info['total_provenance_links']}"
-        graph_summary_badge.props('color=teal')
+        with client:
+            info = await asyncio.to_thread(state.graph_store.get_graph_info)
+            graph_summary_badge.text = f"Nodes: {info['total_nodes']} | Edges: {info['total_relationships']} | Provenance: {info['total_provenance_links']}"
+            graph_summary_badge.props('color=teal')
 
-        # Update left sidebar metrics
-        left_metrics_box.clear()
-        with left_metrics_box:
-            ui.label(f"• Total Nodes : {info['total_nodes']}")
-            ui.label(f"• Total Edges : {info['total_relationships']}")
-            ui.label(f"• Chunk Links : {info['total_provenance_links']}")
-            ui.label(f"• Class Count : {len(info['nodes_by_label'])}")
+            # Update left sidebar metrics
+            left_metrics_box.clear()
+            with left_metrics_box:
+                ui.label(f"• Total Nodes : {info['total_nodes']}")
+                ui.label(f"• Total Edges : {info['total_relationships']}")
+                ui.label(f"• Chunk Links : {info['total_provenance_links']}")
+                ui.label(f"• Class Count : {len(info['nodes_by_label'])}")
 
-        # Fetch nodes and edges for visual rendering
-        nodes_raw = await asyncio.to_thread(state.graph_store.get_all_nodes, 1000)
-        edges_raw = await asyncio.to_thread(state.graph_store.get_all_relationships, 2000)
+            # Fetch nodes and edges for visual rendering
+            nodes_raw = await asyncio.to_thread(state.graph_store.get_all_nodes, 1000)
+            edges_raw = await asyncio.to_thread(state.graph_store.get_all_relationships, 2000)
 
-        # Palette for label coloring
-        palette = ['#14b8a6', '#06b6d4', '#f59e0b', '#ec4899', '#8b5cf6', '#3b82f6', '#10b981', '#f97316', '#6366f1', '#e11d48']
-        label_colors = {}
-        for idx, lbl in enumerate(sorted(info['nodes_by_label'].keys())):
-            label_colors[lbl] = palette[idx % len(palette)]
+            # Palette for label coloring
+            palette = ['#14b8a6', '#06b6d4', '#f59e0b', '#ec4899', '#8b5cf6', '#3b82f6', '#10b981', '#f97316', '#6366f1', '#e11d48']
+            label_colors = {}
+            for idx, lbl in enumerate(sorted(info['nodes_by_label'].keys())):
+                label_colors[lbl] = palette[idx % len(palette)]
 
-        # Render category chips in left sidebar
-        node_types_filter_container.clear()
-        with node_types_filter_container:
-            for lbl, count in sorted(info['nodes_by_label'].items(), key=lambda x: x[1], reverse=True):
-                col = label_colors.get(lbl, '#14b8a6')
-                with ui.row().classes('w-full justify-between items-center py-0.5 cursor-pointer hover:bg-slate-700/50 px-1 rounded'):
-                    with ui.row().classes('items-center gap-1.5'):
-                        ui.element('span').classes('w-2.5 h-2.5 rounded-full').style(f'background-color: {col}')
-                        ui.label(lbl).classes('text-slate-200 font-bold')
-                    ui.label(str(count)).classes('text-slate-400')
+            # Render category chips in left sidebar
+            node_types_filter_container.clear()
+            with node_types_filter_container:
+                for lbl, count in sorted(info['nodes_by_label'].items(), key=lambda x: x[1], reverse=True):
+                    col = label_colors.get(lbl, '#14b8a6')
+                    with ui.row().classes('w-full justify-between items-center py-0.5 cursor-pointer hover:bg-slate-700/50 px-1 rounded'):
+                        with ui.row().classes('items-center gap-1.5'):
+                            ui.element('span').classes('w-2.5 h-2.5 rounded-full').style(f'background-color: {col}')
+                            ui.label(lbl).classes('text-slate-200 font-bold')
+                        ui.label(str(count)).classes('text-slate-400')
 
-        # Prepare vis-network payload
-        vis_nodes = []
-        for n in nodes_raw:
-            lbl = n['label']
-            name = str(n['properties'].get('name') or n['properties'].get('identifying_value') or n['properties'].get('title') or lbl)
-            color = label_colors.get(lbl, '#14b8a6')
-            vis_nodes.append({
-                'id': n['node_id'],
-                'label': name[:25] + ('...' if len(name) > 25 else ''),
-                'title': f"<b>[{lbl}] {name}</b><br>ID #{n['node_id']}<br>" + "<br>".join(f"{k}: {v}" for k, v in list(n['properties'].items())[:5]),
-                'color': { 'background': color, 'border': '#0f172a', 'highlight': { 'background': '#ffffff', 'border': color } },
-                'category': lbl
-            })
+            # Prepare vis-network payload
+            vis_nodes = []
+            for n in nodes_raw:
+                lbl = n['label']
+                name = str(n['properties'].get('name') or n['properties'].get('identifying_value') or n['properties'].get('title') or lbl)
+                color = label_colors.get(lbl, '#14b8a6')
+                vis_nodes.append({
+                    'id': n['node_id'],
+                    'label': name[:25] + ('...' if len(name) > 25 else ''),
+                    'color': { 'background': color, 'border': '#0f172a', 'highlight': { 'background': '#ffffff', 'border': color } },
+                    'category': lbl
+                })
 
-        vis_edges = []
-        for r in edges_raw:
-            vis_edges.append({
-                'id': r['relationship_id'],
-                'from': r['source_node_id'],
-                'to': r['target_node_id'],
-                'label': r['type'],
-                'title': f"<b>[{r['type']}]</b> (ID #{r['relationship_id']})"
-            })
+            vis_edges = []
+            for r in edges_raw:
+                vis_edges.append({
+                    'id': r['relationship_id'],
+                    'from': r['source_node_id'],
+                    'to': r['target_node_id'],
+                    'label': r['type']
+                })
 
-        # Mount vis-network on canvas
-        await ui.run_javascript(f"window.initSafeStoreGraph('graph-network-container', {json.dumps(vis_nodes)}, {json.dumps(vis_edges)})")
+            # Mount vis-network on canvas directly via client handle (zero slot_stack dependency)
+            await client.run_javascript(f"window.initSafeStoreGraph('graph-network-container', {json.dumps(vis_nodes)}, {json.dumps(vis_edges)})")
 
     async def execute_search():
         raw_val = query_input.value
@@ -1600,7 +1751,8 @@ SELECT ?source ?relation ?target WHERE {
         if target == tab_graph or target_name == getattr(tab_graph, 'name', 'tab_graph'):
             await asyncio.sleep(0.05)
             await refresh_graph_view()
-            await ui.run_javascript('setTimeout(() => { if (window.safeStoreNetwork) { window.safeStoreNetwork.redraw(); window.safeStoreNetwork.fit({animation: true}); } }, 200);')
+            await client.run_javascript('setTimeout(() => { if (window.safeStoreNetwork) { window.safeStoreNetwork.redraw(); window.safeStoreNetwork.fit({animation: true}); } }, 200);')
+
         elif target == tab_datalake or target_name == getattr(tab_datalake, 'name', 'tab_datalake'):
             await refresh_datalake_view()
         elif target == tab_diagnostics or target_name == getattr(tab_diagnostics, 'name', 'tab_diagnostics'):

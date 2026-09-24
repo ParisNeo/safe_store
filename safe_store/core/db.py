@@ -253,8 +253,7 @@ def add_vector_record(conn: sqlite3.Connection, chunk_id: int, vector: np.ndarra
 # --- Metadata Functions ---
 def set_store_metadata(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.execute("INSERT OR REPLACE INTO store_metadata (key, value) VALUES (?, ?)", (key, value))
-    if not conn.in_transaction:
-        conn.commit()
+    conn.commit()
 
 def get_store_metadata(conn: sqlite3.Connection, key: str) -> Optional[str]:
     cursor = conn.execute("SELECT value FROM store_metadata WHERE key = ?", (key,))
@@ -539,8 +538,7 @@ def clear_projection_cache(conn: sqlite3.Connection) -> int:
     """Invalidates all cached datalake projections in store_metadata."""
     try:
         cursor = conn.execute("DELETE FROM store_metadata WHERE key LIKE 'datalake_cache_%'")
-        if not conn.in_transaction:
-            conn.commit()
+        conn.commit()
         return cursor.rowcount
     except sqlite3.Error:
         return 0

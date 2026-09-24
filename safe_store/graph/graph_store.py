@@ -495,22 +495,30 @@ class GraphStore:
         guidance: Optional[str] = None,
         mode: Literal['document', 'batch_chunks', 'chunk'] = 'document',
         chunks_per_batch: int = 5,
-        progress_callback: Optional[ProgressCallback] = None
-    ) -> Dict[str, int]:
+        progress_callback: Optional[ProgressCallback] = None,
+        stop_event: Optional[threading.Event] = None,
+        resume: bool = True
+    ) -> Dict[str, Any]:
         """
-        Builds graph nodes and relationships for a specific document.
+        Builds graph nodes and relationships for a specific document with pause/resume support.
+        """
+        if stop_event and stop_event.is_set():
+            return {"nodes_created": 0, "relationships_created": 0, "chunks_processed": 0, "stopped": True}
 
-        Modes:
-        - 'document' (Fastest): Sends the entire reconstructed document text to the LLM at once.
-          Takes 1 LLM call instead of N calls, maximizing throughput and capturing cross-chunk relationships.
-        - 'batch_chunks' (Balanced): Groups chunks into slices of `chunks_per_batch`.
-        - 'chunk' (Granular): Processes each chunk in isolation.
-        """
         with self.store._instance_lock, self.store._optional_file_lock_context(f"build_graph_for_document: {doc_id}"):
-            cursor = self.conn.execute("SELECT chunk_id, chunk_text, is_encrypted, chunk_seq FROM chunks WHERE doc_id = ? ORDER BY chunk_seq ASC", (doc_id,))
+            if resume:
+                cursor = self.conn.execute(
+                    "SELECT chunk_id, chunk_text, is_encrypted, chunk_seq FROM chunks WHERE doc_id = ? AND graph_processed_at IS NULL ORDER BY chunk_seq ASC",
+                    (doc_id,)
+                )
+            else:
+                cursor = self.conn.execute(
+                    "SELECT chunk_id, chunk_text, is_encrypted, chunk_seq FROM chunks WHERE doc_id = ? ORDER BY chunk_seq ASC",
+                    (doc_id,)
+                )
             rows = cursor.fetchall()
             if not rows:
-                return {"nodes_created": 0, "relationships_created": 0, "chunks_processed": 0}
+                return {"nodes_created": 0, "relationships_created": 0, "chunks_processed": 0, "already_processed": True}
 
             doc_row = db.get_document_record_by_id(self.conn, doc_id)
             doc_name = Path(doc_row[1].decode('utf-8')).name if doc_row else f"Document #{doc_id}"
@@ -534,10 +542,12 @@ class GraphStore:
 
             total_nodes = 0
             total_rels = 0
-            processed_chunk_ids = [c[0] for c in chunk_records]
+            processed_chunk_ids = []
 
             if mode == 'document':
-                # Reconstruct full text or assemble sequentially
+                if stop_event and stop_event.is_set():
+                    return {"nodes_created": 0, "relationships_created": 0, "chunks_processed": 0, "stopped": True}
+
                 full_text = self.store.reconstruct_document_text(doc_id)
                 if not full_text:
                     full_text = "\n\n".join(c[1] for c in chunk_records)
@@ -547,20 +557,26 @@ class GraphStore:
                 if progress_callback:
                     progress_callback(0.5, status)
 
+                cids = [c[0] for c in chunk_records]
                 n_cnt, r_cnt = self._extract_and_insert_graph(
                     text=full_text,
-                    chunk_ids=processed_chunk_ids,
+                    chunk_ids=cids,
                     guidance=guidance,
                     source_label=f"Document '{doc_name}'"
                 )
                 total_nodes += n_cnt
                 total_rels += r_cnt
+                processed_chunk_ids.extend(cids)
+                db.mark_chunks_graph_processed(self.conn, cids)
+                self.conn.commit()
 
             elif mode == 'batch_chunks':
-                # Group chunks into slices
                 step = max(1, chunks_per_batch)
                 total_batches = (len(chunk_records) + step - 1) // step
                 for b_idx in range(0, len(chunk_records), step):
+                    if stop_event and stop_event.is_set():
+                        break
+
                     slice_records = chunk_records[b_idx:b_idx + step]
                     slice_text = "\n\n".join(f"[Section {c[2]}]:\n{c[1]}" for c in slice_records)
                     slice_cids = [c[0] for c in slice_records]
@@ -578,9 +594,15 @@ class GraphStore:
                     )
                     total_nodes += n_cnt
                     total_rels += r_cnt
+                    processed_chunk_ids.extend(slice_cids)
+                    db.mark_chunks_graph_processed(self.conn, slice_cids)
+                    self.conn.commit()
 
             else:  # 'chunk' mode
                 for idx, (cid, txt, seq) in enumerate(chunk_records):
+                    if stop_event and stop_event.is_set():
+                        break
+
                     status = f"Extracting chunk {idx+1}/{len(chunk_records)} of '{doc_name}'..."
                     if progress_callback:
                         progress_callback((idx + 1) / len(chunk_records), status)
@@ -593,14 +615,15 @@ class GraphStore:
                     )
                     total_nodes += n_cnt
                     total_rels += r_cnt
-
-            if processed_chunk_ids:
-                db.mark_chunks_graph_processed(self.conn, processed_chunk_ids)
+                    processed_chunk_ids.append(cid)
+                    db.mark_chunks_graph_processed(self.conn, [cid])
+                    self.conn.commit()
 
             return {
                 "nodes_created": total_nodes,
                 "relationships_created": total_rels,
-                "chunks_processed": len(processed_chunk_ids)
+                "chunks_processed": len(processed_chunk_ids),
+                "stopped": bool(stop_event and stop_event.is_set())
             }
 
     def build_graph_for_all_documents(
@@ -608,69 +631,106 @@ class GraphStore:
         guidance: Optional[str] = None,
         progress_callback: Optional[ProgressCallback] = None,
         mode: Literal['document', 'batch_chunks', 'chunk'] = 'document',
-        chunks_per_batch: int = 5
-    ) -> Dict[str, int]:
+        chunks_per_batch: int = 5,
+        stop_event: Optional[threading.Event] = None,
+        resume: bool = True
+    ) -> Dict[str, Any]:
         """
-        Builds knowledge graph across all documents in the store.
-
-        Supports fast large-context extraction modes:
-        - 'document' (Default / Recommended): Sends each document as a complete narrative unit in 1 call.
-          Transforms a 100-chunk store from 100 calls down to 3–5 calls, executing up to 20x faster.
-        - 'batch_chunks': Batches consecutive chunks into slices of `chunks_per_batch`.
-        - 'chunk': Classic 1-chunk-per-call mode.
+        Builds knowledge graph across documents in the store with real-time cancellation
+        and resume support.
         """
         with self.store._instance_lock, self.store._optional_file_lock_context("build_graph_for_all_documents"):
-            # Discover distinct documents with unprocessed chunks
-            cursor = self.conn.execute("SELECT DISTINCT doc_id FROM chunks WHERE graph_processed_at IS NULL ORDER BY doc_id ASC")
-            doc_ids = [row[0] for row in cursor.fetchall()]
-            if not doc_ids:
-                cursor = self.conn.execute("SELECT DISTINCT doc_id FROM chunks ORDER BY doc_id ASC")
-                doc_ids = [row[0] for row in cursor.fetchall()]
+            if not resume:
+                # Reset all graph progress markers for clean rebuild
+                self.conn.execute("UPDATE chunks SET graph_processed_at = NULL")
+                self.conn.commit()
 
-            total_docs = len(doc_ids)
-            if total_docs == 0:
+            # Total documents in database
+            cursor = self.conn.execute("SELECT COUNT(DISTINCT doc_id) FROM chunks")
+            total_docs = cursor.fetchone()[0] or 0
+
+            # Documents needing processing
+            cursor = self.conn.execute("SELECT DISTINCT doc_id FROM chunks WHERE graph_processed_at IS NULL ORDER BY doc_id ASC")
+            pending_doc_ids = [row[0] for row in cursor.fetchall()]
+
+            if not pending_doc_ids:
+                if resume and total_docs > 0:
+                    status_done = "All documents are already indexed into the knowledge graph."
+                    ASCIIColors.info(status_done)
+                    if progress_callback:
+                        progress_callback(1.0, status_done)
+                    return {"nodes_created": 0, "relationships_created": 0, "chunks_processed": 0, "all_completed": True}
+                else:
+                    cursor = self.conn.execute("SELECT DISTINCT doc_id FROM chunks ORDER BY doc_id ASC")
+                    pending_doc_ids = [row[0] for row in cursor.fetchall()]
+
+            pending_count = len(pending_doc_ids)
+            already_processed_count = max(0, total_docs - pending_count)
+
+            if pending_count == 0:
                 ASCIIColors.warning("No documents available to build graph from.")
                 return {"nodes_created": 0, "relationships_created": 0, "chunks_processed": 0}
 
-            ASCIIColors.info(f"Building knowledge graph across {total_docs} document(s) [Mode: {mode.upper()}]...")
+            ASCIIColors.info(f"Building knowledge graph: {pending_count} pending doc(s) out of {total_docs} total [Mode: {mode.upper()}]...")
 
             total_nodes = 0
             total_rels = 0
             total_chunks_processed = 0
+            was_stopped = False
 
-            for d_idx, doc_id in enumerate(doc_ids, 1):
+            for d_idx, doc_id in enumerate(pending_doc_ids, 1):
+                if stop_event and stop_event.is_set():
+                    was_stopped = True
+                    break
+
                 doc_row = db.get_document_record_by_id(self.conn, doc_id)
                 doc_name = Path(doc_row[1].decode('utf-8')).name if doc_row else f"Doc #{doc_id}"
+                current_doc_num = already_processed_count + d_idx
 
                 def _sub_progress(fraction, message):
-                    overall_progress = ((d_idx - 1) + fraction) / total_docs
+                    overall_progress = max(0.0, min(1.0, ((current_doc_num - 1) + fraction) / max(1, total_docs)))
                     if progress_callback:
-                        progress_callback(overall_progress, f"[{d_idx}/{total_docs}] {message}")
+                        progress_callback(overall_progress, f"[{current_doc_num}/{total_docs}] {message}")
 
                 stats = self.build_graph_for_document(
                     doc_id=doc_id,
                     guidance=guidance,
                     mode=mode,
                     chunks_per_batch=chunks_per_batch,
-                    progress_callback=_sub_progress
+                    progress_callback=_sub_progress,
+                    stop_event=stop_event,
+                    resume=resume
                 )
 
                 total_nodes += stats["nodes_created"]
                 total_rels += stats["relationships_created"]
                 total_chunks_processed += stats["chunks_processed"]
+                self.conn.commit()
 
-                status_msg = f"Completed doc {d_idx}/{total_docs} ({doc_name}): +{stats['nodes_created']} nodes, +{stats['relationships_created']} edges (Total: {total_nodes} nodes, {total_rels} edges)"
+                if stats.get("stopped") or (stop_event and stop_event.is_set()):
+                    was_stopped = True
+                    break
+
+                overall_doc_progress = max(0.0, min(1.0, current_doc_num / max(1, total_docs)))
+                status_msg = f"[{current_doc_num}/{total_docs}] '{doc_name}': +{stats['nodes_created']} nodes, +{stats['relationships_created']} edges"
                 ASCIIColors.info(status_msg)
                 if progress_callback:
-                    progress_callback(d_idx / total_docs, status_msg)
+                    progress_callback(overall_doc_progress, status_msg)
 
-            ASCIIColors.success(f"Graph build finished: {total_nodes} nodes, {total_rels} relationships across {total_chunks_processed} chunks.")
+            self.conn.commit()
+
+            if was_stopped:
+                ASCIIColors.warning(f"Graph build paused: {total_nodes} nodes, {total_rels} relationships saved to disk. Ready to resume.")
+            else:
+                ASCIIColors.success(f"Graph build finished: {total_nodes} nodes, {total_rels} relationships across {total_chunks_processed} chunks permanently saved.")
+
             return {
                 "nodes_created": total_nodes,
                 "relationships_created": total_rels,
-                "chunks_processed": total_chunks_processed
+                "chunks_processed": total_chunks_processed,
+                "stopped": was_stopped
             }
-
+        
     def _fuse_or_create_node(self, label: str, properties: Dict[str, Any]) -> int:
         id_key, id_value = self._get_node_identifying_parts(properties)
         if id_key and id_value:
