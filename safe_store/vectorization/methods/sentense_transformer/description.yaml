@@ -1,14 +1,40 @@
 title: Sentence Transformers Vectorizer
 author: ParisNeo
 creation_date: 2025-10-10
-last_update_date: 2025-10-10
+last_update_date: 2026-09-23
 class_name: STVectorizer
 description: >
   A local vectorizer that uses models from the sentence-transformers library.
-  Models are downloaded and run directly on your machine.
+  Supports both in-process model loading and a multi-process shared background
+  server with dynamic request micro-batching and persistent resource sharing.
 input_parameters:
   - name: model
     type: str
     description: "The name of the Sentence Transformer model to use from the Hugging Face Hub."
     mandatory: true
     default: "all-MiniLM-L6-v2"
+  - name: use_shared_server
+    type: bool
+    description: "Whether to connect to or spawn a shared local model server for multi-process memory efficiency and dynamic batching."
+    mandatory: false
+    default: false
+  - name: port
+    type: int
+    description: "Port for the shared model server."
+    mandatory: false
+    default: 8765
+  - name: idle_timeout
+    type: float
+    description: "Seconds of inactivity before server shuts down automatically (0 = stay alive until shutdown command)."
+    mandatory: false
+    default: 0.0
+  - name: batch_window
+    type: float
+    description: "Micro-batching collection window in seconds (default: 0.02)."
+    mandatory: false
+    default: 0.02
+  - name: max_batch_size
+    type: int
+    description: "Maximum batch size for grouped inference (default: 64)."
+    mandatory: false
+    default: 64

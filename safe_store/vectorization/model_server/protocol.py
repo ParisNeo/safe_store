@@ -41,7 +41,8 @@ def recv_message(sock: socket.socket) -> Dict[str, Any]:
 def encode_array(arr: np.ndarray) -> bytes:
     buffer = io.BytesIO()
     np.save(buffer, arr, allow_pickle=False)
-    return buffer.getvalue()
+    payload = buffer.getvalue()
+    return struct.pack(">Q", len(payload)) + payload
 
 
 def send_array(sock: socket.socket, arr: np.ndarray) -> None:

@@ -46,6 +46,20 @@ class BaseVectorizer(ABC):
         chunk_texts = [text[start:end] for start, end in chunk_spans]
         return self.vectorize(chunk_texts)
 
+    def unload(self) -> None:
+        """Unloads underlying model weights from RAM/VRAM and cleans up resources."""
+        pass
+
+    def close(self) -> None:
+        """Releases all resources and unloads model weights."""
+        self.unload()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
     @staticmethod
     def list_models(**kwargs) -> List[str]:
         """

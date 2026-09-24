@@ -150,7 +150,7 @@ print(f"Knowledge Graph: {diag['knowledge_graph']['total_nodes']} nodes, {diag['
 ## 5. Vectorization Backends
 
 Configure any vectorizer at creation time:
-- `"st"`: Sentence-Transformers (e.g. `{"model": "all-MiniLM-L6-v2"}`)
+- `"st"`: Sentence-Transformers (e.g. `{"model": "all-MiniLM-L6-v2"}`). Supports `use_shared_server=True` for multi-user/multi-process server deployments with dynamic micro-batching and persistent resource sharing (see [Shared Model Server Blueprint](docs/shared_model_server_architecture.md)).
 - `"ollama"`: Ollama local daemon (e.g. `{"model": "nomic-embed-text", "host": "http://localhost:11434"}`)
 - `"openai"`: OpenAI API (e.g. `{"model": "text-embedding-3-small"}`)
 - `"cohere"`: Cohere API (e.g. `{"model": "embed-english-v3.0"}`)
@@ -401,6 +401,8 @@ restored = safe_store.SafeStore.import_database("backup.json", "restored.db", de
 | :--- | :--- |
 | **`store.info()`** / **`store.get_database_info()`** | Returns/prints comprehensive diagnostics: vectorizer info, per-document chunk counts, ontology schemas, and graph topology counts. |
 | **`SafeStore(db_path, ...)`** | Main SQLite vector, lexical, and hybrid database handle. |
+| `store.unload_vectorizer()` | Forces immediate unloading of local model weights and purges GPU VRAM. |
+| `SafeStore.shutdown_shared_vectorizer(port)` | Special command to shut down the persistent shared model server daemon. |
 | `store.query(...)` | Dense vector similarity search with 0–100 relevance score (supports `reconstruct_overlapping_chunks=True`). |
 | `store.reconstruct_overlapping_chunks(...)` | Reconstructs and chronologically fuses overlapping and non-contiguous chunks with single metadata header. |
 | `store.hybrid_query(...)` | Tri-Modal Reciprocal Rank Fusion (Dense + BM25). |

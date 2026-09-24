@@ -12,3 +12,4 @@
 - [x] Fix Graph Extraction Prompt to dynamically extract rich entity and relationship graphs from unstructured files when no static ontology is supplied
 - [ ] Use SigLIP / CLIP to encode images and support multi-modal image vector database storage
 - [x] reconstruct overlapping chunks
+- [x] Multi-user/multi-process shared SentenceTransformer model server with dynamic micro-batching and special shutdown command

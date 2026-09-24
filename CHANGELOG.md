@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - feat(vectorization): add detailed ASCII info for vectorizer initialization
 
+## [2026-09-24 07:16]
+
+- `fix(pyproject): bump version to v3.6.2 and minor text updates in docstrings for consistency`
+
 ## [2026-09-23 00:45]
 
 - a/pyproject.toml

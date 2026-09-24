@@ -3,9 +3,8 @@ import sqlite3
 import threading
 import json
 import uuid
+import re
 from pathlib import Path
-from typing import Optional, Callable, Dict, List, Any, Tuple, TYPE_CHECKING, Set, Union
-
 from typing import Optional, Callable, Dict, List, Any, Tuple, TYPE_CHECKING, Set, Union
 from ascii_colors import ASCIIColors, trace_exception
 from ..core import db
@@ -41,6 +40,11 @@ class GraphStore:
     DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE = load_prompt("query_parsing_prompt")
     DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE = load_prompt("entity_fusion_prompt")
 
+    # Class-level defaults for backward compatibility and resilient resolution
+    graph_extraction_prompt_template: str = DEFAULT_GRAPH_EXTRACTION_PROMPT_TEMPLATE
+    query_parsing_prompt_template: str = DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE
+    entity_fusion_prompt_template: str = DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE
+
     def __init__(
         self,
         store: "SafeStore",
@@ -63,6 +67,15 @@ class GraphStore:
         if not self.llm_executor and not self.lollms_client:
             self.llm_executor = lambda p: '{"nodes": [], "relationships": []}'
 
+        self.graph_extraction_prompt_template = graph_extraction_prompt_template or self.DEFAULT_GRAPH_EXTRACTION_PROMPT_TEMPLATE
+        self.query_parsing_prompt_template = query_parsing_prompt_template or self.DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE
+        self.entity_fusion_prompt_template = entity_fusion_prompt_template or self.DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE
+        self._sparql_engine: Optional[SparqlEngine] = None
+        self._cognitive_memory: Optional[CognitiveMemoryStore] = None
+
+        ASCIIColors.info(f"Initializing GraphStore with shared SafeStore for database: {self.store.db_path}")
+        self._initialize_graph_features()
+
     @staticmethod
     def _try_resolve_lollms_client() -> Optional[Any]:
         """Softly attempts to resolve an active LollmsClient without creating a hard dependency."""
@@ -79,12 +92,6 @@ class GraphStore:
     def has_structured_lollms_support(self) -> bool:
         """Returns True if an active LOLLMS client with structured generation is connected."""
         return self.lollms_client is not None and hasattr(self.lollms_client, "generate_structured_content")
-        self.query_parsing_prompt_template = query_parsing_prompt_template or self.DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE
-        self.entity_fusion_prompt_template = entity_fusion_prompt_template or self.DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE
-        self._sparql_engine: Optional[SparqlEngine] = None
-        self._cognitive_memory: Optional[CognitiveMemoryStore] = None
-        ASCIIColors.info(f"Initializing GraphStore with shared SafeStore for database: {self.store.db_path}")
-        self._initialize_graph_features()
 
     @property
     def memory(self) -> CognitiveMemoryStore:
@@ -182,14 +189,16 @@ class GraphStore:
                 user_guidance=("" if not ontology_schema else "Ontology:\n"+ontology_schema+"\nGuidance:\n") + user_guidance
             )
         else:
-            template = self.graph_extraction_prompt_template
+            template = getattr(self, "graph_extraction_prompt_template", None) or self.DEFAULT_GRAPH_EXTRACTION_PROMPT_TEMPLATE
             return template.format(chunk_text=chunk_text, user_guidance=user_guidance)
 
     def _get_query_parsing_prompt(self, natural_language_query: str) -> str:
-        return self.query_parsing_prompt_template.format(natural_language_query=natural_language_query)
+        template = getattr(self, "query_parsing_prompt_template", None) or self.DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE
+        return template.format(natural_language_query=natural_language_query)
 
     def _get_entity_fusion_prompt(self, node_a_props: Dict, node_b_props: Dict, label: str) -> str:
-        return self.entity_fusion_prompt_template.format(
+        template = getattr(self, "entity_fusion_prompt_template", None) or self.DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE
+        return template.format(
             node_a_properties=json.dumps(node_a_props, indent=2),
             node_b_properties=json.dumps(node_b_props, indent=2),
             entity_label=label
@@ -272,9 +281,26 @@ class GraphStore:
             "required": ["nodes", "relationships"]
         }
 
+    def _sanitize_chunk_for_llm(self, text: Union[str, bytes]) -> str:
+        """
+        Sanitizes text chunk before sending to LLM:
+        - Ensures pure string decoding.
+        - Replaces heavy inline base64 image blobs with readable [Image: caption] tags,
+          preventing downstream JSON serialization crashes on raw bytes and saving token quota.
+        """
+        if isinstance(text, bytes):
+            clean = text.decode('utf-8', errors='ignore')
+        else:
+            clean = str(text)
+
+        # Replace markdown inline base64 images: ![alt](data:image/...;base64,...)
+        clean = re.sub(r'!\[([^\]]*)\]\(data:image\/[^;]+;base64,[A-Za-z0-9+/=\s]+\)', r'[Image: \1]', clean)
+        return clean
+
     def _extract_and_insert_graph_for_chunk(self, chunk_id: int, chunk_text: str, guidance: Optional[str] = None) -> Tuple[int, int]:
         """Extracts graph elements from a single chunk using LOLLMS structured generation or callback."""
         parsed = None
+        sanitized_chunk = self._sanitize_chunk_for_llm(chunk_text)
 
         # Priority 1: LOLLMS Structured Content Generation
         if self.lollms_client is not None and hasattr(self.lollms_client, "generate_structured_content"):
@@ -286,7 +312,7 @@ class GraphStore:
                     "Extract all entities (nodes), their attributes, and directed relationships (triplets) "
                     "from the document package, strictly conforming to the schema.\n\n"
                     f"Ontology Schema / Constraints:\n{ontology_context}\n\n"
-                    f"Document Content:\n{chunk_text}"
+                    f"Document Content:\n{sanitized_chunk}"
                 )
                 user_prompt = "Create a complete knowledge graph representation of the text as structured triplets."
                 if guidance:
@@ -308,7 +334,7 @@ class GraphStore:
 
         # Priority 2: Fallback to llm_executor callback
         if parsed is None and self.llm_executor:
-            prompt = self._get_graph_extraction_prompt(chunk_text, guidance)
+            prompt = self._get_graph_extraction_prompt(sanitized_chunk, guidance)
             raw_response = self.llm_executor(prompt)
             if not raw_response:
                 ASCIIColors.warning(f"LLM extraction returned empty response for chunk {chunk_id}.")
@@ -492,7 +518,7 @@ class GraphStore:
 
                     db.update_graph_node_properties_db(self.conn, candidate_id, merged_props, merge_strategy="overwrite_all")
                     return candidate_id
-            except (LLMCallbackError, json.JSONDecodeError, KeyError):
+            except Exception:
                 pass
 
         if "other_identifiers" not in properties:

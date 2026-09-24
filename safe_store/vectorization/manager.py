@@ -16,21 +16,54 @@ class VectorizationManager:
     Also provides methods to discover available vectorizers and their configurations.
     """
 
+    RUNTIME_TRANSPORT_KEYS = {
+        "use_shared_server",
+        "shared_server",
+        "shared_mode",
+        "shared",
+        "port",
+        "host",
+        "idle_timeout",
+        "batch_window",
+        "max_batch_size",
+        "stream_server_logs",
+        "reuse_model_in_process",
+        "cache_folder",
+        "api_key",
+        "service_key",
+        "verify_ssl_certificate"
+    }
+
     def __init__(self, cache_folder: Optional[str] = None, custom_vectorizers_path: Optional[str] = None):
         pm.ensure_packages(["PyYAML"])
         self.cache_folder = Path(cache_folder) if cache_folder else None
         if self.cache_folder:
             self.cache_folder.mkdir(parents=True, exist_ok=True)
-        
+
         self.custom_vectorizers_path = custom_vectorizers_path
         self._cache: Dict[str, BaseVectorizer] = {}
 
-    @staticmethod
-    def _create_unique_name(vectorizer_name: str, config: Optional[Dict[str, Any]]) -> str:
+    @classmethod
+    def _filter_semantic_config(cls, config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Strips deployment/transport keys and normalizes equivalent model parameters."""
         if not config:
-            return vectorizer_name
-        config_str = json.dumps(config, sort_keys=True, separators=(',', ':'))
-        return f"{vectorizer_name}:{config_str}"
+            return {}
+        clean = {k: v for k, v in config.items() if k not in cls.RUNTIME_TRANSPORT_KEYS}
+        # Normalize model / model_name equivalence across configs
+        model_val = clean.pop("model_name", None) or clean.pop("model", None)
+        if model_val is not None:
+            clean["model"] = str(model_val)
+        return clean
+
+    @classmethod
+    def _create_unique_name(cls, vectorizer_name: str, config: Optional[Dict[str, Any]]) -> str:
+        # Normalize vectorizer name aliases
+        norm_name = "sentense_transformer" if vectorizer_name == "st" else ("tf_idf" if vectorizer_name == "tfidf" else vectorizer_name)
+        clean_config = cls._filter_semantic_config(config)
+        if not clean_config:
+            return norm_name
+        config_str = json.dumps(clean_config, sort_keys=True, separators=(',', ':'))
+        return f"{norm_name}:{config_str}"
 
 
     @staticmethod
@@ -133,4 +166,14 @@ class VectorizationManager:
         return vectorizer_instance
 
     def clear_cache(self) -> None:
+        """Closes and unloads all cached vectorizers and purges the cache."""
+        for unique_name, vec in list(self._cache.items()):
+            try:
+                if hasattr(vec, "close"):
+                    vec.close()
+                elif hasattr(vec, "unload"):
+                    vec.unload()
+            except Exception as e:
+                ASCIIColors.warning(f"Error closing vectorizer '{unique_name}': {e}")
         self._cache.clear()
+        ASCIIColors.debug("Cleared vectorizer manager cache")

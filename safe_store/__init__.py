@@ -51,10 +51,15 @@ from .indexing.parser import SAFE_STORE_SUPPORTED_FILE_EXTENSIONS, parse_documen
 from .processing.text_cleaning import basic_text_cleaner
 from ascii_colors import ASCIIColors
 
-__version__ = "3.6.1"
+__version__ = "3.6.2"
+
+def shutdown_shared_vectorizer(port: int = 8765, host: str = "127.0.0.1") -> bool:
+    """Special command to shut down a running shared model server on the given port."""
+    return SafeStore.shutdown_shared_vectorizer(port=port, host=host)
 
 __all__ = [
     "SafeStore",
+    "shutdown_shared_vectorizer",
     "GraphStore",
     "CognitiveMemoryStore",
     "TBoxManager",

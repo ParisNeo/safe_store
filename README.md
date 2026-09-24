@@ -10,8 +10,8 @@
 2. ⚡ **Sparse Lexical Search (BM25)**: Native SQLite FTS5 full-text indexing for exact technical identifiers, part numbers, and error codes.
 3. 📖 **Full Document & Context Window Retrieval**: Query entire documents aggregated from chunk hits, retrieve surrounding chunk neighborhoods with window expansion, or paginate through document content.
 4. 🧩 **Overlapping Chunk Reconstruction & Chronological Fusion**: Automatically fuses adjacent overlapping chunks in chronological order, deduplicating repetitive boundary seams, bridging gaps with `...`, and uniting metadata into a single context header.
-4. 🧩 **Overlapping Chunk Reconstruction & Chronological Fusion**: Automatically fuses adjacent overlapping chunks in chronological order, deduplicating repetitive boundary seams, bridging gaps with `...`, and uniting metadata into a single context header.
-4. 🕸️ **Dynamic & Ontology Knowledge Graph**: Open-ended concept/entity extraction from text files or strict TBox/OWL schema mapping, with live chunk extraction reporting.
+5. 🚀 **Multi-User / Multi-Process Shared Server & Dynamic Batching**: Eliminates OOM crashes by running a persistent shared SentenceTransformer model daemon across processes with dynamic micro-batching and an explicit shutdown command.
+6. 🕸️ **Dynamic & Ontology Knowledge Graph**: Open-ended concept/entity extraction from text files or strict TBox/OWL schema mapping, with live chunk extraction reporting.
 5. 🔍 **W3C SPARQL 1.1 Query & Update Engine**: Native TBox/ABox ontology management, declarative tabular mapping, and full SPARQL (`SELECT`, `ASK`, `CONSTRUCT`, `DESCRIBE`, and `INSERT/DELETE DATA` updates).
 6. 🧠 **LLM Cognitive Memory & Thought Reorganization**: Episodic memory logging, associative semantic traversal, grounded text chunk evidence linking, and native function-calling tool dispatching.
 7. 🔀 **Tri-Modal Reciprocal Rank Fusion (RRF)**: Merges dense similarity, lexical BM25, and symbolic graph traversals into unified results with universal 0–100 relevance grades.
@@ -182,13 +182,22 @@ Combining dense embeddings with sparse BM25 guarantees precision for both fuzzy 
 ```python
 import safe_store
 
+# Shared Server Mode: Only 1 copy of SentenceTransformer in memory/VRAM across all workers!
 store = safe_store.SafeStore(
     db_path="hybrid_kb.db",
     vectorizer_name="st",
-    vectorizer_config={"model": "all-MiniLM-L6-v2"},
+    vectorizer_config={
+        "model": "all-MiniLM-L6-v2",
+        "use_shared_server": True, # Enables persistent daemon and dynamic micro-batching
+        "port": 8765
+    },
     chunk_size=128,
     chunk_overlap=16
 )
+
+# Shutdown shared daemon when terminating multi-user service:
+# SafeStore.shutdown_shared_vectorizer(port=8765)
+```
 
 # Inspect database summary and diagnostics anytime:
 store.info()

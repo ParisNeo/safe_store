@@ -77,6 +77,8 @@ class SafeStore:
         lock_timeout: int = DEFAULT_LOCK_TIMEOUT,
         encryption_key: Optional[str] = None,
         cache_folder: Optional[str] = None,
+        use_shared_server: Optional[bool] = None,
+        shared_vectorizer: Optional[bool] = None,
         chunking_kwargs: Optional[Dict[str, Any]] = None
     ):
         ASCIIColors.set_log_level(log_level)
@@ -114,8 +116,18 @@ class SafeStore:
 
         merged_config = {**stored_config, **explicit_kwargs}
 
+        # Handle top-level shared server flags
+        is_shared = (
+            use_shared_server
+            if use_shared_server is not None
+            else (shared_vectorizer if shared_vectorizer is not None else False)
+        )
+
         self.vectorizer_name = merged_config.get('vectorizer_name', 'st')
-        self.vectorizer_config = merged_config.get('vectorizer_config', self.DEFAULT_VECTORIZER_CONFIG if self.vectorizer_name == self.DEFAULT_VECTORIZER_NAME else {})
+        self.vectorizer_config = dict(merged_config.get('vectorizer_config', self.DEFAULT_VECTORIZER_CONFIG if self.vectorizer_name == self.DEFAULT_VECTORIZER_NAME else {}))
+
+        if is_shared:
+            self.vectorizer_config["use_shared_server"] = True
         self.chunk_size = merged_config.get('chunk_size', 384)
         self.chunk_overlap = merged_config.get('chunk_overlap', 50)
         self.chunking_strategy = merged_config.get('chunking_strategy', 'token')
@@ -206,6 +218,23 @@ class SafeStore:
         manager = VectorizationManager(custom_vectorizers_path=custom_vectorizers_path)
         return manager.list_vectorizers()
 
+    def shutdown_shared_server(self, port: Optional[int] = None, host: Optional[str] = None) -> bool:
+        """
+        Sends the special command to shut down the shared model server daemon.
+        Safe to call in multi-user/multi-process deployments when retiring the service.
+        """
+        from safe_store.vectorization.methods.sentense_transformer import STVectorizer
+
+        target_port = port or int(self.vectorizer_config.get("port", 8765))
+        target_host = host or str(self.vectorizer_config.get("host", "127.0.0.1"))
+        return STVectorizer.stop_shared_server(port=target_port, host=target_host)
+
+    @classmethod
+    def shutdown_shared_vectorizer(cls, port: int = 8765, host: str = "127.0.0.1") -> bool:
+        """Class method to command a background shared model server to terminate."""
+        from safe_store.vectorization.methods.sentense_transformer import STVectorizer
+        return STVectorizer.stop_shared_server(port=port, host=host)
+
     @classmethod
     def list_models(cls, vectorizer_name: str, custom_vectorizers_path: Optional[str] = None, **kwargs) -> List[str]:
         try:
@@ -241,19 +270,36 @@ class SafeStore:
         with self._optional_file_lock_context("verify vectorizer compatibility"):
             assert self.conn is not None
             stored_info_json = db.get_store_metadata(self.conn, "vectorizer_info")
-            
+
+            unique_name_from_instance = self.vectorizer_manager._create_unique_name(self.vectorizer_name, self.vectorizer_config)
+
             if stored_info_json:
                 stored_info = json.loads(stored_info_json)
-                unique_name_from_instance = self.vectorizer_manager._create_unique_name(self.vectorizer_name, self.vectorizer_config)
-                
-                if stored_info.get("unique_name") != unique_name_from_instance:
+                stored_unique = stored_info.get("unique_name", "")
+
+                stored_vec_name = stored_info.get("vectorizer_name") or stored_info.get("name") or stored_unique.split(":")[0]
+                stored_config = stored_info.get("vectorizer_config")
+                if stored_config is None and ":" in stored_unique:
+                    try:
+                        stored_config = json.loads(stored_unique.split(":", 1)[1])
+                    except Exception:
+                        stored_config = {}
+
+                stored_semantic_id = self.vectorizer_manager._create_unique_name(stored_vec_name, stored_config)
+                current_semantic_id = unique_name_from_instance
+
+                stored_dim = stored_info.get("dim")
+                current_dim = getattr(self.vectorizer, "dim", None)
+                dim_mismatch = (stored_dim is not None and current_dim is not None and stored_dim != current_dim)
+
+                if stored_semantic_id != current_semantic_id or dim_mismatch:
                     raise ConfigurationError(
                         f"Database at '{self.db_path}' has an incompatible vectorizer: '{stored_info.get('unique_name')}'. "
                         f"This instance is configured with '{unique_name_from_instance}'."
                     )
             else:
                 vectorizer_info = {
-                    "unique_name": self.vectorizer_manager._create_unique_name(self.vectorizer_name, self.vectorizer_config),
+                    "unique_name": unique_name_from_instance,
                     "name": self.vectorizer_name,
                     "vectorizer_name": self.vectorizer_name,
                     "vectorizer_config": self.vectorizer_config,
@@ -333,13 +379,72 @@ class SafeStore:
     def close(self) -> None:
         with self._instance_lock:
             if self.conn:
-                self.conn.close()
+                try:
+                    self.conn.close()
+                except Exception:
+                    pass
                 self.conn = None
             self._is_closed = True
-            self.vectorizer_manager.clear_cache()
+
+            # Cleanly unload vectorizer and release VRAM/RAM
+            if hasattr(self, 'vectorizer') and self.vectorizer is not None:
+                try:
+                    self.vectorizer.close()
+                except Exception:
+                    pass
+                self.vectorizer = None
+
+            self.tokenizer_for_chunking = None
+
+            if hasattr(self, 'vectorizer_manager') and self.vectorizer_manager is not None:
+                self.vectorizer_manager.clear_cache()
+
             if self._is_temp_file_db and self._temp_db_actual_path:
                 self._manual_cleanup_temp_files_on_error()
+
+            # Global garbage collection and PyTorch CUDA/MPS cache purge
+            SafeStore.clear_gpu_memory()
             ASCIIColors.info("safe_store connection closed.")
+
+    def unload_vectorizer(self) -> None:
+        """
+        Forces immediate unloading of the vectorizer model and purges GPU VRAM
+        while keeping the SafeStore connection open.
+        """
+        with self._instance_lock:
+            if hasattr(self, 'vectorizer') and self.vectorizer is not None:
+                try:
+                    self.vectorizer.close()
+                except Exception:
+                    pass
+                self.vectorizer = None
+            self.tokenizer_for_chunking = None
+            if hasattr(self, 'vectorizer_manager') and self.vectorizer_manager is not None:
+                self.vectorizer_manager.clear_cache()
+            SafeStore.clear_gpu_memory()
+
+    @staticmethod
+    def clear_gpu_memory() -> None:
+        """Forces Python garbage collection and clears PyTorch CUDA and MPS VRAM caches."""
+        import gc
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                if hasattr(torch.cuda, "ipc_collect"):
+                    torch.cuda.ipc_collect()
+            if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"):
+                torch.mps.empty_cache()
+        except Exception:
+            pass
+
+    def __del__(self) -> None:
+        try:
+            if not getattr(self, '_is_closed', True):
+                self.close()
+        except Exception:
+            pass
 
     def _manual_cleanup_temp_files_on_error(self):
         if self._temp_db_actual_path:

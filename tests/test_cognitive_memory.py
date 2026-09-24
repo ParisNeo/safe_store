@@ -74,6 +74,11 @@ class TestCognitiveMemoryAndSparqlUpdate:
 
         assert episode_id is not None
 
+        # Recall associative memory for Alice in the same store where the episode was recorded
+        recalled = memory_store.memory.recall_associative("Alice Smith", max_hops=2)
+        assert len(recalled["associated_entities"]) >= 1
+        assert any("EpisodicMemory" in str(e) or "Sensor Lab" in str(e) for e in recalled["associated_entities"])
+
     def test_database_info_and_graph_diagnostics(self, memory_store: GraphStore):
         """Test store.get_database_info() and graph_store.get_graph_info()."""
         # Insert a sample relationship and verify diagnostics
@@ -96,12 +101,6 @@ class TestCognitiveMemoryAndSparqlUpdate:
         # Check info alias returns identical structure
         info_alias = memory_store.store.info(print_summary=False)
         assert info_alias["store_name"] == db_info["store_name"]
-
-    # Recall associative memory for Alice
-
-        recalled = memory_store.memory.recall_associative("Alice Smith", max_hops=2)
-        assert len(recalled["associated_entities"]) >= 1
-        assert any("EpisodicMemory" in str(e) or "Sensor Lab" in str(e) for e in recalled["associated_entities"])
 
     def test_link_individual_to_chunks_and_grounded_evidence(self, memory_store: GraphStore):
         """Test explicit chunk grounding for an entity."""
