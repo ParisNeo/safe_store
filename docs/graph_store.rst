@@ -2,7 +2,15 @@
 Graph Store
 ===========
 
-The ``GraphStore`` module manages knowledge graphs within the SafeStore database. It supports dynamic and ontology-constrained LLM graph extraction, W3C SPARQL 1.1 query & update engines, declarative tabular mapping, and cognitive memory.
+The ``GraphStore`` module manages an interconnected semantic knowledge graph within a SafeStore SQLite database.
+It unifies:
+
+1. **High-Context Graph Extraction**: Extract entities (nodes) and directed relationships (triplets) using an LLM in entire document passes or batched chunk windows.
+2. **W3C SPARQL 1.1 Query Engine**: Full standard ``SELECT``, ``ASK``, ``CONSTRUCT``, and ``DESCRIBE`` query execution.
+3. **SPARQL 1.1 Update Engine**: Real-time graph modification and concept reorganization via ``INSERT DATA`` and ``DELETE DATA``.
+4. **Declarative Tabular Mapping**: Instant zero-LLM transformation of CSV, Excel, and SQLite tables into grounded RDF knowledge graphs.
+5. **Tri-Modal Unified Retrieval**: Fusing graph traversal, dense vector similarity, and sparse BM25 lexical matches via Reciprocal Rank Fusion.
+6. **Cognitive Memory & LLM Tool Calling**: Episodic event logging, associative recall, and grounded text chunk provenance.
 
 Initialization
 --------------
@@ -11,64 +19,134 @@ Initialization
 
    from safe_store import SafeStore, GraphStore
 
-   store = SafeStore(db_path="graph_kb.db", vectorizer_name="st")
+   store = SafeStore(db_path="knowledge.db", vectorizer_name="st")
    graph_store = GraphStore(
        store=store,
-       llm_executor_callback=my_llm_callback,  # Optional for automatic extraction
-       ontology=my_ontology_schema            # Optional TBox/dict schema
+       llm_executor_callback=my_llm_callback,  # Optional custom callback
+       ontology=my_tbox_ontology              # Optional strict TBox schema or dict
    )
+
+Fast Graph Extraction Across Large Context Windows
+--------------------------------------------------
+
+Modern LLMs have context windows of 32k to 128k+ tokens. Rather than making slow sequential calls for every single small chunk, ``GraphStore`` provides three extraction modes:
+
+.. code-block:: python
+
+   # 1. Mode 'document' (Default & Recommended - 1 LLM call per document)
+   # Up to 20x faster than chunk-by-chunk extraction and captures cross-chunk relationships.
+   stats = graph_store.build_graph_for_all_documents(
+       mode='document',
+       guidance="Focus on software microservices, APIs, and team owners."
+   )
+   print(f"Extracted {stats['nodes_created']} nodes and {stats['relationships_created']} relationships.")
+
+   # 2. Mode 'batch_chunks' (Balanced - groups N chunks per LLM call)
+   stats = graph_store.build_graph_for_all_documents(
+       mode='batch_chunks',
+       chunks_per_batch=10
+   )
+
+   # 3. Mode 'chunk' (Granular - processes each chunk in isolation)
+   stats = graph_store.build_graph_for_all_documents(mode='chunk')
 
 Graph Diagnostics
 -----------------
 
 .. py:method:: get_graph_info() -> Dict[str, Any]
 
-   Returns diagnostic information about the graph store, including total nodes, total relationships, breakdown by label/type, and provenance links.
+   Returns real-time diagnostics: total nodes, total relationships, breakdown by label and relationship type, and chunk provenance link counts.
 
-Node Management
----------------
-
-.. py:method:: add_node(label: str, properties: Dict[str, Any]) -> int
-
-   Adds a new node to the graph and computes its vector embedding for semantic search.
-
-   :param label: The type/label of the node (e.g., "Person", "Company", "Concept").
-   :param properties: A dictionary of properties (must include an `identifying_value` or `name`).
-   :return: The ID of the newly created node.
-
-.. py:method:: get_node_details(node_id: int) -> Optional[Dict[str, Any]]
-
-   Retrieves node details by ID.
-
-.. py:method:: update_node(node_id: int, label: Optional[str] = None, properties: Optional[Dict[str, Any]] = None) -> bool
-
-   Updates an existing node's label and properties.
-
-.. py:method:: delete_node(node_id: int) -> bool
-
-   Deletes a node and its associated relationships.
-
-Relationship Management
+W3C SPARQL 1.1 Querying
 -----------------------
 
-.. py:method:: add_relationship(source_node_id: int, target_node_id: int, rel_type: str, properties: Optional[Dict[str, Any]] = None) -> int
+.. py:method:: generate_sparql(natural_language_query: str, guidance: Optional[str] = None) -> str
 
-   Creates a directed relationship between two nodes.
+   Translates plain English questions into executable W3C SPARQL 1.1 queries using LOLLMS, grounded in the database's live entity classes, relationships, and schema.
 
-.. py:method:: delete_relationship(relationship_id: int) -> bool
+.. code-block:: python
 
-   Deletes a specific relationship by ID.
+   # Ask in natural language
+   query_str = graph_store.generate_sparql("Find all tools that require Python and show their authors")
+   print("Generated Query:\n", query_str)
 
-W3C SPARQL 1.1 Query & Update
------------------------------
+   # Execute generated query immediately
+   results = graph_store.query_sparql(query_str)
+
+W3C SPARQL 1.1 Querying
+-----------------------
 
 .. py:method:: query_sparql(sparql_query: str) -> Dict[str, Any]
 
-   Executes standard W3C SPARQL 1.1 queries (``SELECT``, ``ASK``, ``CONSTRUCT``, ``DESCRIBE``).
+   Executes standards-compliant W3C SPARQL 1.1 queries across the graph.
+
+.. code-block:: python
+
+   # Multi-Hop Relational Join (SELECT)
+   query = """
+   PREFIX ex: <http://example.org/>
+   PREFIX ont: <http://example.org/ontology/>
+   SELECT ?personName ?companyName ?projectName WHERE {
+       ?person a ont:Person ;
+               ont:name ?personName ;
+               ont:worksFor ?company ;
+               ont:leadsProject ?project .
+       ?company ont:name ?companyName .
+       ?project ont:name ?projectName .
+   }
+   """
+   results = graph_store.query_sparql(query)
+   for b in results["results"]["bindings"]:
+       print(f"{b['personName']['value']} works at {b['companyName']['value']} on {b['projectName']['value']}")
+
+SPARQL 1.1 Updates (Knowledge Reorganization)
+---------------------------------------------
 
 .. py:method:: execute_sparql_update(sparql_update: str) -> Dict[str, Any]
 
-   Executes standard W3C SPARQL 1.1 update commands (``INSERT DATA``, ``DELETE DATA``, ``DELETE WHERE``) and synchronizes SQLite graph tables.
+   Executes standard W3C SPARQL 1.1 update commands (``INSERT DATA``, ``DELETE DATA``, ``DELETE WHERE``) and synchronizes SQLite graph tables atomically.
+
+.. code-block:: python
+
+   graph_store.execute_sparql_update("""
+   PREFIX ex: <http://example.org/>
+   PREFIX ont: <http://example.org/ontology/>
+   INSERT DATA {
+       ex:Alice a ont:Architect ;
+                ont:name "Alice Smith" ;
+                ont:leadsProject ex:ProjectPhoenix .
+   }
+   """)
+
+Declarative Tabular-to-Graph Mapping (Zero-LLM)
+-----------------------------------------------
+
+Transform structured tables directly into grounded RDF knowledge graphs in milliseconds without consuming LLM tokens:
+
+.. code-block:: python
+
+   from safe_store import TabularMapper, TBoxManager
+
+   tbox = TBoxManager()
+   tbox.load_ontology("domain.ttl", format="turtle")
+
+   mapper = TabularMapper(store=store, tbox=tbox)
+   summary = mapper.map_csv("inventory.csv", mapping_rules={
+       "entity_mappings": [
+           {
+               "class": "http://example.org/ontology/Product",
+               "subject_template": "http://example.org/product/{sku}",
+               "properties": {"name": "http://example.org/ontology/hasName"}
+           }
+       ],
+       "relationship_mappings": [
+           {
+               "predicate": "http://example.org/ontology/suppliedBy",
+               "source_template": "http://example.org/product/{sku}",
+               "target_template": "http://example.org/supplier/{supplier_id}"
+           }
+       ]
+   })
 
 Tri-Modal Unified Graph Search
 ------------------------------
@@ -77,21 +155,17 @@ Tri-Modal Unified Graph Search
 
    Executes tri-modal retrieval combining graph neighborhood exploration, dense vector similarity, and sparse BM25 lexical search using Reciprocal Rank Fusion.
 
-Cognitive Memory System (``graph_store.memory``)
-------------------------------------------------
+Cognitive Memory & LLM Tool Calling
+-----------------------------------
 
-.. py:method:: memory.record_episode(title: str, description: str, participants: Optional[List[str]] = None, source_chunk_ids: Optional[List[int]] = None, ...) -> int
+.. py:method:: memory.record_episode(title: str, description: str, participants: List[str], source_chunk_ids: List[int], ...) -> int
 
-   Records an episodic event with temporal metadata and source text chunk grounding.
+   Records an episodic memory event grounded in physical document text chunks.
 
 .. py:method:: memory.recall_associative(concept_or_entity: str, max_hops: int = 2) -> Dict[str, Any]
 
-   Explores associative memory pathways originating from an entity or concept.
+   Traverses associative graph pathways and retrieves grounded text evidence.
 
-.. py:method:: memory.get_llm_tool_definitions() -> List[Dict[str, Any]]
+.. py:method:: get_tool_definitions() -> List[Dict[str, Any]]
 
-   Returns standard JSON tool schemas for LLM function calling.
-
-.. py:method:: memory.dispatch_llm_tool(tool_name: str, arguments: Dict[str, Any]) -> Any
-
-   Executes an LLM tool call and returns serializable results.
+   Returns standardized JSON schemas for LLM function calling tools (OpenAI, Anthropic, Ollama, Lollms).

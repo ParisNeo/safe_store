@@ -121,14 +121,31 @@ store.info()
 Launch the interactive studio from the command line:
 
 ```bash
-# Native desktop window (powered by pywebview and NiceGUI)
+# Launch Projects Cards Hub (landing page with full CRUD for all stores)
+safe-store-studio
+
+# Or open a specific database directly in the Studio Workspace
 safe-store-studio database.db
 
 # Browser mode
-safe-store-studio database.db --browser --port 8080
+safe-store-studio --browser --port 8080
 ```
 
-Inspect any store instance or `.db` file in one call with `store.info()` or `store.get_database_info()`:
+### Studio Capabilities & Layout:
+1. **Projects Hub & Store CRUD**:
+   - Visual responsive cards for every `.db` database in your working directory and `projects/` folder.
+   - **Create Store**: Create fresh stores with your choice of vectorizer (`st`, `tfidf`, `ollama`, `openai`, `cohere`, `grepper`), chunking strategy, and optional encryption password.
+   - **Edit Store**: Rename databases and edit descriptions.
+   - **Delete Store**: Permanently remove databases and their lock/WAL artifacts with a confirmation dialog.
+2. **Deep-Dive Store Workspace (The 5 Tabs)**:
+   - **Files & Documents**: Ingest documents (`.pdf`, `.docx`, `.md`, `.txt`, `.csv`), review chunks, and browse full reconstructed text.
+   - **Semantic Datalake**: Interactive 2D/3D UMAP/PCA/t-SNE point-cloud explorer with center-of-gravity markers and chunk inspection.
+   - **Knowledge Graph Studio**: 3-panel visual network workspace with interactive physics canvas (`vis-network`), manual node/edge creation, fast full-document extraction, and SPARQL 1.1 query highlighting!
+   - **RAG Search Studio**: Compare dense, lexical BM25, and hybrid queries with real-time relevance threshold sliders and contiguous chunk reconstruction.
+   - **Database Diagnostics**: Instant introspection of models, schemas, and topology counts.
+   - **`← All Stores`**: Navigate back to the Projects cards grid anytime.
+
+Inspect any store instance or `.db` file programmatically in one call with `store.info()` or `store.get_database_info()`:
 
 ```python
 from safe_store import SafeStore
@@ -248,28 +265,52 @@ fused = store.reconstruct_overlapping_chunks(raw_results, add_metadata=True)
 
 ## 8. Knowledge Graph & W3C SPARQL 1.1 Engine
 
-### 8.1. Automatic Graph Extraction
-`GraphStore.build_graph_for_all_documents()` dynamically parses document chunks using an LLM callback:
-- **With Ontology**: Constrains extraction strictly to defined TBox classes and properties.
-- **Without Ontology**: Dynamically extracts key concepts, entities, attributes, and relationships.
+### 8.1. Automatic Graph Extraction (High-Context Fast Modes)
+Modern LLMs have context windows of 32k to 128k+ tokens. Rather than making dozens of slow, sequential calls chunk-by-chunk, `GraphStore` supports three high-speed extraction modes:
 
-### 8.2. W3C SPARQL 1.1 Query Engine
-Execute standard `SELECT`, `ASK`, `CONSTRUCT`, and `DESCRIBE` queries:
+```python
+# Mode A: 'document' (Default & Fastest - 1 LLM call per document)
+# Executes up to 20x faster and captures relationships spanning across multiple sections.
+stats = graph.build_graph_for_all_documents(
+    mode='document',
+    guidance="Focus on software microservices, APIs, and team owners."
+)
+
+# Mode B: 'batch_chunks' (Balanced - groups N chunks per call)
+stats = graph.build_graph_for_all_documents(
+    mode='batch_chunks',
+    chunks_per_batch=10 # Slices of 10 chunks per LLM call
+)
+
+# Mode C: 'chunk' (Granular - processes each chunk in isolation)
+stats = graph.build_graph_for_all_documents(mode='chunk')
+```
+
+- **With Ontology**: Constrains extraction strictly to defined TBox classes and properties.
+- **Without Ontology**: Dynamically extracts rich open-ended concepts, entities, attributes, and relationships.
+- **Evidence Provenance**: All nodes extracted in full document or batched modes are automatically linked to their respective chunk IDs in SQLite for grounded verification.
+
+### 8.2. W3C SPARQL 1.1 Query Engine & AI SPARQL Generator
+Execute standard `SELECT`, `ASK`, `CONSTRUCT`, and `DESCRIBE` queries across your knowledge graph:
+
 ```python
 from safe_store import GraphStore
 
 graph = GraphStore(store=store)
-results = graph.query_sparql("""
-PREFIX ex: <http://example.org/>
-PREFIX ont: <http://example.org/ontology/>
-SELECT ?personName ?companyName WHERE {
-    ?person a ont:Person ;
-            ont:name ?personName ;
-            ont:worksFor ?company .
-    ?company ont:name ?companyName .
-}
-""")
+
+# 1. AI-Powered SPARQL Generation (Natural Language to SPARQL 1.1):
+# Grounded in your database's actual entity classes, attributes, and relationships!
+sparql_query = graph.generate_sparql("Find all tools that depend on other modules and who created them")
+print("Generated SPARQL:\n", sparql_query)
+
+# 2. Execute SPARQL Query:
+results = graph.query_sparql(sparql_query)
+for b in results["results"]["bindings"]:
+    print(b)
 ```
+
+In **SafeStore Studio**:
+The Knowledge Graph right sidebar features a built-in **AI SPARQL Generator (LOLLMS)** bar. Type your question in natural language, press **Enter** or click **Generate SPARQL**, and the query will be written into the editor, ready to execute and highlight matching nodes on the interactive canvas.
 
 ### 8.3. SPARQL 1.1 Update Engine
 Reorganize knowledge graphs using standard SPARQL 1.1 updates:

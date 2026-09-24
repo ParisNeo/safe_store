@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - feat(vectorization): add detailed ASCII info for vectorizer initialization
 
+## [2026-09-24 11:16]
+
+- fix(graph_store): update interactive studio launch to support Projects Cards Hub landing page
+
 ## [2026-09-24 07:16]
 
 - `fix(pyproject): bump version to v3.6.2 and minor text updates in docstrings for consistency`

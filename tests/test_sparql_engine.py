@@ -240,3 +240,26 @@ class TestSparqlSyntaxAndValidation:
         invalid_query = "SELECT INVALID SYNTAX FROM NOWHERE {"
         with pytest.raises(QueryError):
             populated_graph_store.query_sparql(invalid_query)
+
+    def test_generate_sparql_with_llm(self, populated_graph_store: GraphStore):
+        """Test translating natural language questions into valid executable SPARQL 1.1 queries."""
+        # Mock LLM response returning clean SPARQL
+        mock_sparql = """```sparql
+PREFIX ex: <http://example.org/>
+PREFIX ont: <http://example.org/ontology/>
+SELECT ?person WHERE {
+    ?person a ont:Person .
+}
+```"""
+        populated_graph_store.llm_executor = MagicMock(return_value=mock_sparql)
+
+        generated_query = populated_graph_store.generate_sparql("Show me all persons in the organization")
+
+        assert "SELECT ?person" in generated_query
+        assert "ont:Person" in generated_query
+        assert "```" not in generated_query  # Must be stripped of markdown
+
+        # Verify that the generated query executes cleanly on the graph
+        res = populated_graph_store.query_sparql(generated_query)
+        assert "results" in res
+        assert len(res["results"]["bindings"]) == 2  # Alice and Bob

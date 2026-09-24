@@ -39,11 +39,13 @@ class GraphStore:
     DEFAULT_GRAPH_EXTRACTION_WITH_ONTOLOGY_PROMPT_TEMPLATE = load_prompt("graph_extraction_prompt_with_ontology")
     DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE = load_prompt("query_parsing_prompt")
     DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE = load_prompt("entity_fusion_prompt")
+    DEFAULT_SPARQL_GENERATION_PROMPT_TEMPLATE = load_prompt("sparql_generation_prompt")
 
     # Class-level defaults for backward compatibility and resilient resolution
     graph_extraction_prompt_template: str = DEFAULT_GRAPH_EXTRACTION_PROMPT_TEMPLATE
     query_parsing_prompt_template: str = DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE
     entity_fusion_prompt_template: str = DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE
+    sparql_generation_prompt_template: str = DEFAULT_SPARQL_GENERATION_PROMPT_TEMPLATE
 
     def __init__(
         self,
@@ -70,6 +72,7 @@ class GraphStore:
         self.graph_extraction_prompt_template = graph_extraction_prompt_template or self.DEFAULT_GRAPH_EXTRACTION_PROMPT_TEMPLATE
         self.query_parsing_prompt_template = query_parsing_prompt_template or self.DEFAULT_QUERY_PARSING_PROMPT_TEMPLATE
         self.entity_fusion_prompt_template = entity_fusion_prompt_template or self.DEFAULT_ENTITY_FUSION_PROMPT_TEMPLATE
+        self.sparql_generation_prompt_template = self.DEFAULT_SPARQL_GENERATION_PROMPT_TEMPLATE
         self._sparql_engine: Optional[SparqlEngine] = None
         self._cognitive_memory: Optional[CognitiveMemoryStore] = None
 
@@ -204,6 +207,71 @@ class GraphStore:
             entity_label=label
         )
 
+    def generate_sparql(self, natural_language_query: str, guidance: Optional[str] = None) -> str:
+        """
+        Translates a natural language question into an executable W3C SPARQL 1.1 query
+        using LOLLMS, grounded in the database's live entity classes and relationship types.
+        """
+        # 1. Gather live graph topology for grounding
+        info = self.get_graph_info()
+        schema_lines = []
+        if info.get("nodes_by_label"):
+            schema_lines.append("Existing Entity Classes (Node Labels):")
+            for lbl, count in info["nodes_by_label"].items():
+                schema_lines.append(f"  - ont:{lbl} ({count} instances)")
+
+        if info.get("relationships_by_type"):
+            schema_lines.append("\nExisting Relationship Types (Object Properties):")
+            for rtype, count in info["relationships_by_type"].items():
+                schema_lines.append(f"  - ex:{rtype} / ont:{rtype} ({count} connections)")
+
+        if info.get("ontology") and isinstance(info["ontology"], dict):
+            schema_lines.append(f"\nOntology Summary: {json.dumps(info['ontology'])}")
+
+        schema_context = "\n".join(schema_lines) if schema_lines else "General knowledge graph with nodes and directed relationships."
+
+        template = getattr(self, "sparql_generation_prompt_template", None) or self.DEFAULT_SPARQL_GENERATION_PROMPT_TEMPLATE
+        prompt = template.format(
+            schema_context=schema_context + (f"\nAdditional Guidance: {guidance}" if guidance else ""),
+            natural_language_query=natural_language_query.strip()
+        )
+
+        raw_response = ""
+        # Priority 1: LOLLMS client
+        if self.lollms_client is not None:
+            try:
+                if hasattr(self.lollms_client, "generate_code"):
+                    raw_response = self.lollms_client.generate_code(prompt, language="sparql", temperature=0.1)
+                elif hasattr(self.lollms_client, "generate_text"):
+                    raw_response = self.lollms_client.generate_text(prompt, max_new_tokens=512, temperature=0.1)
+            except Exception as e:
+                ASCIIColors.warning(f"LOLLMS client generate_sparql fallback: {e}")
+
+        # Priority 2: LLM Executor callback
+        if not raw_response and self.llm_executor:
+            raw_response = self.llm_executor(prompt)
+
+        if not raw_response:
+            raise SafeStoreError("Failed to generate SPARQL query: LLM returned empty response.")
+
+        # Extract code block if wrapped in markdown
+        cleaned = raw_response.strip()
+        code_match = re.search(r'```(?:sparql|sql)?\s*([\s\S]*?)\s*```', cleaned, re.IGNORECASE)
+        if code_match:
+            cleaned = code_match.group(1).strip()
+
+        # Ensure minimal prefixes exist
+        if "PREFIX" not in cleaned.upper():
+            prefixes = (
+                "PREFIX ex: <http://example.org/>\n"
+                "PREFIX ont: <http://example.org/ontology/>\n"
+                "PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>\n"
+                "PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\n"
+            )
+            cleaned = prefixes + cleaned
+
+        return cleaned
+
     def get_structured_extraction_schema(self) -> Dict[str, Any]:
         """
         Builds a W3C-compliant JSON Schema for LOLLMS structured generation,
@@ -297,10 +365,21 @@ class GraphStore:
         clean = re.sub(r'!\[([^\]]*)\]\(data:image\/[^;]+;base64,[A-Za-z0-9+/=\s]+\)', r'[Image: \1]', clean)
         return clean
 
-    def _extract_and_insert_graph_for_chunk(self, chunk_id: int, chunk_text: str, guidance: Optional[str] = None) -> Tuple[int, int]:
-        """Extracts graph elements from a single chunk using LOLLMS structured generation or callback."""
+    def _extract_and_insert_graph(
+        self,
+        text: str,
+        chunk_ids: List[int],
+        guidance: Optional[str] = None,
+        source_label: str = "text"
+    ) -> Tuple[int, int]:
+        """
+        Extracts graph elements from text (a single chunk, a batch of chunks, or a whole document)
+        and links all extracted nodes to the provided chunk IDs for evidence provenance.
+        """
         parsed = None
-        sanitized_chunk = self._sanitize_chunk_for_llm(chunk_text)
+        sanitized_text = self._sanitize_chunk_for_llm(text)
+        if not sanitized_text.strip():
+            return 0, 0
 
         # Priority 1: LOLLMS Structured Content Generation
         if self.lollms_client is not None and hasattr(self.lollms_client, "generate_structured_content"):
@@ -310,11 +389,11 @@ class GraphStore:
                 system_prompt = (
                     "You are an expert knowledge graph extraction engine. "
                     "Extract all entities (nodes), their attributes, and directed relationships (triplets) "
-                    "from the document package, strictly conforming to the schema.\n\n"
+                    "from the document content, strictly conforming to the schema.\n\n"
                     f"Ontology Schema / Constraints:\n{ontology_context}\n\n"
-                    f"Document Content:\n{sanitized_chunk}"
+                    f"Document Content:\n{sanitized_text}"
                 )
-                user_prompt = "Create a complete knowledge graph representation of the text as structured triplets."
+                user_prompt = "Create a complete, rich knowledge graph representation of the text as structured triplets."
                 if guidance:
                     user_prompt += f" Guidance: {guidance}"
 
@@ -329,21 +408,21 @@ class GraphStore:
                 elif isinstance(structured, str):
                     parsed = robust_json_parser(structured)
             except Exception as e:
-                ASCIIColors.warning(f"LOLLMS structured generation fallback for chunk {chunk_id}: {e}")
+                ASCIIColors.warning(f"LOLLMS structured generation fallback for {source_label}: {e}")
                 parsed = None
 
         # Priority 2: Fallback to llm_executor callback
         if parsed is None and self.llm_executor:
-            prompt = self._get_graph_extraction_prompt(sanitized_chunk, guidance)
+            prompt = self._get_graph_extraction_prompt(sanitized_text, guidance)
             raw_response = self.llm_executor(prompt)
             if not raw_response:
-                ASCIIColors.warning(f"LLM extraction returned empty response for chunk {chunk_id}.")
+                ASCIIColors.warning(f"LLM extraction returned empty response for {source_label}.")
                 return 0, 0
 
             try:
                 parsed = robust_json_parser(raw_response)
             except Exception as e:
-                ASCIIColors.warning(f"Failed to parse LLM extraction response for chunk {chunk_id}: {e}\nRaw Response preview: {str(raw_response)[:200]}")
+                ASCIIColors.warning(f"Failed to parse LLM extraction response for {source_label}: {e}\nRaw Response preview: {str(raw_response)[:200]}")
                 return 0, 0
 
         nodes_data = parsed.get("nodes", []) if isinstance(parsed, dict) else []
@@ -363,7 +442,10 @@ class GraphStore:
 
             node_id = self._fuse_or_create_node(label, props)
             self._vectorize_and_store_node_update(node_id, label, props)
-            db.link_node_to_chunk(self.conn, node_id, chunk_id)
+
+            # Link node to all corresponding provenance chunk IDs
+            for cid in chunk_ids:
+                db.link_node_to_chunk(self.conn, node_id, cid)
 
             id_key, id_val = self._get_node_identifying_parts(props)
             if id_val:
@@ -395,37 +477,122 @@ class GraphStore:
                 rels_created += 1
 
         if nodes_created > 0 or rels_created > 0:
-            ASCIIColors.info(f"Chunk #{chunk_id}: Extracted {nodes_created} node(s) and {rels_created} relationship(s).")
+            ASCIIColors.info(f"{source_label}: Extracted {nodes_created} node(s) and {rels_created} relationship(s).")
         return nodes_created, rels_created
 
-    def build_graph_for_document(self, doc_id: int, guidance: Optional[str] = None) -> Dict[str, int]:
-        """Builds graph nodes and relationships for all chunks of a specific document."""
+    def _extract_and_insert_graph_for_chunk(self, chunk_id: int, chunk_text: str, guidance: Optional[str] = None) -> Tuple[int, int]:
+        """Legacy helper for single-chunk extraction."""
+        return self._extract_and_insert_graph(
+            text=chunk_text,
+            chunk_ids=[chunk_id],
+            guidance=guidance,
+            source_label=f"Chunk #{chunk_id}"
+        )
+
+    def build_graph_for_document(
+        self,
+        doc_id: int,
+        guidance: Optional[str] = None,
+        mode: Literal['document', 'batch_chunks', 'chunk'] = 'document',
+        chunks_per_batch: int = 5,
+        progress_callback: Optional[ProgressCallback] = None
+    ) -> Dict[str, int]:
+        """
+        Builds graph nodes and relationships for a specific document.
+
+        Modes:
+        - 'document' (Fastest): Sends the entire reconstructed document text to the LLM at once.
+          Takes 1 LLM call instead of N calls, maximizing throughput and capturing cross-chunk relationships.
+        - 'batch_chunks' (Balanced): Groups chunks into slices of `chunks_per_batch`.
+        - 'chunk' (Granular): Processes each chunk in isolation.
+        """
         with self.store._instance_lock, self.store._optional_file_lock_context(f"build_graph_for_document: {doc_id}"):
-            cursor = self.conn.execute("SELECT chunk_id, chunk_text, is_encrypted FROM chunks WHERE doc_id = ?", (doc_id,))
+            cursor = self.conn.execute("SELECT chunk_id, chunk_text, is_encrypted, chunk_seq FROM chunks WHERE doc_id = ? ORDER BY chunk_seq ASC", (doc_id,))
             rows = cursor.fetchall()
             if not rows:
                 return {"nodes_created": 0, "relationships_created": 0, "chunks_processed": 0}
 
-            total_nodes = 0
-            total_rels = 0
-            processed_chunk_ids = []
+            doc_row = db.get_document_record_by_id(self.conn, doc_id)
+            doc_name = Path(doc_row[1].decode('utf-8')).name if doc_row else f"Document #{doc_id}"
 
-            for chunk_id, chunk_text_data, is_enc in rows:
+            chunk_records = []
+            for cid, c_data, is_enc, seq in rows:
                 if is_enc:
                     if self.encryptor.is_enabled:
                         try:
-                            chunk_text = self.encryptor.decrypt(chunk_text_data)
+                            txt = self.encryptor.decrypt(c_data)
                         except Exception:
                             continue
                     else:
                         continue
                 else:
-                    chunk_text = chunk_text_data.decode('utf-8') if isinstance(chunk_text_data, bytes) else str(chunk_text_data)
+                    txt = c_data.decode('utf-8') if isinstance(c_data, bytes) else str(c_data)
+                chunk_records.append((cid, txt, seq))
 
-                n_cnt, r_cnt = self._extract_and_insert_graph_for_chunk(chunk_id, chunk_text, guidance)
+            if not chunk_records:
+                return {"nodes_created": 0, "relationships_created": 0, "chunks_processed": 0}
+
+            total_nodes = 0
+            total_rels = 0
+            processed_chunk_ids = [c[0] for c in chunk_records]
+
+            if mode == 'document':
+                # Reconstruct full text or assemble sequentially
+                full_text = self.store.reconstruct_document_text(doc_id)
+                if not full_text:
+                    full_text = "\n\n".join(c[1] for c in chunk_records)
+
+                status = f"Extracting graph for full document '{doc_name}' ({len(chunk_records)} chunks in 1 pass)..."
+                ASCIIColors.info(status)
+                if progress_callback:
+                    progress_callback(0.5, status)
+
+                n_cnt, r_cnt = self._extract_and_insert_graph(
+                    text=full_text,
+                    chunk_ids=processed_chunk_ids,
+                    guidance=guidance,
+                    source_label=f"Document '{doc_name}'"
+                )
                 total_nodes += n_cnt
                 total_rels += r_cnt
-                processed_chunk_ids.append(chunk_id)
+
+            elif mode == 'batch_chunks':
+                # Group chunks into slices
+                step = max(1, chunks_per_batch)
+                total_batches = (len(chunk_records) + step - 1) // step
+                for b_idx in range(0, len(chunk_records), step):
+                    slice_records = chunk_records[b_idx:b_idx + step]
+                    slice_text = "\n\n".join(f"[Section {c[2]}]:\n{c[1]}" for c in slice_records)
+                    slice_cids = [c[0] for c in slice_records]
+
+                    cur_batch_num = (b_idx // step) + 1
+                    status = f"Extracting batch {cur_batch_num}/{total_batches} for '{doc_name}'..."
+                    if progress_callback:
+                        progress_callback(cur_batch_num / total_batches, status)
+
+                    n_cnt, r_cnt = self._extract_and_insert_graph(
+                        text=slice_text,
+                        chunk_ids=slice_cids,
+                        guidance=guidance,
+                        source_label=f"Batch {cur_batch_num}/{total_batches} of '{doc_name}'"
+                    )
+                    total_nodes += n_cnt
+                    total_rels += r_cnt
+
+            else:  # 'chunk' mode
+                for idx, (cid, txt, seq) in enumerate(chunk_records):
+                    status = f"Extracting chunk {idx+1}/{len(chunk_records)} of '{doc_name}'..."
+                    if progress_callback:
+                        progress_callback((idx + 1) / len(chunk_records), status)
+
+                    n_cnt, r_cnt = self._extract_and_insert_graph(
+                        text=txt,
+                        chunk_ids=[cid],
+                        guidance=guidance,
+                        source_label=f"Chunk #{cid} of '{doc_name}'"
+                    )
+                    total_nodes += n_cnt
+                    total_rels += r_cnt
 
             if processed_chunk_ids:
                 db.mark_chunks_graph_processed(self.conn, processed_chunk_ids)
@@ -436,54 +603,72 @@ class GraphStore:
                 "chunks_processed": len(processed_chunk_ids)
             }
 
-    def build_graph_for_all_documents(self, guidance: Optional[str] = None, progress_callback: Optional[ProgressCallback] = None) -> Dict[str, int]:
-        """Builds graph nodes and relationships for all unprocessed chunks across all documents."""
-        with self.store._instance_lock, self.store._optional_file_lock_context("build_graph_for_all_documents"):
-            cursor = self.conn.execute("SELECT chunk_id, chunk_text, is_encrypted, doc_id FROM chunks WHERE graph_processed_at IS NULL ORDER BY chunk_id ASC")
-            rows = cursor.fetchall()
-            if not rows:
-                cursor = self.conn.execute("SELECT chunk_id, chunk_text, is_encrypted, doc_id FROM chunks ORDER BY chunk_id ASC")
-                rows = cursor.fetchall()
+    def build_graph_for_all_documents(
+        self,
+        guidance: Optional[str] = None,
+        progress_callback: Optional[ProgressCallback] = None,
+        mode: Literal['document', 'batch_chunks', 'chunk'] = 'document',
+        chunks_per_batch: int = 5
+    ) -> Dict[str, int]:
+        """
+        Builds knowledge graph across all documents in the store.
 
-            total_chunks = len(rows)
-            if total_chunks == 0:
-                ASCIIColors.warning("No document chunks available to build graph from.")
+        Supports fast large-context extraction modes:
+        - 'document' (Default / Recommended): Sends each document as a complete narrative unit in 1 call.
+          Transforms a 100-chunk store from 100 calls down to 3–5 calls, executing up to 20x faster.
+        - 'batch_chunks': Batches consecutive chunks into slices of `chunks_per_batch`.
+        - 'chunk': Classic 1-chunk-per-call mode.
+        """
+        with self.store._instance_lock, self.store._optional_file_lock_context("build_graph_for_all_documents"):
+            # Discover distinct documents with unprocessed chunks
+            cursor = self.conn.execute("SELECT DISTINCT doc_id FROM chunks WHERE graph_processed_at IS NULL ORDER BY doc_id ASC")
+            doc_ids = [row[0] for row in cursor.fetchall()]
+            if not doc_ids:
+                cursor = self.conn.execute("SELECT DISTINCT doc_id FROM chunks ORDER BY doc_id ASC")
+                doc_ids = [row[0] for row in cursor.fetchall()]
+
+            total_docs = len(doc_ids)
+            if total_docs == 0:
+                ASCIIColors.warning("No documents available to build graph from.")
                 return {"nodes_created": 0, "relationships_created": 0, "chunks_processed": 0}
 
-            ASCIIColors.info(f"Building knowledge graph across {total_chunks} chunk(s)...")
+            ASCIIColors.info(f"Building knowledge graph across {total_docs} document(s) [Mode: {mode.upper()}]...")
+
             total_nodes = 0
             total_rels = 0
-            processed_chunk_ids = []
+            total_chunks_processed = 0
 
-            for idx, (chunk_id, chunk_text_data, is_enc, doc_id) in enumerate(rows):
-                if is_enc:
-                    if self.encryptor.is_enabled:
-                        try:
-                            chunk_text = self.encryptor.decrypt(chunk_text_data)
-                        except Exception:
-                            continue
-                    else:
-                        continue
-                else:
-                    chunk_text = chunk_text_data.decode('utf-8') if isinstance(chunk_text_data, bytes) else str(chunk_text_data)
+            for d_idx, doc_id in enumerate(doc_ids, 1):
+                doc_row = db.get_document_record_by_id(self.conn, doc_id)
+                doc_name = Path(doc_row[1].decode('utf-8')).name if doc_row else f"Doc #{doc_id}"
 
-                n_cnt, r_cnt = self._extract_and_insert_graph_for_chunk(chunk_id, chunk_text, guidance)
-                total_nodes += n_cnt
-                total_rels += r_cnt
-                processed_chunk_ids.append(chunk_id)
+                def _sub_progress(fraction, message):
+                    overall_progress = ((d_idx - 1) + fraction) / total_docs
+                    if progress_callback:
+                        progress_callback(overall_progress, f"[{d_idx}/{total_docs}] {message}")
 
-                status_msg = f"Processed chunk {idx+1}/{total_chunks} (+{n_cnt} nodes, +{r_cnt} edges | total: {total_nodes} nodes, {total_rels} edges)"
+                stats = self.build_graph_for_document(
+                    doc_id=doc_id,
+                    guidance=guidance,
+                    mode=mode,
+                    chunks_per_batch=chunks_per_batch,
+                    progress_callback=_sub_progress
+                )
+
+                total_nodes += stats["nodes_created"]
+                total_rels += stats["relationships_created"]
+                total_chunks_processed += stats["chunks_processed"]
+
+                status_msg = f"Completed doc {d_idx}/{total_docs} ({doc_name}): +{stats['nodes_created']} nodes, +{stats['relationships_created']} edges (Total: {total_nodes} nodes, {total_rels} edges)"
+                ASCIIColors.info(status_msg)
                 if progress_callback:
-                    progress_callback((idx + 1) / total_chunks, status_msg)
+                    progress_callback(d_idx / total_docs, status_msg)
 
-            if processed_chunk_ids:
-                db.mark_chunks_graph_processed(self.conn, processed_chunk_ids)
-
-            ASCIIColors.success(f"Graph build finished: {total_nodes} nodes created, {total_rels} relationships created across {len(processed_chunk_ids)} chunks.")
+            ASCIIColors.success(f"Graph build finished: {total_nodes} nodes, {total_rels} relationships across {total_chunks_processed} chunks.")
             return {
                 "nodes_created": total_nodes,
                 "relationships_created": total_rels,
-                "chunks_processed": len(processed_chunk_ids)
+                "chunks_processed": total_chunks_processed
             }
 
     def _fuse_or_create_node(self, label: str, properties: Dict[str, Any]) -> int:

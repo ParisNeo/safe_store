@@ -284,3 +284,31 @@ def test_add_document_unsupported_type(mock_store_colors, mock_parser_colors, sa
     # Check logs
     assert_log_call_containing(mock_parser_colors.warning, expected_error_msg_part)
     assert_log_call_containing(mock_store_colors.error, f"Error during add_document: ConfigurationError: {expected_error_msg_part}")
+
+
+def test_in_memory_store_bypasses_file_lock(tmp_path: Path):
+    """
+    Regression test: In-memory store paths (including resolved Path(':memory:') on Windows)
+    must never create on-disk file locks or throw OSError [Errno 22].
+    """
+    # 1. Literal ':memory:'
+    store1 = SafeStore(db_path=":memory:", log_level=LogLevel.DEBUG)
+    assert store1._is_in_memory is True
+    assert store1._file_lock is None
+    assert store1.lock_path is None
+    store1.close()
+
+    # 2. Path(':memory:') object
+    store2 = SafeStore(db_path=Path(":memory:"), log_level=LogLevel.DEBUG)
+    assert store2._is_in_memory is True
+    assert store2._file_lock is None
+    assert store2.lock_path is None
+    store2.close()
+
+    # 3. Path resolved to current directory (Windows simulation: C:\...\:memory:)
+    simulated_windows_resolved = tmp_path / ":memory:"
+    store3 = SafeStore(db_path=simulated_windows_resolved, log_level=LogLevel.DEBUG)
+    assert store3._is_in_memory is True
+    assert store3._file_lock is None
+    assert store3.lock_path is None
+    store3.close()

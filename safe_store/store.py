@@ -47,6 +47,30 @@ DEFAULT_LOCK_TIMEOUT: int = 60
 TEMP_FILE_DB_INDICATOR = ":tempfile:"
 IN_MEMORY_DB_INDICATOR = ":memory:"
 
+
+def _is_in_memory_path(path: Union[str, Path, None]) -> bool:
+    """Determines if a path represents an in-memory database across platforms."""
+    if path is None:
+        return True
+    s = str(path).strip().lower()
+    return (
+        s in (IN_MEMORY_DB_INDICATOR, "memory", ":memory:")
+        or s.endswith(":memory:")
+        or getattr(path, "name", "") == ":memory:"
+    )
+
+
+def _is_tempfile_path(path: Union[str, Path, None]) -> bool:
+    """Determines if a path represents a temporary file database indicator."""
+    if path is None:
+        return False
+    s = str(path).strip().lower()
+    return (
+        s in (TEMP_FILE_DB_INDICATOR, "tempfile", ":tempfile:")
+        or s.endswith(":tempfile:")
+        or getattr(path, "name", "") == ":tempfile:"
+    )
+
 class SafeStore:
     """
     Manages a local vector store with a single, fixed vectorizer and chunking strategy.
@@ -99,10 +123,15 @@ class SafeStore:
         if metadata is not None: explicit_kwargs['metadata'] = metadata
         if chunking_kwargs is not None: explicit_kwargs['chunking_kwargs'] = chunking_kwargs
 
-        db_path_input_str = str(db_path).lower() if db_path is not None else ":memory:"
+        if _is_in_memory_path(db_path):
+            db_path = IN_MEMORY_DB_INDICATOR
+        elif _is_tempfile_path(db_path):
+            db_path = TEMP_FILE_DB_INDICATOR
+
+        db_path_input_str = str(db_path).lower()
         stored_config: Dict[str, Any] = {}
 
-        if db_path_input_str not in (":memory:", ":tempfile:"):
+        if not _is_in_memory_path(db_path) and not _is_tempfile_path(db_path):
             db_path_resolved = str(Path(db_path).resolve())
             if Path(db_path_resolved).exists():
                 try:
@@ -189,13 +218,12 @@ class SafeStore:
         return cls(db_path=db_path, **kwargs)
 
     def _setup_paths_and_locks(self, db_path):
-        db_path_input_str = str(db_path).lower() if db_path is not None else IN_MEMORY_DB_INDICATOR
-        if db_path_input_str == IN_MEMORY_DB_INDICATOR:
+        if _is_in_memory_path(db_path):
             self.db_path = IN_MEMORY_DB_INDICATOR
             self._is_in_memory = True
             self.lock_path = None
             self._file_lock = None
-        elif db_path_input_str == TEMP_FILE_DB_INDICATOR:
+        elif _is_tempfile_path(db_path):
             tmp_f = tempfile.NamedTemporaryFile(suffix=".db", prefix="safestore_temp_", delete=False)
             self.db_path = self._temp_db_actual_path = tmp_f.name
             self._is_temp_file_db = True
