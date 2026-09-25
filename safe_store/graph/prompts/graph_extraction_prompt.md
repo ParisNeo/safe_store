@@ -18,35 +18,35 @@
 
 **JSON Output Structure:**
 ```json
-{
+{{
     "nodes": [
-        {
+        {{
             "label": "Technology",
-            "properties": {
+            "properties": {{
                 "identifying_value": "SafeStore",
                 "description": "Local vector and graph database library",
                 "backend": "SQLite"
-            }
-        },
-        {
+            }}
+        }},
+        {{
             "label": "Concept",
-            "properties": {
+            "properties": {{
                 "identifying_value": "Knowledge Graph",
                 "description": "Interconnected entity and relation graph"
-            }
-        }
+            }}
+        }}
     ],
     "relationships": [
-        {
+        {{
             "source_node_label": "Technology",
             "source_node_identifying_value": "SafeStore",
             "target_node_label": "Concept",
             "target_node_identifying_value": "Knowledge Graph",
             "type": "IMPLEMENTS",
-            "properties": {
+            "properties": {{
                 "details": "Provides native graph storage and SPARQL 1.1 query engine"
-            }
-        }
+            }}
+        }}
     ]
-}
+}}
 ```

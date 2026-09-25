@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - feat(vectorization): add detailed ASCII info for vectorizer initialization
 
+## [2026-09-25 01:25]
+
+- feat(safe-store): increment version from "3.7.1" to "3.7.2"
+
 ## [2026-09-24 12:17]
 
 - fix(doc: db): add SQLite connection pool and resolve race condition in metadata handling

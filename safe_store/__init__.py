@@ -9,7 +9,12 @@ and Tri-Modal Reciprocal Rank Fusion.
 """
 
 from .store import SafeStore, LogLevel, TEMP_FILE_DB_INDICATOR, IN_MEMORY_DB_INDICATOR, DEFAULT_LOCK_TIMEOUT
-from .graph.graph_store import GraphStore
+from .graph.graph_store import (
+    GraphStore,
+    LLMGeneratorProtocol,
+    LLMCallable,
+    wrap_llm_callable
+)
 from .graph.cognitive_memory import CognitiveMemoryStore
 from .graph.ontology.tbox import TBoxManager
 from .graph.mapping.tabular_mapper import TabularMapper
@@ -23,6 +28,7 @@ from .search.reconstruction import (
     strip_metadata_header,
     format_metadata_header
 )
+from .search.clustering import DocumentClusterer
 from .datalake.viewer import DatalakeViewer
 from .core.exceptions import (
     SafeStoreError,
@@ -61,6 +67,9 @@ __all__ = [
     "SafeStore",
     "shutdown_shared_vectorizer",
     "GraphStore",
+    "LLMGeneratorProtocol",
+    "LLMCallable",
+    "wrap_llm_callable",
     "CognitiveMemoryStore",
     "TBoxManager",
     "TabularMapper",
@@ -73,6 +82,7 @@ __all__ = [
     "merge_overlapping_texts",
     "strip_metadata_header",
     "format_metadata_header",
+    "DocumentClusterer",
     "DatalakeViewer",
     "ASCIIColors",
     "LogLevel",

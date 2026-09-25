@@ -23,6 +23,7 @@ from safe_store.search import similarity
 from safe_store.search.bm25 import BM25Retriever
 from safe_store.search.fusion import reciprocal_rank_fusion
 from safe_store.search.reconstruction import reconstruct_overlapping_chunks
+from safe_store.search.clustering import DocumentClusterer
 from .datalake.viewer import DatalakeViewer
 from safe_store.vectorization.manager import VectorizationManager
 from safe_store.vectorization.base import BaseVectorizer
@@ -103,7 +104,10 @@ class SafeStore:
         cache_folder: Optional[str] = None,
         use_shared_server: Optional[bool] = None,
         shared_vectorizer: Optional[bool] = None,
-        chunking_kwargs: Optional[Dict[str, Any]] = None
+        chunking_kwargs: Optional[Dict[str, Any]] = None,
+        llm_generator: Optional[Callable[..., str]] = None,
+        llm_callable: Optional[Callable[..., str]] = None,
+        lollms_client: Optional[Any] = None
     ):
         ASCIIColors.set_log_level(log_level)
 
@@ -179,8 +183,14 @@ class SafeStore:
         self._temp_db_actual_path: Optional[str] = None
         self._file_lock: Optional[FileLock] = None
 
+        # Resolve LLM generator callable or client instance
+        from safe_store.graph.graph_store import wrap_llm_callable
+        active_llm = llm_generator or llm_callable or lollms_client
+        self.llm_generator: Optional[Callable[..., str]] = wrap_llm_callable(active_llm)
+        self.lollms_client: Optional[Any] = lollms_client
+
         self._setup_paths_and_locks(db_path)
-        
+
         self.conn: Optional[sqlite3.Connection] = None
         self._is_closed: bool = True
         self.vectorizer_manager = VectorizationManager(
@@ -194,6 +204,8 @@ class SafeStore:
         self.tokenizer_for_chunking: Optional[Any] = None
         self._page_index: Optional[PageIndex] = None
         self._datalake_viewer: Optional[DatalakeViewer] = None
+        self._clusterer: Optional[DocumentClusterer] = None
+        self._graph_store: Optional[Any] = None
 
         try:
             self._connect_and_initialize()
@@ -216,6 +228,62 @@ class SafeStore:
     @classmethod
     def from_db(cls, db_path: Union[str, Path], **kwargs) -> "SafeStore":
         return cls(db_path=db_path, **kwargs)
+
+    def set_llm_generator(self, generator: Callable[..., str]) -> None:
+        """
+        Sets or updates the custom LLM generator callable.
+        Propagates to any active GraphStore instance attached to this store.
+        """
+        from safe_store.graph.graph_store import wrap_llm_callable
+        self.llm_generator = wrap_llm_callable(generator)
+        if self._graph_store is not None and hasattr(self._graph_store, "set_llm_generator"):
+            self._graph_store.set_llm_generator(generator)
+
+    def set_lollms_client(self, client: Any) -> None:
+        """Sets or updates the custom LollmsClient instance to be used for generation."""
+        self.lollms_client = client
+        self.set_llm_generator(client)
+        if self._graph_store is not None and hasattr(self._graph_store, "set_lollms_client"):
+            self._graph_store.set_lollms_client(client)
+
+    @property
+    def graph(self) -> Any:
+        """Returns or initializes a GraphStore attached to this SafeStore using the configured llm_generator."""
+        if self._graph_store is None:
+            from safe_store.graph.graph_store import GraphStore
+            self._graph_store = GraphStore(store=self, llm_generator=self.llm_generator, lollms_client=self.lollms_client)
+        return self._graph_store
+
+    def get_graph_store(
+        self,
+        llm_generator: Optional[Callable[..., str]] = None,
+        llm_callable: Optional[Callable[..., str]] = None,
+        lollms_client: Optional[Any] = None,
+        llm_executor_callback: Optional[Callable[[str], str]] = None,
+        ontology: Optional[Union[Dict[str, Any], str]] = None,
+        **kwargs
+    ) -> Any:
+        """Returns or initializes a GraphStore, prioritizing an explicitly passed llm_generator."""
+        from safe_store.graph.graph_store import GraphStore
+        chosen_gen = llm_generator or llm_callable or llm_executor_callback or self.llm_generator
+        effective_client = lollms_client if lollms_client is not None else self.lollms_client
+
+        if self._graph_store is None:
+            self._graph_store = GraphStore(
+                store=self,
+                llm_generator=chosen_gen,
+                lollms_client=effective_client,
+                ontology=ontology,
+                **kwargs
+            )
+        else:
+            if chosen_gen is not None and hasattr(self._graph_store, "set_llm_generator"):
+                self._graph_store.set_llm_generator(chosen_gen)
+            elif effective_client is not None and hasattr(self._graph_store, "set_lollms_client"):
+                self._graph_store.set_lollms_client(effective_client)
+            if ontology is not None:
+                self._graph_store.ontology = ontology
+        return self._graph_store
 
     def _setup_paths_and_locks(self, db_path):
         if _is_in_memory_path(db_path):
@@ -414,6 +482,9 @@ class SafeStore:
                 self.conn = None
             self._is_closed = True
 
+            if self._graph_store is not None:
+                self._graph_store = None
+
             # Cleanly unload vectorizer and release VRAM/RAM
             if hasattr(self, 'vectorizer') and self.vectorizer is not None:
                 try:
@@ -508,6 +579,46 @@ class SafeStore:
         if self._datalake_viewer is None:
             self._datalake_viewer = DatalakeViewer(self)
         return self._datalake_viewer
+
+    @property
+    def clusterer(self) -> DocumentClusterer:
+        if self._clusterer is None:
+            self._clusterer = DocumentClusterer(self)
+        return self._clusterer
+
+    def cluster_documents(
+        self,
+        n_clusters: Union[int, Literal['auto']] = 'auto',
+        method: Literal['kmeans', 'agglomerative'] = 'kmeans',
+        generate_themes: bool = True,
+        save_to_store: bool = True,
+        filter_doc_ids: Optional[List[int]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Clusters all stored documents using semantic vector centroids and synthesizes
+        thematic metadata (titles, descriptions, topic tags) for each group.
+        """
+        with self._instance_lock:
+            self._ensure_connection()
+            return self.clusterer.cluster_documents(
+                n_clusters=n_clusters,
+                method=method,
+                generate_themes=generate_themes,
+                save_to_store=save_to_store,
+                filter_doc_ids=filter_doc_ids
+            )
+
+    def get_document_clusters(self, use_cache: bool = True) -> List[Dict[str, Any]]:
+        """
+        Returns document clusters and thematic groups. Loads from persistent cache if available.
+        """
+        with self._instance_lock:
+            self._ensure_connection()
+            if use_cache:
+                cached = self.clusterer.get_cached_clusters()
+                if cached is not None:
+                    return cached
+            return self.cluster_documents()
 
     def get_database_info(self, print_summary: bool = False) -> Dict[str, Any]:
         """

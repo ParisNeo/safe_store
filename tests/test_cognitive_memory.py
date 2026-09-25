@@ -127,3 +127,80 @@ class TestCognitiveMemoryAndSparqlUpdate:
             "participants": ["Alice Smith"]
         })
         assert isinstance(result, int)
+
+    def test_custom_lollms_client_injection(self, tmp_path: Path):
+        """Test injecting a custom lollms_client instance directly into SafeStore and GraphStore."""
+        mock_client = MagicMock()
+        mock_client.generate_code.return_value = '{"nodes": [{"label": "Concept", "properties": {"identifying_value": "Telemetry", "name": "Telemetry"}}], "relationships": []}'
+
+        db_path = tmp_path / "test_client_injection.db"
+        store = SafeStore(
+            db_path=str(db_path),
+            vectorizer_name="st",
+            chunk_size=50,
+            chunk_overlap=5,
+            lollms_client=mock_client
+        )
+
+        assert store.lollms_client is mock_client
+
+        # Test GraphStore inherits lollms_client from SafeStore
+        graph_store = store.get_graph_store()
+        assert graph_store.lollms_client is mock_client
+
+        # Verify executor automatically routes to the client
+        prompt = "Extract knowledge graph from: Telemetry controller online."
+        raw_res = graph_store.llm_generator(prompt, json_mode=True)
+        assert "Telemetry" in raw_res
+        mock_client.generate_code.assert_called_once()
+
+        # Test updating the client dynamically via set_lollms_client
+        new_mock_client = MagicMock()
+        new_mock_client.generate_code.return_value = '{"nodes": [], "relationships": []}'
+        store.set_lollms_client(new_mock_client)
+
+        assert store.lollms_client is new_mock_client
+        assert graph_store.lollms_client is new_mock_client
+
+        store.close()
+
+    def test_custom_callable_llm_generator(self, tmp_path: Path):
+        """Test providing an arbitrary custom callable generator to SafeStore and GraphStore."""
+        # 1. Rich signature: (prompt, system_prompt=None, json_mode=False, **kwargs)
+        recorded_calls = []
+
+        def rich_generator(prompt: str, system_prompt: str = None, json_mode: bool = False, **kwargs) -> str:
+            recorded_calls.append({"prompt": prompt, "system_prompt": system_prompt, "json_mode": json_mode})
+            if json_mode:
+                return '{"nodes": [{"label": "Module", "properties": {"identifying_value": "Engine", "name": "Engine"}}], "relationships": []}'
+            return "SELECT ?s WHERE { ?s ?p ?o }"
+
+        db_path = tmp_path / "test_callable_gen.db"
+        store = SafeStore(
+            db_path=str(db_path),
+            vectorizer_name="st",
+            llm_generator=rich_generator
+        )
+
+        # Ingest text so that chunk #1 exists in the database
+        store.add_text("test_doc", "Test text content for chunk grounding.")
+
+        graph = store.graph
+
+        # Extract using the rich callable
+        nodes, rels = graph._extract_and_insert_graph("Test text content", chunk_ids=[1])
+        assert nodes == 1
+        assert len(recorded_calls) >= 1
+        assert recorded_calls[0]["json_mode"] is True
+        assert recorded_calls[0]["system_prompt"] is not None
+
+        # 2. Simple single-argument lambda: lambda prompt: ...
+        lambda_called = []
+        simple_lambda = lambda p: (lambda_called.append(p) or '{"is_same": true}')
+
+        store.set_llm_generator(simple_lambda)
+        res = graph.llm_generator("Test prompt")
+        assert '{"is_same": true}' in res
+        assert len(lambda_called) == 1
+
+        store.close()

@@ -458,6 +458,11 @@ def search_graph_nodes_by_vector(conn: sqlite3.Connection, query_vector: np.ndar
 def link_node_to_chunk(conn: sqlite3.Connection, node_id: int, chunk_id: int) -> None:
     try:
         conn.execute("INSERT OR IGNORE INTO node_chunk_links (node_id, chunk_id) VALUES (?, ?)", (node_id, chunk_id))
+    except sqlite3.IntegrityError as e:
+        if "foreign key" in str(e).lower():
+            ASCIIColors.warning(f"Could not link node {node_id} to chunk {chunk_id}: chunk does not exist in database.")
+            return
+        raise GraphDBError(f"Error linking node {node_id} to chunk {chunk_id}: {e}") from e
     except sqlite3.Error as e:
         raise GraphDBError(f"Error linking node {node_id} to chunk {chunk_id}: {e}") from e
 
@@ -535,9 +540,9 @@ def get_all_vectors_with_doc_info(conn: sqlite3.Connection) -> List[Tuple]:
     return results
 
 def clear_projection_cache(conn: sqlite3.Connection) -> int:
-    """Invalidates all cached datalake projections in store_metadata."""
+    """Invalidates all cached datalake projections and document clusters in store_metadata."""
     try:
-        cursor = conn.execute("DELETE FROM store_metadata WHERE key LIKE 'datalake_cache_%'")
+        cursor = conn.execute("DELETE FROM store_metadata WHERE key LIKE 'datalake_cache_%' OR key = 'document_clusters'")
         conn.commit()
         return cursor.rowcount
     except sqlite3.Error:

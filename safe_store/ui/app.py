@@ -19,6 +19,8 @@ from safe_store import SafeStore, GraphStore, LogLevel
 
 # Global configured database path for initial page loads
 CURRENT_DB_PATH: Optional[str] = None
+CURRENT_LOLLMS_CLIENT: Optional[Any] = None
+CURRENT_LLM_GENERATOR: Optional[Callable[..., str]] = None
 PROJECTS_DIR = Path("projects")
 PROJECTS_DIR.mkdir(exist_ok=True)
 
@@ -315,11 +317,13 @@ async def pick_file_dialog(
 
 
 class StudioState:
-    def __init__(self):
+    def __init__(self, llm_generator: Optional[Callable[..., str]] = None, lollms_client: Optional[Any] = None):
         self.db_path: str = ""
         self.store: Optional[SafeStore] = None
         self.graph_store: Optional[GraphStore] = None
         self.selected_doc_id: Optional[int] = None
+        self.llm_generator: Optional[Callable[..., str]] = llm_generator
+        self.lollms_client: Optional[Any] = lollms_client
 
     def close_current_store(self):
         """Cleanly releases any open store and unloads model weights."""
@@ -342,16 +346,30 @@ class StudioState:
             self.db_path = ":tempfile:"
         else:
             self.db_path = str(Path(path).resolve())
-        self.store = SafeStore(db_path=self.db_path, log_level=LogLevel.INFO)
+        self.store = SafeStore(
+            db_path=self.db_path,
+            log_level=LogLevel.INFO,
+            llm_generator=self.llm_generator,
+            lollms_client=self.lollms_client
+        )
         try:
-            self.graph_store = GraphStore(store=self.store)
+            self.graph_store = GraphStore(
+                store=self.store,
+                llm_generator=self.llm_generator,
+                lollms_client=self.lollms_client
+            )
         except Exception:
             self.graph_store = None
         self.selected_doc_id = None
 
 
-async def render_studio_page(client: Client, initial_path: Optional[str] = None):
-    state = StudioState()
+async def render_studio_page(
+    client: Client,
+    initial_path: Optional[str] = None,
+    llm_generator: Optional[Callable[..., str]] = None,
+    lollms_client: Optional[Any] = None
+):
+    state = StudioState(llm_generator=llm_generator, lollms_client=lollms_client)
 
     # Base styling and scripts
     ui.add_head_html(VIS_NETWORK_HEADER)
@@ -570,6 +588,7 @@ async def render_studio_page(client: Client, initial_path: Optional[str] = None)
         with ui.tabs().classes('w-full bg-slate-800 border-b border-slate-700 text-slate-300') as tabs:
             tab_files = ui.tab('Files & Documents', icon='description')
             tab_datalake = ui.tab('Semantic Datalake', icon='scatter_plot')
+            tab_clusters = ui.tab('Clusters & Themes', icon='category')
             tab_graph = ui.tab('Knowledge Graph & SPARQL', icon='share')
             tab_search = ui.tab('RAG Search Studio', icon='search')
             tab_diagnostics = ui.tab('Database Diagnostics', icon='analytics')
@@ -659,6 +678,24 @@ async def render_studio_page(client: Client, initial_path: Optional[str] = None)
                 with ui.row().classes('w-full gap-6 items-start'):
                     datalake_plot_container = ui.column().classes('w-3/4 bg-slate-800/80 p-4 rounded-xl border border-slate-700 h-[70vh]')
                     datalake_inspector_container = ui.column().classes('w-1/4 bg-slate-800/80 p-4 rounded-xl border border-slate-700 h-[70vh] overflow-y-auto')
+
+            # -----------------------------------------------------------------
+            # TAB 2.5: Document Clusters & Thematic Analysis
+            # -----------------------------------------------------------------
+            with ui.tab_panel(tab_clusters):
+                with ui.row().classes('w-full justify-between items-center mb-4'):
+                    with ui.column().classes('gap-1'):
+                        ui.label('Document Clusters & Thematic Analysis').classes('text-2xl font-bold text-teal-400')
+                        ui.label('Group corpus documents using semantic vector centroids and extract conceptual themes.').classes('text-xs text-slate-400')
+
+                    with ui.row().classes('items-center gap-3'):
+                        cluster_k_input = ui.number('Clusters (0=Auto)', value=0, min=0, max=30).classes('w-36 text-xs').props('dark dense standout')
+                        cluster_algo_select = ui.select(['kmeans', 'agglomerative'], value='kmeans', label='Algorithm').classes('w-36 text-xs').props('dark dense standout')
+                        cluster_themes_switch = ui.checkbox('Generate Thematic Titles & Summaries', value=True).classes('text-xs text-teal-300')
+                        cluster_run_btn = ui.button('Cluster Documents', icon='auto_awesome', on_click=lambda: run_document_clustering()).props('color=teal size=sm')
+
+                clusters_summary_bar = ui.row().classes('w-full items-center justify-between bg-slate-800/80 p-3 rounded-xl border border-slate-700 text-xs font-mono text-slate-300 mb-4')
+                clusters_grid_container = ui.element('div').classes('grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full')
 
             # -----------------------------------------------------------------
             # TAB 3: Knowledge Graph Visual Studio & W3C SPARQL 1.1 Console
@@ -1704,6 +1741,102 @@ SELECT ?source ?relation ?target WHERE {
                     with ui.scroll_area().classes('w-full max-h-56 p-3 bg-slate-900 rounded font-mono text-xs whitespace-pre-wrap border border-slate-700 text-slate-200'):
                         ui.label(hit.get('chunk_text', '(Empty chunk text)'))
 
+    async def run_document_clustering():
+        if not state.store: return
+        cluster_run_btn.props('disabled')
+        clusters_grid_container.clear()
+        with clusters_grid_container:
+            ui.spinner('dots', size='lg', color='teal')
+            ui.label('Clustering documents and generating thematic summaries...').classes('text-sm text-slate-300 ml-2')
+
+        k_val = int(cluster_k_input.value or 0)
+        n_clusters = 'auto' if k_val <= 0 else k_val
+        method = cluster_algo_select.value
+        with_themes = bool(cluster_themes_switch.value)
+
+        try:
+            clusters = await asyncio.to_thread(
+                state.store.cluster_documents,
+                n_clusters=n_clusters,
+                method=method,
+                generate_themes=with_themes,
+                save_to_store=True
+            )
+            render_clusters_view(clusters)
+            ui.notify(f"Successfully clustered documents into {len(clusters)} theme(s)!", color='positive')
+        except Exception as ex:
+            clusters_grid_container.clear()
+            with clusters_grid_container:
+                ui.label(f"Clustering error: {ex}").classes('text-rose-400 text-sm font-mono')
+            ui.notify(f"Error: {ex}", color='negative')
+        finally:
+            cluster_run_btn.props(remove='disabled')
+
+    def render_clusters_view(clusters: List[Dict[str, Any]]):
+        clusters_grid_container.clear()
+        clusters_summary_bar.clear()
+
+        total_clustered_docs = sum(c.get("document_count", 0) for c in clusters)
+        with clusters_summary_bar:
+            ui.label(f"Thematic Groups: {len(clusters)} | Total Clustered Documents: {total_clustered_docs}").classes('font-bold text-teal-300')
+            ui.button('Re-Cluster', icon='refresh', on_click=run_document_clustering).props('flat text-color=teal size=xs')
+
+        if not clusters:
+            with clusters_grid_container:
+                ui.label('No documents available to cluster. Add documents to the store first.').classes('text-sm text-slate-400 italic col-span-full')
+            return
+
+        palette = ['#14b8a6', '#06b6d4', '#f59e0b', '#ec4899', '#8b5cf6', '#3b82f6', '#10b981', '#f97316']
+
+        with clusters_grid_container:
+            for idx, c in enumerate(clusters):
+                border_color = palette[idx % len(palette)]
+                with ui.card().classes('bg-slate-800/90 rounded-2xl p-5 border shadow-xl flex flex-col justify-between space-y-4 hover:border-teal-400 transition-all duration-300').style(f'border-color: {border_color}88;'):
+                    # Top Header
+                    with ui.column().classes('w-full gap-2'):
+                        with ui.row().classes('w-full justify-between items-center'):
+                            with ui.row().classes('items-center gap-2'):
+                                ui.element('span').classes('w-3 h-3 rounded-full').style(f'background-color: {border_color};')
+                                ui.label(f"Theme #{c['cluster_id'] + 1}").classes('text-xs font-bold font-mono text-slate-400 uppercase tracking-wider')
+                            ui.badge(f"{c['document_count']} doc(s)", color='slate-700').classes('text-xs font-mono font-bold')
+
+                        ui.label(c.get('theme_title', 'Unnamed Theme')).classes('text-lg font-bold text-slate-100 leading-snug break-words')
+                        if c.get('theme_description'):
+                            ui.label(c['theme_description']).classes('text-xs text-slate-300 leading-relaxed bg-slate-900/60 p-2.5 rounded-lg border border-slate-700/50')
+
+                        # Key topics chips
+                        if c.get('key_topics'):
+                            with ui.row().classes('gap-1 flex-wrap pt-1'):
+                                for topic in c['key_topics']:
+                                    ui.badge(f"#{topic}", color='teal').classes('text-[10px] font-mono')
+
+                    # Member Documents List
+                    with ui.column().classes('w-full pt-3 border-t border-slate-700/60 gap-1'):
+                        ui.label('Member Documents:').classes('text-[11px] font-bold text-slate-400 font-mono uppercase tracking-wider')
+                        with ui.scroll_area().classes('w-full max-h-32 text-xs font-mono'):
+                            for doc in c.get('documents', []):
+                                with ui.row().classes('w-full justify-between items-center py-1 border-b border-slate-800/60'):
+                                    ui.label(doc.get('document_title', 'Untitled')).classes('text-teal-300 truncate flex-1')
+                                    ui.label(f"ID #{doc.get('doc_id')}").classes('text-[10px] text-slate-500 ml-2')
+
+                    # Quick Action: Query in RAG Studio
+                    def _query_theme(title=c.get('theme_title', '')):
+                        query_input.value = title
+                        tabs.value = tab_search
+
+                    ui.button('Query in Search Studio', icon='search', on_click=_query_theme).props('outline color=teal size=xs class="w-full mt-2"')
+
+    async def refresh_clusters_view():
+        if not state.store: return
+        cached = await asyncio.to_thread(state.store.get_document_clusters, True)
+        if cached:
+            render_clusters_view(cached)
+        else:
+            clusters_summary_bar.clear()
+            clusters_grid_container.clear()
+            with clusters_summary_bar:
+                ui.label('No clusters computed yet. Click "Cluster Documents" to begin thematic analysis.').classes('text-xs text-slate-400 italic')
+
     def refresh_diagnostics_view():
         diagnostics_content.clear()
         if not state.store:
@@ -1755,6 +1888,8 @@ SELECT ?source ?relation ?target WHERE {
 
         elif target == tab_datalake or target_name == getattr(tab_datalake, 'name', 'tab_datalake'):
             await refresh_datalake_view()
+        elif target == tab_clusters or target_name == getattr(tab_clusters, 'name', 'tab_clusters'):
+            await refresh_clusters_view()
         elif target == tab_diagnostics or target_name == getattr(tab_diagnostics, 'name', 'tab_diagnostics'):
             refresh_diagnostics_view()
         elif target == tab_files or target_name == getattr(tab_files, 'name', 'tab_files'):
@@ -1892,18 +2027,27 @@ SELECT ?source ?relation ?target WHERE {
 # Register asynchronous root page handler with expanded response timeout
 @ui.page('/', response_timeout=60.0)
 async def index(client: Client):
-    await render_studio_page(client, CURRENT_DB_PATH)
+    await render_studio_page(
+        client,
+        CURRENT_DB_PATH,
+        llm_generator=CURRENT_LLM_GENERATOR,
+        lollms_client=CURRENT_LOLLMS_CLIENT
+    )
 
 
 def launch_studio(
     db_path: Optional[str] = None,
     host: str = "127.0.0.1",
     port: int = 8080,
-    native: bool = True
+    native: bool = True,
+    llm_generator: Optional[Callable[..., str]] = None,
+    lollms_client: Optional[Any] = None
 ):
-    """Launches SafeStore Studio via NiceGUI and pywebview."""
-    global CURRENT_DB_PATH
+    """Launches SafeStore Studio via NiceGUI and pywebview with an optional custom LLM generator."""
+    global CURRENT_DB_PATH, CURRENT_LLM_GENERATOR, CURRENT_LOLLMS_CLIENT
     CURRENT_DB_PATH = str(Path(db_path).resolve()) if db_path else None
+    CURRENT_LLM_GENERATOR = llm_generator
+    CURRENT_LOLLMS_CLIENT = lollms_client
 
     # Pre-check pywebview availability for native window
     if native:

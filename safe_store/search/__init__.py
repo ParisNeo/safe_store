@@ -8,6 +8,7 @@ from .reconstruction import (
     strip_metadata_header,
     format_metadata_header
 )
+from .clustering import DocumentClusterer
 
 __all__ = [
     "cosine_similarity",
@@ -18,5 +19,6 @@ __all__ = [
     "reconstruct_document_chunks",
     "merge_overlapping_texts",
     "strip_metadata_header",
-    "format_metadata_header"
+    "format_metadata_header",
+    "DocumentClusterer"
 ]

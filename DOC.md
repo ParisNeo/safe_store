@@ -26,12 +26,14 @@
    * [8.4. TBox Ontology Management (`TBoxManager`)](#84-tbox-ontology-management)
    * [8.5. Declarative Tabular-to-Graph Mapping (`TabularMapper`)](#85-declarative-tabular-to-graph-mapping)
    * [8.6. Tri-Modal Unified Graph Search (`query_graph_hybrid`)](#86-tri-modal-unified-graph-search)
+   * [8.7. Custom LLM Generator Callable Specification](#87-custom-llm-generator-callable-specification)
 9. [LLM Cognitive Memory & Tool Calling](#9-llm-cognitive-memory--tool-calling)
    * [9.1. Episodic Memory Logging](#91-episodic-memory-logging)
    * [9.2. Associative Pathways & Chunk Grounding](#92-associative-pathways--chunk-grounding)
    * [9.3. Function Calling Tool Dispatcher](#93-function-calling-tool-dispatcher)
 10. [Semantic Datalake & Point Cloud Engine](#10-semantic-datalake--point-cloud-engine)
-11. [Zero-Leakage Local Encryption (Fernet AES-128/HMAC)](#11-zero-leakage-local-encryption)
+11. [Document Clustering & Thematic Grouping](#11-document-clustering--thematic-grouping)
+12. [Zero-Leakage Local Encryption (Fernet AES-128/HMAC)](#12-zero-leakage-local-encryption)
 12. [Database Portability, Re-Vectorization, Export & Import](#12-database-portability--re-vectorization)
 13. [API Reference Summary](#13-api-reference-summary)
 14. [License](#14-license)
@@ -371,6 +373,70 @@ response = graph.query_graph_hybrid(
 )
 ```
 
+### 8.7. Custom LLM Generator Callable Specification
+
+SafeStore allows the calling application to inject **any** tool or LLM provider using a flexible, standardized callable. This completely decouples SafeStore from any specific client library.
+
+#### 1. Standard Protocol Signature
+```python
+def my_llm_generator(
+    prompt: str,
+    system_prompt: Optional[str] = None,
+    json_mode: bool = False,
+    **kwargs: Any
+) -> str:
+    """
+    Args:
+        prompt: Main instruction or text content.
+        system_prompt: Role or task description (e.g. JSON schema instructions).
+        json_mode: True when the engine expects well-formed JSON output.
+        **kwargs: Additional generation options (e.g. temperature, max_tokens).
+    Returns:
+        Generated text or JSON code string.
+    """
+    ...
+```
+
+#### 2. Plug in OpenAI, Ollama, or Anthropic
+```python
+from openai import OpenAI
+from safe_store import SafeStore
+
+client = OpenAI()
+
+def openai_generator(prompt: str, system_prompt: str = None, json_mode: bool = False, **kwargs) -> str:
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        response_format={"type": "json_object"} if json_mode else None,
+        temperature=0.1
+    )
+    return response.choices[0].message.content
+
+# Pass directly to SafeStore
+store = SafeStore("enterprise.db", llm_generator=openai_generator)
+graph = store.graph  # Automatically inherits the custom generator
+```
+
+#### 3. Single-Argument Lambda (Fastest 1-Liner)
+If your generator only accepts `(prompt)`, SafeStore automatically adapts it and prepends the system prompt:
+```python
+store = SafeStore(
+    "knowledge.db",
+    llm_generator=lambda prompt: my_local_model.generate(prompt)
+)
+```
+
+#### 4. Change Generator at Runtime
+```python
+store.set_llm_generator(new_generator)
+```
+
 ---
 
 ## 9. LLM Cognitive Memory & Tool Calling
@@ -414,7 +480,47 @@ store.export_datalake_html(output_file="datalake.html", method='umap', n_compone
 
 ---
 
-## 11. Zero-Leakage Local Encryption
+## 11. Document Clustering & Thematic Grouping
+
+SafeStore provides semantic document clustering and automated theme generation:
+- Calculates normalized document-level vector centroids from all constituent chunk embeddings.
+- Groups documents using **K-Means** or **Agglomerative Hierarchical Clustering**, with automatic optimal cluster estimation ($k$-selection).
+- Synthesizes descriptive thematic titles, descriptions, and topic tags using the configured LLM callable or deterministic c-TF-IDF keyword extraction.
+- Persists clusters in SQLite for instant cache hits, automatically invalidating whenever documents are added or removed.
+
+### 11.1. Programmatic Clustering
+```python
+from safe_store import SafeStore
+
+store = SafeStore("enterprise.db")
+
+# 1. Cluster all documents (auto-estimating optimal k)
+clusters = store.cluster_documents(
+    n_clusters='auto',       # Or specify an integer e.g. 4
+    method='kmeans',         # 'kmeans' or 'agglomerative'
+    generate_themes=True,    # Generate titles, summaries, and tags
+    save_to_store=True       # Cache results in SQLite
+)
+
+for c in clusters:
+    print(f"Theme #{c['cluster_id'] + 1}: {c['theme_title']}")
+    print(f"Description: {c['theme_description']}")
+    print(f"Topics: {', '.join(c['key_topics'])}")
+    print(f"Documents ({c['document_count']}): {[d['document_title'] for d in c['documents']]}\n")
+
+# 2. Retrieve cached clusters instantly
+cached = store.get_document_clusters(use_cache=True)
+```
+
+### 11.2. SafeStore Studio Interactive Clustering Workspace
+SafeStore Studio features a dedicated **Clusters & Themes** tab:
+- Configure cluster counts ($k=0$ for auto-estimation) and algorithm (`K-Means` or `Agglomerative`).
+- Click **Cluster Documents** to inspect responsive theme cards with color bands, topic tags, and member document tables.
+- Click **Query in Search Studio** on any theme card to immediately search the corpus for related passages.
+
+---
+
+## 12. Zero-Leakage Local Encryption
 
 Supply an `encryption_key` when opening `SafeStore` to enable authenticated Fernet (AES-128-CBC + HMAC-SHA256) encryption for all chunk texts and metadata blobs:
 ```python
@@ -442,6 +548,8 @@ restored = safe_store.SafeStore.import_database("backup.json", "restored.db", de
 | :--- | :--- |
 | **`store.info()`** / **`store.get_database_info()`** | Returns/prints comprehensive diagnostics: vectorizer info, per-document chunk counts, ontology schemas, and graph topology counts. |
 | **`SafeStore(db_path, ...)`** | Main SQLite vector, lexical, and hybrid database handle. |
+| **`store.cluster_documents(...)`** | Clusters documents by semantic centroid and synthesizes thematic titles, descriptions, and topic tags. |
+| **`store.get_document_clusters(...)`** | Retrieves cached or freshly computed document clusters and thematic groups. |
 | `store.unload_vectorizer()` | Forces immediate unloading of local model weights and purges GPU VRAM. |
 | `SafeStore.shutdown_shared_vectorizer(port)` | Special command to shut down the persistent shared model server daemon. |
 | `store.query(...)` | Dense vector similarity search with 0–100 relevance score (supports `reconstruct_overlapping_chunks=True`). |

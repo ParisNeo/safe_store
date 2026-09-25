@@ -11,14 +11,16 @@
 3. 📖 **Full Document & Context Window Retrieval**: Query entire documents aggregated from chunk hits, retrieve surrounding chunk neighborhoods with window expansion, or paginate through document content.
 4. 🧩 **Overlapping Chunk Reconstruction & Chronological Fusion**: Automatically fuses adjacent overlapping chunks in chronological order, deduplicating repetitive boundary seams, bridging gaps with `...`, and uniting metadata into a single context header.
 5. 🚀 **Multi-User / Multi-Process Shared Server & Dynamic Batching**: Eliminates OOM crashes by running a persistent shared SentenceTransformer model daemon across processes with dynamic micro-batching and an explicit shutdown command.
-6. 🕸️ **Dynamic & Ontology Knowledge Graph**: Open-ended concept/entity extraction from text files or strict TBox/OWL schema mapping, with live chunk extraction reporting.
+6. 🤖 **Tool-Agnostic LLM Callable Generator**: Inject ANY LLM or generation tool (OpenAI, Anthropic, Ollama, LangChain, local models, or lambdas) via a clean callable signature.
+7. 🕸️ **Dynamic & Ontology Knowledge Graph**: Open-ended concept/entity extraction from text files or strict TBox/OWL schema mapping, with live chunk extraction reporting.
 5. 🔍 **W3C SPARQL 1.1 Query & Update Engine**: Native TBox/ABox ontology management, declarative tabular mapping, and full SPARQL (`SELECT`, `ASK`, `CONSTRUCT`, `DESCRIBE`, and `INSERT/DELETE DATA` updates).
 6. 🧠 **LLM Cognitive Memory & Thought Reorganization**: Episodic memory logging, associative semantic traversal, grounded text chunk evidence linking, and native function-calling tool dispatching.
 7. 🔀 **Tri-Modal Reciprocal Rank Fusion (RRF)**: Merges dense similarity, lexical BM25, and symbolic graph traversals into unified results with universal 0–100 relevance grades.
 8. 🔍 **Database Diagnostics & Introspection (`store.info()`)**: Instant inspection of vectorizers, chunking parameters, document chunk counts, ontology schemas, and graph topology metrics.
 9. 📊 **State-of-the-Art Semantic Datalake & Point Cloud Engine**: 2D/3D **UMAP** manifold projections (with cosine metric, plus PCA & t-SNE), persistent SQLite caching, streaming lazy loading (`IncrementalPCA`), and interactive HTML visualizer exports.
-10. 🔐 **Zero-Leakage Local Encryption**: End-to-end AES-128/HMAC (Fernet) encryption at rest inside a single, portable `.db` file.
-11. 🖥️ **SafeStore Studio Desktop & Web App**: Interactive UI built on NiceGUI and pywebview for VectorDB editing, 2D/3D point-cloud inspection, SPARQL console, and RAG testing.
+10. 🎨 **Semantic Document Clustering & Thematic Synthesis**: Groups documents using vector centroids and synthesizes thematic titles, descriptions, and topic tags with auto-K estimation.
+11. 🔐 **Zero-Leakage Local Encryption**: End-to-end AES-128/HMAC (Fernet) encryption at rest inside a single, portable `.db` file.
+12. 🖥️ **SafeStore Studio Desktop & Web App**: Interactive UI built on NiceGUI and pywebview for VectorDB editing, 2D/3D point-cloud inspection, clustering & themes, SPARQL console, and RAG testing.
 ---
 
 ## 📦 Installation
@@ -201,6 +203,51 @@ store = safe_store.SafeStore(
 
 # Inspect database summary and diagnostics anytime:
 store.info()
+```
+
+---
+
+### 1.0 Custom LLM Generator Callable (Tool-Agnostic Generation)
+
+You can pass **any** custom generator function or lambda to SafeStore. SafeStore uses it for knowledge graph extraction, entity fusion, and natural language SPARQL query synthesis:
+
+```python
+from safe_store import SafeStore
+
+# Option A: Full standard signature (supports system prompt and json_mode)
+def my_custom_llm(prompt: str, system_prompt: str = None, json_mode: bool = False, **kwargs) -> str:
+    # Call OpenAI, Ollama, Anthropic, vLLM, or internal microservices
+    return openai_client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "system", "content": system_prompt or ""}, {"role": "user", "content": prompt}],
+        response_format={"type": "json_object"} if json_mode else None
+    ).choices[0].message.content
+
+store = SafeStore("kb.db", llm_generator=my_custom_llm)
+
+# Option B: Minimal 1-liner lambda
+store_fast = SafeStore("kb.db", llm_generator=lambda prompt: my_local_model(prompt))
+```
+
+---
+
+### 1.1 Semantic Document Clustering & Thematic Groups
+
+Group documents by semantic similarity and extract themes:
+
+```python
+import safe_store
+
+store = safe_store.SafeStore("knowledge.db")
+
+# Cluster documents and synthesize theme titles, descriptions, and tags
+clusters = store.cluster_documents(n_clusters='auto', method='kmeans')
+
+for c in clusters:
+    print(f"Theme: {c['theme_title']}")
+    print(f"Summary: {c['theme_description']}")
+    print(f"Topics: {', '.join(c['key_topics'])}")
+    print(f"Member Docs: {[d['document_title'] for d in c['documents']]}\n")
 ```
 
 ---
