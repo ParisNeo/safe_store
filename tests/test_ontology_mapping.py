@@ -206,3 +206,40 @@ class TestTabularMapper:
 
         assert result["triples_generated"] >= 4
         assert result["entities_created"] == 2
+
+    def test_parse_mapping_csv_and_tbox_abox_separation(self, safe_store_with_graph: SafeStore, tmp_path: Path):
+        """Test parsing mapping CSV specifications and verifying TBox vs ABox graph extraction."""
+        mapping_csv_content = """type,source_column,target_class_or_predicate,template_or_property
+entity,id,Person,http://example.org/person/{id}
+property,name,Person,hasName
+entity,org_id,Organization,http://example.org/org/{org_id}
+relationship,,worksFor,http://example.org/person/{id} -> http://example.org/org/{org_id}
+"""
+        rules = TabularMapper.parse_mapping_csv(mapping_csv_content)
+        assert len(rules["entity_mappings"]) == 2
+        assert len(rules["relationship_mappings"]) == 1
+
+        data_csv = tmp_path / "data.csv"
+        data_csv.write_text("id,name,org_id\n1,Alice,10\n2,Bob,10\n", encoding="utf-8")
+
+        mapper = TabularMapper(store=safe_store_with_graph)
+        result = mapper.map_csv(data_csv, rules)
+        assert result["entities_created"] >= 2
+
+        from safe_store.graph.graph_store import GraphStore
+        graph = GraphStore(store=safe_store_with_graph)
+
+        # Verify ABox has instances
+        abox = graph.get_abox_graph()
+        assert len(abox["nodes"]) >= 2
+        assert any(n["category"] == "Person" for n in abox["nodes"])
+
+        # Verify TBox has classes
+        tbox = graph.get_tbox_graph()
+        assert len(tbox["nodes"]) >= 5
+        assert any("Person" in n["label"] for n in tbox["nodes"])
+
+        # Verify Unified connects both
+        unified = graph.get_unified_graph()
+        assert len(unified["nodes"]) == len(abox["nodes"]) + len(tbox["nodes"])
+        assert any(e.get("label") == "rdf:type" for e in unified["edges"])

@@ -13,3 +13,4 @@
 - [ ] Use SigLIP / CLIP to encode images and support multi-modal image vector database storage
 - [x] reconstruct overlapping chunks
 - [x] Multi-user/multi-process shared SentenceTransformer model server with dynamic micro-batching and special shutdown command
+- [x] Document clustering and thematic synthesis engine with K-Means/Agglomerative algorithms, auto-K estimation, LLM/c-TF-IDF theme generation, and Studio UI integration

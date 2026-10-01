@@ -17,8 +17,11 @@ from ..core.exceptions import (
     GraphError, QueryError, NodeNotFoundError, RelationshipNotFoundError, SafeStoreError
 )
 from ..utils.json_parsing import robust_json_parser
+from rdflib import URIRef, RDF, OWL
 from ..vectorization.base import BaseVectorizer
 from .sparql.engine import SparqlEngine
+from .ontology.tbox import TBoxManager
+from .ontology.reasoner import SemanticReasoner
 
 if TYPE_CHECKING:
     from ..store import SafeStore
@@ -242,9 +245,69 @@ class GraphStore:
         self.sparql_generation_prompt_template = self.DEFAULT_SPARQL_GENERATION_PROMPT_TEMPLATE
         self._sparql_engine: Optional[SparqlEngine] = None
         self._cognitive_memory: Optional[CognitiveMemoryStore] = None
+        self._tbox_manager: Optional[TBoxManager] = None
 
         ASCIIColors.info(f"Initializing GraphStore with shared SafeStore for database: {self.store.db_path}")
         self._initialize_graph_features()
+
+    @property
+    def tbox(self) -> TBoxManager:
+        if self._tbox_manager is None:
+            self._tbox_manager = TBoxManager(load_core=True)
+            # Load stored ontology turtle from database if persisted
+            saved_turtle = db.get_store_metadata(self.conn, "ontology_turtle")
+            if saved_turtle:
+                self._tbox_manager.load_ontology(saved_turtle, format="turtle")
+            elif isinstance(self.ontology, str) and self.ontology.strip():
+                self._tbox_manager.load_ontology(self.ontology, format="turtle")
+        return self._tbox_manager
+
+    def save_ontology_to_db(self) -> None:
+        """Persists the complete active TBox ontology schema into SQLite store_metadata."""
+        with self.store._instance_lock:
+            turtle_str = self.tbox.serialize_ontology()
+            db.set_store_metadata(self.conn, "ontology_turtle", turtle_str)
+            ASCIIColors.success("TBox ontology schema saved permanently to database.")
+
+    def apply_reasoning(self, materialize_to_db: bool = False) -> Dict[str, Any]:
+        """
+        Runs RDFS and OWL deductive reasoning across the active graph.
+        Returns the count and details of newly inferred triples.
+        If materialize_to_db is True, synchronizes inferred facts permanently into SQLite.
+        """
+        with self.store._instance_lock, self.store._optional_file_lock_context("apply_reasoning"):
+            rdf_graph = self.sparql_engine._hydrate_rdf_graph()
+            reasoner = SemanticReasoner(rdf_graph, tbox=self.tbox)
+            inferred_count, inferred_triples = reasoner.run_inference()
+
+            if materialize_to_db and inferred_count > 0:
+                synced_nodes, synced_rels = self.sparql_engine._sync_graph_to_sqlite(rdf_graph)
+                return {
+                    "inferred_count": inferred_count,
+                    "inferred_triples": inferred_triples,
+                    "materialized": True,
+                    "nodes_synchronized": synced_nodes,
+                    "relationships_synchronized": synced_rels
+                }
+
+            return {
+                "inferred_count": inferred_count,
+                "inferred_triples": inferred_triples,
+                "materialized": False
+            }
+
+    def check_consistency(self) -> Dict[str, Any]:
+        """
+        Validates the knowledge graph against exclusivity and disjointness constraints.
+        Checks for mutually exclusive classes (owl:disjointWith), functional property violations,
+        and contradictory assertions.
+        """
+        with self.store._instance_lock:
+            rdf_graph = self.sparql_engine._hydrate_rdf_graph()
+            reasoner = SemanticReasoner(rdf_graph, tbox=self.tbox)
+            # Run inference first to expose latent contradictions
+            reasoner.run_inference()
+            return reasoner.check_consistency()
 
     @property
     def llm_executor(self) -> Callable[..., str]:
@@ -1012,12 +1075,13 @@ class GraphStore:
         except Exception as e:
             ASCIIColors.warning(f"Could not generate or store vector for node {node_id}: {e}")
 
-    def query_sparql(self, sparql_query: str) -> Dict[str, Any]:
+    def query_sparql(self, sparql_query: str, enable_reasoning: bool = False) -> Dict[str, Any]:
         """
-        Executes a W3C SPARQL 1.1 query (SELECT, ASK, CONSTRUCT, DESCRIBE) against the graph database.
+        Executes a W3C SPARQL 1.1 query against the graph database.
+        When enable_reasoning=True, applies RDFS and OWL forward-chaining prior to query execution.
         """
         with self.store._instance_lock, self.store._optional_file_lock_context(f"query_sparql: {sparql_query[:30]}"):
-            return self.sparql_engine.execute_query(sparql_query)
+            return self.sparql_engine.execute_query(sparql_query, enable_reasoning=enable_reasoning, tbox=self.tbox)
 
     def execute_sparql_update(self, sparql_update: str) -> Dict[str, Any]:
         """
@@ -1197,6 +1261,203 @@ class GraphStore:
     def get_all_nodes_for_visualization(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Alias for get_all_nodes to support graph visualization pipelines."""
         return self.get_all_nodes(limit=limit)
+
+    def get_abox_graph(self, limit: int = 1000) -> Dict[str, Any]:
+        """
+        Returns the Assertional Box (ABox) instance graph:
+        Contains actual individual entities and factual relationships extracted from documents.
+        """
+        with self.store._instance_lock:
+            nodes = self.get_all_nodes(limit=limit)
+            edges = self.get_all_relationships(limit=limit * 2)
+
+            vis_nodes = []
+            for n in nodes:
+                lbl = n.get("label", "Node")
+                name = str(n["properties"].get("name") or n["properties"].get("identifying_value") or n["properties"].get("title") or lbl)
+                vis_nodes.append({
+                    "id": n["node_id"],
+                    "label": name[:28] + ("..." if len(name) > 28 else ""),
+                    "title": f"[{lbl}] {name}",
+                    "category": lbl,
+                    "layer": "abox"
+                })
+
+            vis_edges = []
+            for r in edges:
+                vis_edges.append({
+                    "id": r["relationship_id"],
+                    "from": r["source_node_id"],
+                    "to": r["target_node_id"],
+                    "label": r["type"],
+                    "layer": "abox"
+                })
+
+            return {"nodes": vis_nodes, "edges": vis_edges}
+
+    def get_tbox_graph(self) -> Dict[str, Any]:
+        """
+        Returns the Terminological Box (TBox) ontology schema graph:
+        Contains classes, subclass hierarchies, domain/range object properties,
+        datatype attributes, and exclusivity constraints (owl:disjointWith).
+        """
+        classes = self.tbox.get_classes()
+        class_id_map: Dict[str, int] = {}
+        vis_nodes = []
+
+        # Map attributes (datatype properties) to their domain classes
+        class_attributes: Dict[str, List[str]] = {cls: [] for cls in classes}
+        for prop_uri in sorted(list(self.tbox._datatype_properties)):
+            p_name = prop_uri.split('/')[-1].split('#')[-1]
+            dom, rng = self.tbox.get_property_domain_range(prop_uri)
+            rng_name = rng.split('/')[-1].split('#')[-1] if rng else "string"
+            if dom and dom in class_attributes:
+                class_attributes[dom].append(f"+ {p_name} ({rng_name})")
+
+        # 1. Create class nodes with embedded attributes
+        for idx, cls_uri in enumerate(classes, start=100000):
+            lbl = cls_uri.split('/')[-1].split('#')[-1]
+            class_id_map[cls_uri] = idx
+            class_id_map[lbl] = idx
+
+            attrs = class_attributes.get(cls_uri, [])
+            attr_block = ("\n────────────\n" + "\n".join(attrs[:4])) if attrs else ""
+            display_label = f"«Class»\n{lbl}{attr_block}"
+
+            vis_nodes.append({
+                "id": idx,
+                "label": display_label,
+                "title": f"Ontology Class: {cls_uri}\nAttributes: {', '.join(attrs) if attrs else 'None'}",
+                "category": "TBoxClass",
+                "shape": "box",
+                "margin": 12,
+                "color": {"background": "#7c3aed", "border": "#ffffff", "highlight": {"background": "#9333ea", "border": "#38bdf8"}},
+                "layer": "tbox",
+                "uri": cls_uri,
+                "raw_label": lbl
+            })
+
+        vis_edges = []
+        edge_id_counter = 200000
+
+        # 2. Subclass inheritance edges
+        for cls_uri in classes:
+            subclasses = self.tbox.get_subclasses(cls_uri, recursive=False)
+            parent_id = class_id_map.get(cls_uri)
+            for sub_uri in subclasses:
+                child_id = class_id_map.get(sub_uri)
+                if parent_id and child_id:
+                    edge_id_counter += 1
+                    vis_edges.append({
+                        "id": edge_id_counter,
+                        "from": child_id,
+                        "to": parent_id,
+                        "label": "subClassOf ▲",
+                        "dashes": [6, 4],
+                        "arrows": {"to": {"enabled": True, "scaleFactor": 1.2, "type": "triangle"}},
+                        "color": {"color": "#c084fc", "highlight": "#e879f9"},
+                        "layer": "tbox"
+                    })
+
+        # 3. Object properties (Domain -> Range)
+        for prop_uri in sorted(list(self.tbox._object_properties)):
+            p_name = prop_uri.split('/')[-1].split('#')[-1]
+            dom, rng = self.tbox.get_property_domain_range(prop_uri)
+            if dom and rng and dom in class_id_map and rng in class_id_map:
+                edge_id_counter += 1
+                # Detect characteristics
+                char_tags = []
+                prop_ref = URIRef(prop_uri)
+                if (prop_ref, RDF.type, OWL.TransitiveProperty) in self.tbox.graph:
+                    char_tags.append("Transitive")
+                if (prop_ref, RDF.type, OWL.SymmetricProperty) in self.tbox.graph:
+                    char_tags.append("Symmetric")
+                if (prop_ref, RDF.type, OWL.FunctionalProperty) in self.tbox.graph:
+                    char_tags.append("Functional")
+
+                tag_suffix = f" [{', '.join(char_tags)}]" if char_tags else ""
+
+                vis_edges.append({
+                    "id": edge_id_counter,
+                    "from": class_id_map[dom],
+                    "to": class_id_map[rng],
+                    "label": f"{p_name}{tag_suffix}",
+                    "color": {"color": "#38bdf8", "highlight": "#06b6d4"},
+                    "arrows": {"to": {"enabled": True, "scaleFactor": 0.9}},
+                    "layer": "tbox",
+                    "uri": prop_uri
+                })
+
+        # 4. Disjointness exclusivity edges
+        for c1, _, c2 in self.tbox.graph.triples((None, OWL.disjointWith, None)):
+            id1 = class_id_map.get(str(c1))
+            id2 = class_id_map.get(str(c2))
+            if id1 and id2 and id1 < id2:
+                edge_id_counter += 1
+                vis_edges.append({
+                    "id": edge_id_counter,
+                    "from": id1,
+                    "to": id2,
+                    "label": "⊘ disjointWith",
+                    "dashes": [3, 3],
+                    "color": {"color": "#f43f5e", "highlight": "#fb7185"},
+                    "layer": "tbox"
+                })
+
+        # 5. Inverses (owl:inverseOf)
+        seen_inverses = set()
+        for p1, _, p2 in self.tbox.graph.triples((None, OWL.inverseOf, None)):
+            pair = tuple(sorted([str(p1), str(p2)]))
+            if pair in seen_inverses: continue
+            seen_inverses.add(pair)
+            dom1, rng1 = self.tbox.get_property_domain_range(str(p1))
+            if dom1 and rng1 and dom1 in class_id_map and rng1 in class_id_map:
+                edge_id_counter += 1
+                p1_n = str(p1).split('/')[-1].split('#')[-1]
+                p2_n = str(p2).split('/')[-1].split('#')[-1]
+                vis_edges.append({
+                    "id": edge_id_counter,
+                    "from": class_id_map[dom1],
+                    "to": class_id_map[rng1],
+                    "label": f"⇄ {p1_n} / {p2_n}",
+                    "dashes": [2, 2],
+                    "color": {"color": "#34d399"},
+                    "arrows": {"to": {"enabled": True}, "from": {"enabled": True}},
+                    "layer": "tbox"
+                })
+
+        return {"nodes": vis_nodes, "edges": vis_edges}
+
+    def get_unified_graph(self, limit: int = 1000) -> Dict[str, Any]:
+        """
+        Returns both TBox Schema and ABox Content, linking instances to classes with rdf:type edges.
+        """
+        abox = self.get_abox_graph(limit=limit)
+        tbox = self.get_tbox_graph()
+
+        tbox_node_labels = {n["label"].split("\n")[-1]: n["id"] for n in tbox["nodes"]}
+
+        # Add rdf:type links connecting ABox instances to their TBox classes
+        type_edges = []
+        counter = 500000
+        for an in abox["nodes"]:
+            cat = an.get("category")
+            if cat in tbox_node_labels:
+                counter += 1
+                type_edges.append({
+                    "id": counter,
+                    "from": an["id"],
+                    "to": tbox_node_labels[cat],
+                    "label": "rdf:type",
+                    "dashes": [2, 2],
+                    "color": {"color": "#94a3b8", "opacity": 0.4},
+                    "layer": "type_link"
+                })
+
+        return {
+            "nodes": tbox["nodes"] + abox["nodes"],
+            "edges": tbox["edges"] + abox["edges"] + type_edges
+        }
 
     def get_graph_info(self) -> Dict[str, Any]:
         """Returns diagnostic metadata about the graph store, node labels, and relationship counts."""

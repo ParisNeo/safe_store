@@ -180,7 +180,7 @@ def test_add_document_encrypts_chunks(encrypted_store: SafeStore, sample_encrypt
     # --- Verify DB state directly ---
     conn = sqlite3.connect(store.db_path)
     cursor = conn.cursor()
-    cursor.execute("SELECT doc_id FROM documents WHERE file_path = ?", (str(sample_encrypt_text_file.resolve()),))
+    cursor.execute("SELECT doc_id FROM documents")
     doc_id_res = cursor.fetchone()
     assert doc_id_res is not None
     doc_id = doc_id_res[0]
@@ -256,6 +256,77 @@ def test_query_no_key_placeholder(encrypted_store: SafeStore, sample_encrypt_tex
         results = store2.query("multiple lines", top_k=1)
         assert len(results) == 1
         assert results[0]['chunk_text'] == "[Encrypted Chunk - Key Unavailable]"
+
+def test_total_zero_leakage_raw_database_inspection(tmp_path: Path, encryption_password: str):
+    """
+    Critical security test: Verifies that in an encrypted store, raw SQLite table inspections
+    yield ZERO plaintext file paths, ZERO document titles, ZERO graph labels, and ZERO graph properties.
+    """
+    db_path = tmp_path / "zero_leakage_audit.db"
+    store = SafeStore(db_path=str(db_path), encryption_key=encryption_password)
+
+    secret_path = "/home/classified/contracts/TopSecretContract_2026.pdf"
+    secret_text = "Project Prometheus: Autonomous nuclear fusion core protocol."
+
+    with store:
+        store.add_text(unique_id=secret_path, text=secret_text, metadata={"clearance": "CosmicTopSecret"})
+        graph = store.graph
+        n_id = graph.add_node("ClassifiedFacility", {"identifying_value": "Area51", "codename": "Dreamland"})
+        t_id = graph.add_node("BlackProject", {"identifying_value": "Prometheus", "budget": 50000000})
+        graph.add_relationship(n_id, t_id, "DEVELOPED_AT", {"status": "Active"})
+
+    store.close()
+
+    # Direct raw SQLite inspection without SafeStore
+    conn = sqlite3.connect(str(db_path))
+    cursor = conn.cursor()
+
+    # 1. Documents table: File path must NOT be plaintext
+    cursor.execute("SELECT file_path, full_text FROM documents")
+    doc_rows = cursor.fetchall()
+    assert len(doc_rows) == 1
+    raw_path, raw_text = doc_rows[0]
+    assert "TopSecretContract" not in raw_path
+    assert "classified" not in raw_path
+    assert raw_path.startswith("enc:")  # Blinded hash prefix
+    assert "Prometheus" not in raw_text
+
+    # 2. Graph Nodes table: Labels and properties must NOT be plaintext
+    cursor.execute("SELECT node_label, node_properties, unique_signature FROM graph_nodes")
+    node_rows = cursor.fetchall()
+    assert len(node_rows) == 2
+    for n_label, n_props, n_sig in node_rows:
+        assert "ClassifiedFacility" not in n_label
+        assert "BlackProject" not in n_label
+        assert "Area51" not in n_props
+        assert "Dreamland" not in n_props
+        assert "Prometheus" not in n_props
+        assert n_sig.startswith("enc:")
+
+    # 3. Graph Relationships table: Types and properties must NOT be plaintext
+    cursor.execute("SELECT relationship_type, relationship_properties FROM graph_relationships")
+    rel_rows = cursor.fetchall()
+    assert len(rel_rows) == 1
+    r_type, r_props = rel_rows[0]
+    assert "DEVELOPED_AT" not in r_type
+    assert "Active" not in r_props
+
+    conn.close()
+
+    # Reopen with correct password: Everything decrypts cleanly
+    open_store = SafeStore(db_path=str(db_path), encryption_key=encryption_password)
+    with open_store:
+        docs = open_store.list_documents()
+        assert "TopSecretContract_2026.pdf" in docs[0]["file_path"]
+
+        nodes = open_store.graph.get_all_nodes()
+        labels = [n["label"] for n in nodes]
+        assert "ClassifiedFacility" in labels
+        assert "BlackProject" in labels
+
+        rels = open_store.graph.get_all_relationships()
+        assert rels[0]["type"] == "DEVELOPED_AT"
+    open_store.close()
 
 def test_query_wrong_key_placeholder(encrypted_store: SafeStore, sample_encrypt_text_file: Path):
     """Test query returns placeholder if store has the wrong key."""

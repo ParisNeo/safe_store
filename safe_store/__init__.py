@@ -16,7 +16,8 @@ from .graph.graph_store import (
     wrap_llm_callable
 )
 from .graph.cognitive_memory import CognitiveMemoryStore
-from .graph.ontology.tbox import TBoxManager
+from .graph.ontology.tbox import TBoxManager, CORE_ONTOLOGY_TURTLE
+from .graph.ontology.reasoner import SemanticReasoner
 from .graph.mapping.tabular_mapper import TabularMapper
 from .graph.sparql.engine import SparqlEngine
 from .search.bm25 import BM25Retriever
@@ -72,6 +73,8 @@ __all__ = [
     "wrap_llm_callable",
     "CognitiveMemoryStore",
     "TBoxManager",
+    "CORE_ONTOLOGY_TURTLE",
+    "SemanticReasoner",
     "TabularMapper",
     "SparqlEngine",
     "BM25Retriever",

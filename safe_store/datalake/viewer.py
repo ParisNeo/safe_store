@@ -174,12 +174,39 @@ class DatalakeViewer:
         fingerprint = self._get_dataset_fingerprint(method, n_components, sample_size, filter_doc_ids)
         cache_key = f"datalake_cache_{fingerprint}"
 
+        # Fetch cached document cluster mappings if available to enrich points
+        cached_clusters = None
+        try:
+            cached_clusters = self.store.clusterer.get_cached_clusters()
+        except Exception:
+            pass
+
+        doc_to_cluster_map: Dict[int, Dict[str, Any]] = {}
+        if cached_clusters:
+            for cl in cached_clusters:
+                for doc_entry in cl.get("documents", []):
+                    doc_to_cluster_map[doc_entry["doc_id"]] = {
+                        "cluster_id": cl["cluster_id"],
+                        "theme_title": cl.get("theme_title", f"Theme #{cl['cluster_id'] + 1}"),
+                        "theme_description": cl.get("theme_description", ""),
+                        "key_topics": cl.get("key_topics", [])
+                    }
+
         # 1. Check persistent SQLite cache if enabled
         if use_cache:
             cached_json = db.get_store_metadata(conn, cache_key)
             if cached_json:
                 ASCIIColors.debug("Returning datalake view from persistent cache.")
                 cached_data = json.loads(cached_json)
+                # Ensure cluster enrichment is current
+                if doc_to_cluster_map:
+                    for pt in cached_data:
+                        cl_info = doc_to_cluster_map.get(pt.get("doc_id"))
+                        if cl_info:
+                            pt["cluster_id"] = cl_info["cluster_id"]
+                            pt["theme_title"] = cl_info["theme_title"]
+                            pt["theme_description"] = cl_info["theme_description"]
+                            pt["key_topics"] = cl_info["key_topics"]
                 return self._format_output(cached_data, output_format)
 
         # 2. Fetch raw vector records from database
@@ -294,6 +321,18 @@ class DatalakeViewer:
                 "y": float(projections[i, 1]),
                 "metadata": doc_metadatas[i]
             }
+
+            # Enrich with cluster theme if available
+            cl_info = doc_to_cluster_map.get(doc_ids[i])
+            if cl_info:
+                pt["cluster_id"] = cl_info["cluster_id"]
+                pt["theme_title"] = cl_info["theme_title"]
+                pt["theme_description"] = cl_info["theme_description"]
+                pt["key_topics"] = cl_info["key_topics"]
+            else:
+                pt["cluster_id"] = -1
+                pt["theme_title"] = "Unclustered"
+
             if n_components == 3:
                 pt["z"] = float(projections[i, 2])
             if include_chunk_text:
@@ -301,15 +340,15 @@ class DatalakeViewer:
 
             datalake_points.append(pt)
 
-        # 3. Store in SQLite metadata cache
+        # 3. Store in SQLite metadata cache and mark clean
         if use_cache:
             try:
                 db.set_store_metadata(conn, cache_key, json.dumps(datalake_points))
+                self.store.mark_datalake_clean()
                 if not conn.in_transaction:
                     conn.commit()
             except Exception as e:
                 ASCIIColors.warning(f"Could not write datalake projection to cache: {e}")
-
 
         return self._format_output(datalake_points, output_format)
 
@@ -470,23 +509,24 @@ class DatalakeViewer:
         const plotDiv = document.getElementById('plot');
         const inspector = document.getElementById('inspector');
 
-        function renderPlot(filtered) {
-            const docGroups = {};
+        function renderPlot(filtered, colorBy = 'document') {
+            const groups = {};
             filtered.forEach(d => {
-                if (!docGroups[d.document_title]) docGroups[d.document_title] = [];
-                docGroups[d.document_title].push(d);
+                const groupKey = colorBy === 'theme' ? (d.theme_title || 'Unclustered') : d.document_title;
+                if (!groups[groupKey]) groups[groupKey] = [];
+                groups[groupKey].push(d);
             });
 
-            const traces = Object.keys(docGroups).map(title => {
-                const group = docGroups[title];
+            const traces = Object.keys(groups).map(key => {
+                const group = groups[key];
                 const trace = {
-                    name: title,
+                    name: key,
                     type: '__PLOT_TYPE__',
                     mode: 'markers',
                     x: group.map(p => p.x),
                     y: group.map(p => p.y),
                     customdata: group,
-                    marker: { size: is3D ? 4 : 8, opacity: 0.85 }
+                    marker: { size: is3D ? 5 : 8, opacity: 0.85 }
                 };
                 if (is3D) trace.z = group.map(p => p.z);
                 return trace;
@@ -510,6 +550,7 @@ class DatalakeViewer:
                         <div class="space-y-2">
                             <div><span class="text-teal-400">Doc:</span> ${p.document_title}</div>
                             <div><span class="text-teal-400">Chunk ID:</span> ${p.chunk_id}</div>
+                            ${p.theme_title ? '<div><span class="text-teal-400">Theme:</span> ' + p.theme_title + '</div>' : ''}
                             <div><span class="text-teal-400">Coordinates:</span> [${p.x.toFixed(3)}, ${p.y.toFixed(3)}${is3D ? ', ' + p.z.toFixed(3) : ''}]</div>
                             ${p.chunk_text_preview ? '<div class="pt-2 border-t border-slate-700 text-slate-200">' + p.chunk_text_preview + '</div>' : ''}
                             <div class="text-xs text-slate-500 pt-2">Metadata: ${JSON.stringify(p.metadata)}</div>

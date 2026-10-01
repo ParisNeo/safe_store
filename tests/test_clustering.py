@@ -107,6 +107,16 @@ class TestDocumentClusterer:
 
         store.close()
 
+    def test_theme_generation_lexical_fallback(self, clustered_store: SafeStore):
+        """Test deterministic c-TF-IDF keyword extraction when no LLM generator is provided."""
+        clusters = clustered_store.cluster_documents(n_clusters=3, generate_themes=True)
+
+        for c in clusters:
+            assert c["theme_title"] != ""
+            assert c["theme_description"] != ""
+            assert isinstance(c["key_topics"], list)
+            assert len(c["key_topics"]) > 0
+
     def test_cluster_caching_and_invalidation(self, clustered_store: SafeStore):
         """Test that clusters persist in SQLite cache and invalidate when new documents are added."""
         # 1. Compute and save
@@ -130,3 +140,64 @@ class TestDocumentClusterer:
         clusters_2 = clustered_store.cluster_documents(n_clusters='auto')
         total_docs_after = sum(c["document_count"] for c in clusters_2)
         assert total_docs_after == 7
+
+    def test_edge_cases_empty_and_single_doc(self, tmp_path: Path):
+        """Test clustering behavior on empty store and single-document store."""
+        db_path = tmp_path / "test_edge_cases.db"
+        store = SafeStore(db_path=str(db_path), vectorizer_name="st")
+
+        # 0 documents
+        clusters_empty = store.cluster_documents()
+        assert clusters_empty == []
+
+        # 1 document
+        store.add_text("single_doc", "Solitary document in repository.")
+        clusters_one = store.cluster_documents()
+        assert len(clusters_one) == 1
+        assert clusters_one[0]["document_count"] == 1
+        assert clusters_one[0]["documents"][0]["document_title"] == "single_doc"
+
+        store.close()
+
+    def test_db_file_export_and_import(self, clustered_store: SafeStore, tmp_path: Path):
+        """Test exporting and importing .db files via SQLite's online backup API."""
+        export_target = tmp_path / "exported_database.db"
+        clustered_store.export_db_file(export_target)
+
+        assert export_target.exists()
+        assert export_target.stat().st_size > 0
+
+        # Import into a new store
+        imported_target = tmp_path / "imported_database.db"
+        imported_store = SafeStore.import_db_file(export_target, imported_target)
+
+        assert imported_target.exists()
+        with imported_store:
+            docs = imported_store.list_documents()
+            assert len(docs) == 6
+            # Check queries work on imported database
+            res = imported_store.query("Hubble space telescope", top_k=1)
+            assert len(res) == 1
+            assert "Hubble" in res[0]["chunk_text"]
+
+        imported_store.close()
+
+    def test_outdated_cache_flags(self, clustered_store: SafeStore):
+        """Test that adding documents marks datalake and clusters as outdated without dropping cache."""
+        # 1. Cluster and project
+        clustered_store.cluster_documents(n_clusters=3, save_to_store=True)
+        clustered_store.get_datalake_view(method='pca', n_components=2, use_cache=True)
+
+        assert clustered_store.is_clusters_outdated() is False
+        assert clustered_store.is_datalake_outdated() is False
+
+        # 2. Add document -> Flags are set to outdated
+        clustered_store.add_text("extra_doc", "Additional content for testing outdated cache flags.")
+
+        assert clustered_store.is_clusters_outdated() is True
+        assert clustered_store.is_datalake_outdated() is True
+
+        # Existing cached data is still preserved and readable
+        cached = clustered_store.get_document_clusters(use_cache=True)
+        assert cached is not None
+        assert len(cached) == 3

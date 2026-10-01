@@ -42,6 +42,10 @@ Search & Rank Fusion
    :members: reciprocal_rank_fusion, weighted_score_fusion
    :undoc-members:
 
+.. automodule:: safe_store.search.clustering
+   :members: DocumentClusterer
+   :undoc-members:
+
 Semantic Datalake
 -----------------
 

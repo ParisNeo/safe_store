@@ -101,6 +101,33 @@ class Encryptor:
         key = base64.urlsafe_b64encode(kdf.derive(password.encode('utf-8')))
         return key
 
+    def blind_hash(self, text: str) -> str:
+        """
+        Computes a deterministic HMAC-SHA256 blind index for searching and unique
+        constraints without leaking plaintext strings in the database.
+        """
+        if not self.is_enabled or self._fernet is None:
+            import hashlib
+            return hashlib.sha256(text.encode('utf-8')).hexdigest()
+        import hmac
+        import hashlib
+        return hmac.new(self._derive_key("safe_store_blind_salt"), text.encode('utf-8'), hashlib.sha256).hexdigest()
+
+    def encrypt_str(self, data: str) -> str:
+        """Encrypts a string and returns a URL-safe base64 string."""
+        if not self.is_enabled or self._fernet is None:
+            return data
+        return self.encrypt(data).decode('utf-8')
+
+    def decrypt_str(self, token_str: str) -> str:
+        """Decrypts a base64 Fernet string back into plaintext."""
+        if not self.is_enabled or self._fernet is None:
+            return token_str
+        try:
+            return self.decrypt(token_str.encode('utf-8'))
+        except Exception:
+            return "[Encrypted - Decryption Failed]"
+
     @property
     def is_enabled(self) -> bool:
         """Returns True if encryption is configured (password provided)."""

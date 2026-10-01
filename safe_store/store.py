@@ -608,14 +608,14 @@ class SafeStore:
                 filter_doc_ids=filter_doc_ids
             )
 
-    def get_document_clusters(self, use_cache: bool = True) -> List[Dict[str, Any]]:
+    def get_document_clusters(self, use_cache: bool = True, allow_outdated: bool = False) -> List[Dict[str, Any]]:
         """
         Returns document clusters and thematic groups. Loads from persistent cache if available.
         """
         with self._instance_lock:
             self._ensure_connection()
             if use_cache:
-                cached = self.clusterer.get_cached_clusters()
+                cached = self.clusterer.get_cached_clusters(allow_outdated=allow_outdated)
                 if cached is not None:
                     return cached
             return self.cluster_documents()
@@ -840,11 +840,89 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                 raise SafeStoreError(f"Failed to update store properties: {e}") from e
 
     def clear_datalake_cache(self) -> int:
-        """Clears cached 2D/3D projections from the database."""
+        """Marks cached 2D/3D projections and clusters as outdated."""
         with self._instance_lock:
             self._ensure_connection()
             assert self.conn is not None
             return db.clear_projection_cache(self.conn)
+
+    def is_datalake_outdated(self) -> bool:
+        """Returns True if new documents have been added since the datalake projection was computed."""
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+            return db.get_store_metadata(self.conn, "datalake_outdated") == "true"
+
+    def is_clusters_outdated(self) -> bool:
+        """Returns True if new documents have been added since document clusters were generated."""
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+            return db.get_store_metadata(self.conn, "clusters_outdated") == "true"
+
+    def mark_datalake_clean(self) -> None:
+        """Marks datalake projection cache as up to date."""
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+            db.set_store_metadata(self.conn, "datalake_outdated", "false")
+
+    def mark_clusters_clean(self) -> None:
+        """Marks document clusters cache as up to date."""
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+            db.set_store_metadata(self.conn, "clusters_outdated", "false")
+
+    def export_db_file(self, destination_path: Union[str, Path]) -> Path:
+        """
+        Atomically exports the database to a destination .db file using SQLite's online backup API.
+        Safely checkpoints WAL logs into a clean, standalone SQLite database file.
+        """
+        with self._instance_lock, self._optional_file_lock_context("export_db_file"):
+            self._ensure_connection()
+            assert self.conn is not None
+            dest_path = Path(destination_path).resolve()
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            if dest_path.exists():
+                dest_path.unlink()
+            dest_conn = sqlite3.connect(str(dest_path))
+            try:
+                self.conn.backup(dest_conn)
+            finally:
+                dest_conn.close()
+            ASCIIColors.success(f"Database exported successfully to '{dest_path}'.")
+            return dest_path
+
+    @classmethod
+    def import_db_file(
+        cls,
+        source_path: Union[str, Path],
+        destination_db_path: Optional[Union[str, Path]] = None,
+        **kwargs
+    ) -> "SafeStore":
+        """
+        Imports an external SQLite .db file into SafeStore using SQLite's online backup API.
+        """
+        src_file = Path(source_path).resolve()
+        if not src_file.exists():
+            raise FileHandlingError(f"Source database file not found: '{src_file}'")
+
+        if destination_db_path is None:
+            destination_db_path = src_file.name
+
+        dest_file = Path(destination_db_path).resolve()
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+
+        src_conn = sqlite3.connect(f"file:{src_file}?mode=ro", uri=True)
+        dest_conn = sqlite3.connect(str(dest_file))
+        try:
+            src_conn.backup(dest_conn)
+        finally:
+            src_conn.close()
+            dest_conn.close()
+
+        return cls(db_path=dest_file, **kwargs)
 
     def _get_file_hash(self, file_path: Path) -> str:
         hasher = self._file_hasher()
@@ -1048,10 +1126,14 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
 
                 meta_blob = self.encryptor.encrypt(json.dumps(metadata)) if metadata and self.encryptor.is_enabled else (json.dumps(metadata).encode('utf-8') if metadata else None)
 
+                enc_path_blob = self.encryptor.encrypt(content_id) if self.encryptor.is_enabled else None
+                stored_full_text = self.encryptor.encrypt_str(full_text) if self.encryptor.is_enabled and full_text else full_text
                 if doc_id:
-                    self.conn.execute("UPDATE documents SET file_hash=?, full_text=?, metadata=?, is_encrypted=? WHERE doc_id=?", (current_hash, full_text, meta_blob, 1 if self.encryptor.is_enabled else 0, doc_id))
+                    stored_p = f"enc:{self.encryptor.blind_hash(content_id)}" if self.encryptor.is_enabled else content_id
+                    self.conn.execute("UPDATE documents SET file_path=?, file_hash=?, full_text=?, metadata=?, is_encrypted=?, encrypted_path=? WHERE doc_id=?",
+                                     (stored_p, current_hash, stored_full_text, meta_blob, 1 if self.encryptor.is_enabled else 0, enc_path_blob, doc_id))
                 else:
-                    doc_id = db.add_document_record(self.conn, content_id, current_hash, full_text, meta_blob, self.encryptor.is_enabled)
+                    doc_id = db.add_document_record(self.conn, content_id, current_hash, stored_full_text, meta_blob, self.encryptor.is_enabled, enc_path_blob, self.encryptor)
 
                 tags_str = ",".join(sorted(list(set(tags)))) if tags else None
                 for i, storage_text in enumerate(storage_texts):
@@ -1668,11 +1750,21 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
             docs = []
             original_factory = self.conn.text_factory
             self.conn.text_factory = bytes
-            rows = self.conn.execute("SELECT doc_id, file_path, file_hash, added_timestamp, metadata, is_encrypted FROM documents").fetchall()
+            rows = self.conn.execute("SELECT doc_id, file_path, file_hash, added_timestamp, metadata, is_encrypted, encrypted_path FROM documents").fetchall()
             self.conn.text_factory = original_factory
 
             for r in rows:
-                doc_id, file_path_bytes, file_hash_bytes, ts, meta_blob, is_enc = r
+                doc_id, file_path_bytes, file_hash_bytes, ts, meta_blob, is_enc, enc_path_blob = r
+
+                raw_p = file_path_bytes.decode('utf-8')
+                if is_enc:
+                    if self.encryptor.is_enabled and enc_path_blob:
+                        try: resolved_path = self.encryptor.decrypt(enc_path_blob)
+                        except Exception: resolved_path = f"[Encrypted Document #{doc_id}]"
+                    else:
+                        resolved_path = f"[Encrypted Document #{doc_id}]"
+                else:
+                    resolved_path = raw_p
 
                 meta_dict = None
                 if meta_blob:
@@ -1681,23 +1773,22 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                             try:
                                 meta_json = self.encryptor.decrypt(meta_blob)
                                 meta_dict = json.loads(meta_json)
-                            except (EncryptionError, json.JSONDecodeError):
-                                meta_dict = {"error": "Failed to decrypt or parse metadata"}
+                            except Exception:
+                                meta_dict = {"error": "Failed to decrypt metadata"}
                         else:
-                            meta_dict = {"error": "Encrypted metadata but key unavailable"}
+                            meta_dict = {"error": "Encrypted metadata - key unavailable"}
                     else:
-                        try:
-                            meta_dict = json.loads(meta_blob.decode('utf-8'))
-                        except json.JSONDecodeError:
-                            meta_dict = {"error": "Failed to parse metadata"}
+                        try: meta_dict = json.loads(meta_blob.decode('utf-8'))
+                        except Exception: meta_dict = {}
 
                 ts_clean = ts.decode('utf-8', errors='ignore') if isinstance(ts, bytes) else str(ts)
                 docs.append({
                     "doc_id": doc_id,
-                    "file_path": file_path_bytes.decode('utf-8'),
+                    "file_path": resolved_path,
                     "file_hash": file_hash_bytes.decode('utf-8') if file_hash_bytes else None,
                     "added_timestamp": ts_clean,
-                    "metadata": meta_dict
+                    "metadata": meta_dict,
+                    "is_encrypted": bool(is_enc)
                 })
             return docs
 
@@ -1754,7 +1845,7 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
             if not doc_row:
                 return None
 
-            _, _, _, full_text_bytes, _, doc_enc, _ = doc_row
+            doc_id_val, path_bytes, hash_bytes, full_text_bytes, meta_bytes, doc_enc, ts = doc_row[:7]
             if full_text_bytes:
                 decrypted_full = self._decrypt_payload(full_text_bytes, bool(doc_enc), "Encrypted Document")
                 if decrypted_full and not decrypted_full.startswith("[Encrypted"):
@@ -1864,7 +1955,7 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                 if not doc_row:
                     continue
 
-                _, path_bytes, hash_bytes, full_text_bytes, meta_bytes, doc_enc, ts = doc_row
+                _, path_bytes, hash_bytes, full_text_bytes, meta_bytes, doc_enc, ts = doc_row[:7]
                 file_path = path_bytes.decode('utf-8', errors='ignore')
                 full_text = self.reconstruct_document_text(doc_id)
 

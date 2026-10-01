@@ -62,10 +62,23 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             full_text TEXT,
             metadata BLOB,
             is_encrypted INTEGER DEFAULT 0 NOT NULL,
-            added_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+            added_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            encrypted_path BLOB
         );""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_doc_file_path ON documents (file_path);")
-        
+
+        # Automatic Migration: Ensure all columns exist for upgraded/legacy databases
+        cursor.execute("PRAGMA table_info(documents);")
+        doc_cols = {c[1] for c in cursor.fetchall()}
+        if "full_text" not in doc_cols:
+            cursor.execute("ALTER TABLE documents ADD COLUMN full_text TEXT;")
+        if "encrypted_path" not in doc_cols:
+            cursor.execute("ALTER TABLE documents ADD COLUMN encrypted_path BLOB;")
+        if "is_encrypted" not in doc_cols:
+            cursor.execute("ALTER TABLE documents ADD COLUMN is_encrypted INTEGER DEFAULT 0 NOT NULL;")
+        if "metadata" not in doc_cols:
+            cursor.execute("ALTER TABLE documents ADD COLUMN metadata BLOB;")
+
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS chunks (
             chunk_id INTEGER PRIMARY KEY AUTOINCREMENT, doc_id INTEGER NOT NULL, chunk_text BLOB NOT NULL,
@@ -75,6 +88,18 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         );""")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunk_doc_id ON chunks (doc_id);")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunk_graph_processed_at ON chunks (graph_processed_at);")
+
+        # Automatic Migration for chunks table
+        cursor.execute("PRAGMA table_info(chunks);")
+        chunk_cols = {c[1] for c in cursor.fetchall()}
+        if "graph_processed_at" not in chunk_cols:
+            cursor.execute("ALTER TABLE chunks ADD COLUMN graph_processed_at DATETIME;")
+        if "encryption_metadata" not in chunk_cols:
+            cursor.execute("ALTER TABLE chunks ADD COLUMN encryption_metadata BLOB;")
+        if "is_encrypted" not in chunk_cols:
+            cursor.execute("ALTER TABLE chunks ADD COLUMN is_encrypted INTEGER DEFAULT 0 NOT NULL;")
+        if "tags" not in chunk_cols:
+            cursor.execute("ALTER TABLE chunks ADD COLUMN tags TEXT;")
 
         # FTS5 virtual table for lexical BM25 search
         try:
@@ -150,34 +175,73 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         raise DatabaseError(f"Schema initialization error: {e}") from e
 
 # --- Original SafeStore CRUD Functions ---
-def add_document_record(conn: sqlite3.Connection, file_path: str, file_hash: Optional[str] = None, full_text: Optional[str] = None, metadata: Optional[bytes] = None, is_encrypted: bool = False) -> int:
-    sql = "INSERT INTO documents (file_path, file_hash, full_text, metadata, is_encrypted) VALUES (?, ?, ?, ?, ?)"
+def add_document_record(
+    conn: sqlite3.Connection,
+    file_path: str,
+    file_hash: Optional[str] = None,
+    full_text: Optional[str] = None,
+    metadata: Optional[bytes] = None,
+    is_encrypted: bool = False,
+    encrypted_path: Optional[bytes] = None,
+    encryptor: Optional[Any] = None
+) -> int:
+    stored_path = file_path
+    enc_path_blob = encrypted_path
+
+    if is_encrypted and encryptor and encryptor.is_enabled:
+        stored_path = f"enc:{encryptor.blind_hash(file_path)}"
+        if enc_path_blob is None:
+            enc_path_blob = encryptor.encrypt(file_path)
+        if full_text is not None:
+            stored_full_text = encryptor.encrypt_str(full_text)
+
+    sql = "INSERT INTO documents (file_path, file_hash, full_text, metadata, is_encrypted, encrypted_path) VALUES (?, ?, ?, ?, ?, ?)"
     cursor = conn.cursor()
-    ASCIIColors.debug(f"Prepared insertion for document record: {file_path}")
+    ASCIIColors.debug(f"Prepared insertion for document record: {stored_path}")
     try:
-        cursor.execute(sql, (file_path, file_hash, full_text, metadata, 1 if is_encrypted else 0))
+        cursor.execute(sql, (stored_path, file_hash, full_text, metadata, 1 if is_encrypted else 0, enc_path_blob))
         doc_id = cursor.lastrowid
         if doc_id is None: raise DatabaseError(f"Failed to get lastrowid for document '{file_path}'.")
         return doc_id
     except sqlite3.IntegrityError:
-        existing_id = get_document_id_by_path(conn, file_path)
+        existing_id = get_document_id_by_path(conn, file_path, encryptor)
         if existing_id is not None: return existing_id
         raise 
     except sqlite3.Error as e:
-        raise DatabaseError(f"Error inserting document '{file_path}': {e}") from e
+        raise DatabaseError(f"Error inserting document: {e}") from e
 
-def get_document_id_by_path(conn: sqlite3.Connection, file_path: str) -> Optional[int]:
+def get_document_id_by_path(conn: sqlite3.Connection, file_path: str, encryptor: Optional[Any] = None) -> Optional[int]:
     cursor = conn.cursor()
     cursor.execute("SELECT doc_id FROM documents WHERE file_path = ?", (file_path,))
     result = cursor.fetchone()
-    return result[0] if result else None
+    if result: return result[0]
+
+    # Check blinded encrypted hash lookup
+    if encryptor and encryptor.is_enabled:
+        blind_key = f"enc:{encryptor.blind_hash(file_path)}"
+        cursor.execute("SELECT doc_id FROM documents WHERE file_path = ?", (blind_key,))
+        res_blind = cursor.fetchone()
+        if res_blind: return res_blind[0]
+
+    return None
 
 def get_document_record_by_id(conn: sqlite3.Connection, doc_id: int) -> Optional[Tuple]:
     """Fetches a document row by doc_id returning bytes for text/metadata."""
-    sql = "SELECT doc_id, file_path, file_hash, full_text, metadata, is_encrypted, added_timestamp FROM documents WHERE doc_id = ?"
+    cursor = conn.cursor()
+
+    # Defensive check: ensure full_text and encrypted_path columns exist on legacy databases
+    cursor.execute("PRAGMA table_info(documents);")
+    doc_cols = {c[1] for c in cursor.fetchall()}
+    if "full_text" not in doc_cols:
+        cursor.execute("ALTER TABLE documents ADD COLUMN full_text TEXT;")
+        conn.commit()
+    if "encrypted_path" not in doc_cols:
+        cursor.execute("ALTER TABLE documents ADD COLUMN encrypted_path BLOB;")
+        conn.commit()
+
+    sql = "SELECT doc_id, file_path, file_hash, full_text, metadata, is_encrypted, added_timestamp, encrypted_path FROM documents WHERE doc_id = ?"
     original_factory = conn.text_factory
     conn.text_factory = bytes
-    cursor = conn.cursor()
     row = cursor.execute(sql, (doc_id,)).fetchone()
     conn.text_factory = original_factory
     return row
@@ -233,10 +297,11 @@ def add_chunk_record(conn: sqlite3.Connection, doc_id: int, text: Union[str, byt
     chunk_id = cursor.lastrowid
     if chunk_id is None: raise DatabaseError(f"Failed to get lastrowid for chunk (doc={doc_id}, seq={seq}).")
 
-    # Keep FTS5 table in sync if present
+    # Keep FTS5 table in sync if present (Zero-Leakage: Never insert encrypted chunks into plaintext FTS)
     try:
-        plain_text = text.decode('utf-8', errors='ignore') if isinstance(text, bytes) else str(text)
-        cursor.execute("INSERT INTO chunks_fts(rowid, chunk_text) VALUES (?, ?)", (chunk_id, plain_text))
+        if not is_encrypted:
+            plain_text = text.decode('utf-8', errors='ignore') if isinstance(text, bytes) else str(text)
+            cursor.execute("INSERT INTO chunks_fts(rowid, chunk_text) VALUES (?, ?)", (chunk_id, plain_text))
     except Exception:
         pass
 
@@ -261,34 +326,78 @@ def get_store_metadata(conn: sqlite3.Connection, key: str) -> Optional[str]:
     return result[0] if result else None
 
 # --- Graph Node Functions ---
-def add_or_update_graph_node(conn: sqlite3.Connection, label: str, properties: Dict[str, Any], unique_signature: str) -> int:
+def add_or_update_graph_node(
+    conn: sqlite3.Connection,
+    label: str,
+    properties: Dict[str, Any],
+    unique_signature: str,
+    encryptor: Optional[Any] = None
+) -> int:
     cursor = conn.cursor()
+    is_enc = bool(encryptor and encryptor.is_enabled)
+    stored_sig = f"enc:{encryptor.blind_hash(unique_signature)}" if is_enc else unique_signature
+
     try:
-        cursor.execute("SELECT node_id, node_properties FROM graph_nodes WHERE unique_signature = ?", (unique_signature,))
+        cursor.execute("SELECT node_id, node_properties FROM graph_nodes WHERE unique_signature = ?", (stored_sig,))
         row = cursor.fetchone()
         if row:
-            node_id, existing_props_json = row
-            existing_props = json.loads(existing_props_json) if existing_props_json else {}
+            node_id, existing_props_raw = row
+            if is_enc:
+                decrypted_json = encryptor.decrypt_str(existing_props_raw)
+                existing_props = json.loads(decrypted_json) if decrypted_json else {}
+            else:
+                existing_props = json.loads(existing_props_raw) if existing_props_raw else {}
+
             merged_props = {**existing_props, **properties}
-            if json.dumps(merged_props) != existing_props_json:
-                cursor.execute("UPDATE graph_nodes SET node_properties = ? WHERE node_id = ?", (json.dumps(merged_props), node_id))
+            merged_json = json.dumps(merged_props)
+            to_store = encryptor.encrypt_str(merged_json) if is_enc else merged_json
+            cursor.execute("UPDATE graph_nodes SET node_properties = ? WHERE node_id = ?", (to_store, node_id))
             return node_id
         else:
             props_json = json.dumps(properties)
-            cursor.execute("INSERT INTO graph_nodes (node_label, node_properties, unique_signature) VALUES (?, ?, ?)", (label, props_json, unique_signature))
+            stored_label = encryptor.encrypt_str(label) if is_enc else label
+            stored_props = encryptor.encrypt_str(props_json) if is_enc else props_json
+            cursor.execute("INSERT INTO graph_nodes (node_label, node_properties, unique_signature) VALUES (?, ?, ?)",
+                           (stored_label, stored_props, stored_sig))
             new_id = cursor.lastrowid
             if new_id is None: raise GraphDBError("Failed to get lastrowid for new node.")
             return new_id
     except sqlite3.Error as e:
-        raise GraphDBError(f"Error adding/updating graph node with signature '{unique_signature}': {e}") from e
+        raise GraphDBError(f"Error adding/updating graph node: {e}") from e
 
-def get_graph_node_by_signature(conn: sqlite3.Connection, signature: str) -> Optional[int]:
+def get_graph_node_by_signature(conn: sqlite3.Connection, signature: str, encryptor: Optional[Any] = None) -> Optional[int]:
     try:
         cursor = conn.execute("SELECT node_id FROM graph_nodes WHERE unique_signature = ?", (signature,))
-        result = cursor.fetchone()
-        return result[0] if result else None
+        res = cursor.fetchone()
+        if res: return res[0]
+        if encryptor and encryptor.is_enabled:
+            cursor = conn.execute("SELECT node_id FROM graph_nodes WHERE unique_signature = ?", (f"enc:{encryptor.blind_hash(signature)}",))
+            res_blind = cursor.fetchone()
+            if res_blind: return res_blind[0]
+        return None
     except sqlite3.Error as e:
-        raise GraphDBError(f"Error fetching node by signature '{signature}': {e}") from e
+        raise GraphDBError(f"Error fetching node by signature: {e}") from e
+
+def get_node_details_db(conn: sqlite3.Connection, node_id: int, encryptor: Optional[Any] = None) -> Optional[Dict[str, Any]]:
+    try:
+        cursor = conn.execute("SELECT node_id, node_label, node_properties, unique_signature FROM graph_nodes WHERE node_id = ?", (node_id,))
+        row = cursor.fetchone()
+        if not row: return None
+
+        lbl = row[1]
+        props_raw = row[2]
+
+        if encryptor and encryptor.is_enabled:
+            lbl = encryptor.decrypt_str(lbl)
+            decrypted_json = encryptor.decrypt_str(props_raw)
+            props = json.loads(decrypted_json) if decrypted_json else {}
+        else:
+            try: props = json.loads(props_raw) if props_raw else {}
+            except Exception: props = {"raw": props_raw}
+
+        return {"node_id": row[0], "label": lbl, "properties": props, "unique_signature": row[3]}
+    except sqlite3.Error as e:
+        raise GraphDBError(f"DB error getting details for node {node_id}: {e}") from e
 
 def find_similar_nodes_by_property(conn, label, prop_key, prop_value, limit=5) -> List[Dict[str, Any]]:
     safe_prop_key = ''.join(c for c in prop_key if c.isalnum() or c in '_')
@@ -366,17 +475,27 @@ def delete_graph_node_and_relationships_db(conn: sqlite3.Connection, node_id: in
         raise GraphDBError(f"DB error deleting node {node_id}: {e}") from e
 
 # --- Graph Relationship Functions ---
-def add_graph_relationship(conn: sqlite3.Connection, source_node_id: int, target_node_id: int, rel_type: str, properties_json: str) -> int:
+def add_graph_relationship(
+    conn: sqlite3.Connection,
+    source_node_id: int,
+    target_node_id: int,
+    rel_type: str,
+    properties_json: str,
+    encryptor: Optional[Any] = None
+) -> int:
+    is_enc = bool(encryptor and encryptor.is_enabled)
+    stored_type = encryptor.encrypt_str(rel_type) if is_enc else rel_type
+    stored_props = encryptor.encrypt_str(properties_json) if is_enc else properties_json
     try:
         cursor = conn.execute("INSERT INTO graph_relationships (source_node_id, target_node_id, relationship_type, relationship_properties) VALUES (?, ?, ?, ?)",
-                              (source_node_id, target_node_id, rel_type, properties_json))
+                              (source_node_id, target_node_id, stored_type, stored_props))
         new_id = cursor.lastrowid
         if new_id is None: raise GraphDBError("Failed to get lastrowid for new relationship.")
         return new_id
     except sqlite3.Error as e:
-        raise GraphDBError(f"Error adding relationship '{rel_type}': {e}") from e
+        raise GraphDBError(f"Error adding relationship: {e}") from e
 
-def get_relationships_for_node_db(conn, node_id, relationship_type, direction, limit) -> List[Dict[str, Any]]:
+def get_relationships_for_node_db(conn, node_id, relationship_type, direction, limit, encryptor=None) -> List[Dict[str, Any]]:
     conditions, params = [], []
     if direction == "any":
         conditions.append("(r.source_node_id = ? OR r.target_node_id = ?)")
@@ -401,11 +520,24 @@ def get_relationships_for_node_db(conn, node_id, relationship_type, direction, l
     try:
         cursor = conn.execute(sql, tuple(params))
         for row in cursor.fetchall():
+            rel_type = row[3]
+            props_raw = row[4]
+            s_label, s_props_raw = row[5], row[6]
+            t_label, t_props_raw = row[7], row[8]
+
+            if encryptor and encryptor.is_enabled:
+                rel_type = encryptor.decrypt_str(rel_type)
+                props_raw = encryptor.decrypt_str(props_raw)
+                s_label = encryptor.decrypt_str(s_label)
+                s_props_raw = encryptor.decrypt_str(s_props_raw)
+                t_label = encryptor.decrypt_str(t_label)
+                t_props_raw = encryptor.decrypt_str(t_props_raw)
+
             relationships.append({
-                "relationship_id": row[0], "source_node_id": row[1], "target_node_id": row[2], "type": row[3],
-                "properties": json.loads(row[4]) if row[4] else {},
-                "source_node": {"node_id": row[1], "label": row[5], "properties": json.loads(row[6]) if row[6] else {}},
-                "target_node": {"node_id": row[2], "label": row[7], "properties": json.loads(row[8]) if row[8] else {}}
+                "relationship_id": row[0], "source_node_id": row[1], "target_node_id": row[2], "type": rel_type,
+                "properties": json.loads(props_raw) if props_raw else {},
+                "source_node": {"node_id": row[1], "label": s_label, "properties": json.loads(s_props_raw) if s_props_raw else {}},
+                "target_node": {"node_id": row[2], "label": t_label, "properties": json.loads(t_props_raw) if t_props_raw else {}}
             })
         return relationships
     except sqlite3.Error as e:
@@ -540,10 +672,11 @@ def get_all_vectors_with_doc_info(conn: sqlite3.Connection) -> List[Tuple]:
     return results
 
 def clear_projection_cache(conn: sqlite3.Connection) -> int:
-    """Invalidates all cached datalake projections and document clusters in store_metadata."""
+    """Marks cached datalake projections and document clusters as outdated without dropping them."""
     try:
-        cursor = conn.execute("DELETE FROM store_metadata WHERE key LIKE 'datalake_cache_%' OR key = 'document_clusters'")
+        conn.execute("INSERT OR REPLACE INTO store_metadata (key, value) VALUES ('datalake_outdated', 'true')")
+        conn.execute("INSERT OR REPLACE INTO store_metadata (key, value) VALUES ('clusters_outdated', 'true')")
         conn.commit()
-        return cursor.rowcount
+        return 2
     except sqlite3.Error:
         return 0

@@ -13,14 +13,17 @@
 5. 🚀 **Multi-User / Multi-Process Shared Server & Dynamic Batching**: Eliminates OOM crashes by running a persistent shared SentenceTransformer model daemon across processes with dynamic micro-batching and an explicit shutdown command.
 6. 🤖 **Tool-Agnostic LLM Callable Generator**: Inject ANY LLM or generation tool (OpenAI, Anthropic, Ollama, LangChain, local models, or lambdas) via a clean callable signature.
 7. 🕸️ **Dynamic & Ontology Knowledge Graph**: Open-ended concept/entity extraction from text files or strict TBox/OWL schema mapping, with live chunk extraction reporting.
-5. 🔍 **W3C SPARQL 1.1 Query & Update Engine**: Native TBox/ABox ontology management, declarative tabular mapping, and full SPARQL (`SELECT`, `ASK`, `CONSTRUCT`, `DESCRIBE`, and `INSERT/DELETE DATA` updates).
-6. 🧠 **LLM Cognitive Memory & Thought Reorganization**: Episodic memory logging, associative semantic traversal, grounded text chunk evidence linking, and native function-calling tool dispatching.
-7. 🔀 **Tri-Modal Reciprocal Rank Fusion (RRF)**: Merges dense similarity, lexical BM25, and symbolic graph traversals into unified results with universal 0–100 relevance grades.
-8. 🔍 **Database Diagnostics & Introspection (`store.info()`)**: Instant inspection of vectorizers, chunking parameters, document chunk counts, ontology schemas, and graph topology metrics.
-9. 📊 **State-of-the-Art Semantic Datalake & Point Cloud Engine**: 2D/3D **UMAP** manifold projections (with cosine metric, plus PCA & t-SNE), persistent SQLite caching, streaming lazy loading (`IncrementalPCA`), and interactive HTML visualizer exports.
-10. 🎨 **Semantic Document Clustering & Thematic Synthesis**: Groups documents using vector centroids and synthesizes thematic titles, descriptions, and topic tags with auto-K estimation.
-11. 🔐 **Zero-Leakage Local Encryption**: End-to-end AES-128/HMAC (Fernet) encryption at rest inside a single, portable `.db` file.
-12. 🖥️ **SafeStore Studio Desktop & Web App**: Interactive UI built on NiceGUI and pywebview for VectorDB editing, 2D/3D point-cloud inspection, clustering & themes, SPARQL console, and RAG testing.
+8. ⚖️ **OWL/RDFS Semantic Reasoning & Exclusivity Engine**: Automatic deductive inference (inverses, symmetry, transitivity, subclasses, `owl:sameAs`) and contradiction verification (`owl:disjointWith`).
+9. 🔍 **W3C SPARQL 1.1 Query & Update Engine**: Native TBox/ABox ontology management, declarative tabular mapping, and full SPARQL (`SELECT`, `ASK`, `CONSTRUCT`, `DESCRIBE`, and `INSERT/DELETE DATA` updates).
+10. 📐 **TBox / ABox Graph Scope Separation & AI CSV Mapping**: Visualize ontology schema classes, factual instances, or unified graphs. Ingest CSVs via manual mapping or AI rule synthesis with user verification.
+10. 🧠 **LLM Cognitive Memory & Thought Reorganization**: Episodic memory logging, associative semantic traversal, grounded text chunk evidence linking, and native function-calling tool dispatching.
+11. 🔀 **Tri-Modal Reciprocal Rank Fusion (RRF)**: Merges dense similarity, lexical BM25, and symbolic graph traversals into unified results with universal 0–100 relevance grades.
+12. 🔍 **Database Diagnostics & Introspection (`store.info()`)**: Instant inspection of vectorizers, chunking parameters, document chunk counts, ontology schemas, and graph topology metrics.
+13. 📊 **State-of-the-Art Semantic Datalake & Point Cloud Engine**: 2D/3D **UMAP** manifold projections (with cosine metric, plus PCA & t-SNE), persistent SQLite caching, streaming lazy loading (`IncrementalPCA`), and interactive HTML visualizer exports.
+14. 🎨 **Semantic Document Clustering & Thematic Synthesis**: Groups documents using vector centroids and synthesizes thematic titles, descriptions, and topic tags with auto-K estimation.
+15. 💬 **Sourced Agentic Document Chat & Q&A**: Talk to your documents using semantic search, full text, and SPARQL logic, with interactive source citation pills and previews.
+11. 🔐 **Total Zero-Leakage Local Encryption**: End-to-end AES-128/HMAC encryption for chunk text, document paths/names (blind indexed), metadata, and knowledge graph nodes/edges at rest.
+17. 🖥️ **SafeStore Studio Desktop & Web App**: Interactive UI built on NiceGUI and pywebview with LLM Setup, Sourced Chat, VectorDB editing, 2D/3D Datalake, and SPARQL console.
 ---
 
 ## 📦 Installation
@@ -227,6 +230,9 @@ store = SafeStore("kb.db", llm_generator=my_custom_llm)
 
 # Option B: Minimal 1-liner lambda
 store_fast = SafeStore("kb.db", llm_generator=lambda prompt: my_local_model(prompt))
+
+# Option C: Use with LangChain
+# store_lc = SafeStore("kb.db", llm_generator=lambda prompt, **kw: langchain_chat.invoke(prompt).content)
 ```
 
 ---
@@ -243,11 +249,11 @@ store = safe_store.SafeStore("knowledge.db")
 # Cluster documents and synthesize theme titles, descriptions, and tags
 clusters = store.cluster_documents(n_clusters='auto', method='kmeans')
 
-for c in clusters:
-    print(f"Theme: {c['theme_title']}")
-    print(f"Summary: {c['theme_description']}")
-    print(f"Topics: {', '.join(c['key_topics'])}")
-    print(f"Member Docs: {[d['document_title'] for d in c['documents']]}\n")
+# Export database cleanly via online backup
+store.export_db_file("backup.db")
+
+# Import database
+restored = SafeStore.import_db_file("backup.db", "restored.db")
 ```
 
 ---
@@ -415,13 +421,19 @@ graph = GraphStore(store=store)
 # Create Graph Entities and Relationships
 alice_id = graph.add_node("Person", {"name": "Alice Smith", "role": "Lead Architect"})
 bob_id = graph.add_node("Person", {"name": "Bob Jones", "role": "Data Scientist"})
-acme_id = graph.add_node("Company", {"name": "Acme Robotics", "industry": "AI"})
-paris_id = graph.add_node("City", {"name": "Paris", "country": "France"})
+acme_id = graph.add_node("Company", {"name": "Acme Robotics", "industry": "AI"}) # Company is an Organization and Agent
 
-graph.add_relationship(alice_id, acme_id, "worksFor", {"since": 2021})
-graph.add_relationship(bob_id, acme_id, "worksFor", {"since": 2023})
-graph.add_relationship(acme_id, paris_id, "locatedIn")
-graph.add_relationship(alice_id, bob_id, "collaboratesWith")
+graph.add_relationship(alice_id, acme_id, "worksFor") # Automatically infers 'Acme employs Alice'!
+
+# 0. Deductive Reasoning & Exclusivity Check
+report = graph.check_consistency()
+print("Consistency:", report["is_consistent"])
+
+# Inferred SPARQL Query (employs was never explicitly added)
+res = graph.query_sparql("""
+PREFIX ont: <http://example.org/ontology/>
+SELECT ?c ?p WHERE { ?c ont:employs ?p }
+""", enable_reasoning=True)
 
 # 1. SPARQL SELECT: Multi-Hop Relational Traversal
 sparql_select = """
@@ -772,20 +784,27 @@ new_store = safe_store.SafeStore.import_database(
 ```python
 import safe_store
 
-# 1. Create an encrypted store
+# 1. Create a zero-leakage encrypted store
 store = safe_store.SafeStore(
     db_path="classified.db",
     encryption_key="my-super-secure-passphrase",
-    vectorizer_name="st",
-    vectorizer_config={"model": "all-MiniLM-L6-v2"}
+    vectorizer_name="st"
 )
 
 with store:
-    # Document and metadata are encrypted before hitting SQLite
-    store.add_document("confidential_contract.pdf", metadata={"classification": "Top Secret"})
-    
-    # Query decrypts chunks transparently in memory
-    results = store.query("liability clauses", top_k=2)
+    # Path, document text, metadata, and graph elements are all encrypted!
+    store.add_text(
+        unique_id="/classified/merger_contract.pdf",
+        text="Acme Corp will acquire Beta Labs for $500M in Q4.",
+        metadata={"classification": "Top Secret"}
+    )
+
+    # Knowledge graph elements are encrypted at rest too!
+    store.graph.add_node("ClassifiedDeal", {"name": "Project Titan", "target": "Beta Labs"})
+
+    # Query decrypts transparently in memory
+    results = store.query("merger acquisition details", top_k=1)
+    print(results[0]["document_title"])  # Decrypted: merger_contract.pdf
     print(results[0]["chunk_text"])
 ```
 

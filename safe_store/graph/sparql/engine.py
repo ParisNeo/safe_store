@@ -5,6 +5,7 @@ import pipmaster as pm
 from ascii_colors import ASCIIColors
 from ...core.exceptions import QueryError
 from ...core import db
+from ..ontology.reasoner import SemanticReasoner
 
 try:
     import rdflib
@@ -107,9 +108,10 @@ class SparqlEngine:
 
         return g
 
-    def execute_query(self, sparql_query: str) -> Dict[str, Any]:
+    def execute_query(self, sparql_query: str, enable_reasoning: bool = False, tbox: Optional[Any] = None) -> Dict[str, Any]:
         """
         Executes any SPARQL 1.1 query (SELECT, ASK, CONSTRUCT, DESCRIBE) against the graph.
+        When enable_reasoning=True, applies RDFS/OWL deductive closure prior to evaluation.
         """
         clean_query = sparql_query.strip()
         if not clean_query:
@@ -117,6 +119,10 @@ class SparqlEngine:
 
         try:
             g = self._hydrate_rdf_graph()
+            if enable_reasoning:
+                reasoner = SemanticReasoner(g, tbox=tbox)
+                reasoner.run_inference()
+
             qres = g.query(clean_query)
 
             if qres.type == "SELECT":

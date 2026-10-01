@@ -1,0 +1,7 @@
+{
+  "provider": "lollms",
+  "binding_name": "lollms",
+  "model_name": "Kimi k 3",
+  "host_address": "http://localhost:9642",
+  "service_key": "lollms_GZjwfQhd_Exl0xLqFOlvcH9EPe67T7a-IQw5TXHJ8pjbQGQOj_BI"
+}

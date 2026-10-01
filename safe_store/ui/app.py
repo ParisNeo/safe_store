@@ -3,11 +3,11 @@ import sys
 import argparse
 import asyncio
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Callable
 import json
 import threading
 import pipmaster as pm
-
+from ascii_colors import ASCIIColors
 # Ensure UI dependencies
 pm.ensure_packages(["nicegui>=1.4.0", "pywebview>=4.0", "plotly>=5.0", "pandas"])
 
@@ -16,12 +16,86 @@ import plotly.graph_objects as go
 import time
 import safe_store
 from safe_store import SafeStore, GraphStore, LogLevel
-
+import numpy as np
 # Global configured database path for initial page loads
 CURRENT_DB_PATH: Optional[str] = None
 CURRENT_LOLLMS_CLIENT: Optional[Any] = None
 CURRENT_LLM_GENERATOR: Optional[Callable[..., str]] = None
 PROJECTS_DIR = Path("projects")
+STUDIO_CONFIG_FILE = Path("studio_llm_config.json")
+
+
+def load_studio_llm_config() -> Dict[str, Any]:
+    """Loads saved LLM settings from disk if available."""
+    if STUDIO_CONFIG_FILE.exists():
+        try:
+            return json.loads(STUDIO_CONFIG_FILE.read_text(encoding='utf-8'))
+        except Exception:
+            pass
+    return {
+        "provider": "lollms",
+        "binding_name": "ollama",
+        "model_name": "mistral:latest",
+        "host_address": "http://localhost:11434",
+        "service_key": "",
+        "temperature": 0.1
+    }
+
+
+def save_studio_llm_config(cfg: Dict[str, Any]) -> None:
+    """Persists LLM settings to disk."""
+    try:
+        STUDIO_CONFIG_FILE.write_text(json.dumps(cfg, indent=2), encoding='utf-8')
+    except Exception:
+        pass
+
+
+def build_lollms_generator_from_config(cfg: Dict[str, Any]) -> Tuple[Optional[Any], Optional[Callable[..., str]]]:
+    """Builds a LollmsClient instance and a standard generator callable from user configuration."""
+    provider = cfg.get("provider", "lollms")
+    if provider == "lollms":
+        try:
+            from lollms_client import LollmsClient
+            client = LollmsClient(
+                llm_binding_name=cfg.get("binding_name", "ollama"),
+                llm_binding_config={
+                    "model_name": cfg.get("model_name", "mistral:latest"),
+                    "host_address": cfg.get("host_address", "http://localhost:11434"),
+                    "service_key": cfg.get("service_key", "")
+                }
+            )
+            from safe_store.graph.graph_store import wrap_llm_callable
+            generator = wrap_llm_callable(client)
+            return client, generator
+        except Exception as e:
+            ASCIIColors.warning(f"Could not initialize LollmsClient from config: {e}")
+            return None, None
+    elif provider == "openai":
+        try:
+            from openai import OpenAI
+            api_key = cfg.get("service_key") or os.environ.get("OPENAI_API_KEY", "")
+            base_url = cfg.get("host_address") or None
+            client = OpenAI(api_key=api_key or "not_needed", base_url=base_url)
+            model_name = cfg.get("model_name", "gpt-4o-mini")
+
+            def _openai_gen(prompt: str, system_prompt: str|None = None, json_mode: bool = False, **kwargs) -> str:
+                msgs = []
+                if system_prompt:
+                    msgs.append({"role": "system", "content": system_prompt})
+                msgs.append({"role": "user", "content": prompt})
+                resp = client.chat.completions.create(
+                    model=model_name,
+                    messages=msgs,
+                    response_format={"type": "json_object"} if json_mode else None,
+                    temperature=kwargs.get("temperature", 0.1)
+                )
+                return resp.choices[0].message.content or ""
+
+            return client, _openai_gen
+        except Exception as e:
+            ASCIIColors.warning(f"Could not initialize OpenAI client from config: {e}")
+            return None, None
+    return None, None
 PROJECTS_DIR.mkdir(exist_ok=True)
 
 
@@ -134,17 +208,25 @@ window.safeStoreNetworkData = { nodes: null, edges: null };
 window.safeStoreOriginalNodeColors = {};
 
 window.initSafeStoreGraph = function(containerId, nodesArray, edgesArray) {
-    const container = document.getElementById(containerId);
-    if (!container) return;
+    let container = document.getElementById(containerId);
+    if (!container) {
+        container = document.getElementById('graph-network-container');
+    }
+    if (!container) {
+        container = document.querySelector('[id*="graph-network"]');
+    }
+    if (!container) {
+        console.error("SafeStore Graph container not found for ID:", containerId);
+        return;
+    }
 
-    // Guarantee minimum render height if container was previously hidden
     if (container.clientHeight === 0) {
         container.style.height = '560px';
     }
 
     window.safeStoreOriginalNodeColors = {};
     nodesArray.forEach(n => {
-        window.safeStoreOriginalNodeColors[n.id] = n.color;
+        window.safeStoreOriginalNodeColors[n.id] = (n.color && n.color.background) ? n.color.background : n.color;
     });
 
     const nodes = new vis.DataSet(nodesArray);
@@ -185,7 +267,12 @@ window.initSafeStoreGraph = function(containerId, nodesArray, edgesArray) {
             window.safeStoreNetwork.redraw();
             window.safeStoreNetwork.fit({ animation: { duration: 600 } });
         }
-    }, 150);
+    }, 100);
+    setTimeout(() => {
+        if (window.safeStoreNetwork) {
+            window.safeStoreNetwork.fit({ animation: { duration: 400 } });
+        }
+    }, 350);
 
     window.safeStoreNetwork.on('click', function(params) {
         if (params.nodes.length > 0) {
@@ -322,6 +409,7 @@ class StudioState:
         self.store: Optional[SafeStore] = None
         self.graph_store: Optional[GraphStore] = None
         self.selected_doc_id: Optional[int] = None
+        self.chat_history: List[Dict[str, str]] = []
         self.llm_generator: Optional[Callable[..., str]] = llm_generator
         self.lollms_client: Optional[Any] = lollms_client
 
@@ -336,8 +424,9 @@ class StudioState:
         self.graph_store = None
         self.db_path = ""
         self.selected_doc_id = None
+        self.chat_history.clear()
 
-    def open_store(self, path: str):
+    def open_store(self, path: str, encryption_key: Optional[str] = None):
         self.close_current_store()
         path_str = str(path).strip()
         if path_str.lower() in (":memory:", "memory") or path_str.endswith(":memory:"):
@@ -349,6 +438,7 @@ class StudioState:
         self.store = SafeStore(
             db_path=self.db_path,
             log_level=LogLevel.INFO,
+            encryption_key=encryption_key,
             llm_generator=self.llm_generator,
             lollms_client=self.lollms_client
         )
@@ -371,6 +461,14 @@ async def render_studio_page(
 ):
     state = StudioState(llm_generator=llm_generator, lollms_client=lollms_client)
 
+    # Automatically load and initialize saved LLM configuration on startup
+    if state.llm_generator is None:
+        startup_cfg = load_studio_llm_config()
+        c_inst, g_func = await asyncio.to_thread(build_lollms_generator_from_config, startup_cfg)
+        if g_func is not None:
+            state.llm_generator = g_func
+            state.lollms_client = c_inst
+
     # Base styling and scripts
     ui.add_head_html(VIS_NETWORK_HEADER)
     ui.colors(primary='#14b8a6', secondary='#06b6d4', accent='#f59e0b', dark='#0f172a')
@@ -391,6 +489,50 @@ async def render_studio_page(
             btn_all_stores = ui.button('All Stores', icon='grid_view', on_click=lambda: show_projects_view()).props('outline color=teal size=sm')
             btn_all_stores.set_visibility(False)
 
+            # Database Import Action (Clones external .db via SQLite Online Backup)
+            async def import_external_db():
+                selected = await pick_file_dialog(
+                    title="Select SQLite Database to Import",
+                    file_types=[("SQLite DB (*.db, *.sqlite)", "*.db;*.sqlite;*.sqlite3"), ("All Files (*.*)", "*.*")]
+                )
+                if selected:
+                    target_name = Path(selected).name
+                    dest_path = PROJECTS_DIR / target_name
+                    try:
+                        loading_title.text = f"Importing '{target_name}'"
+                        loading_text.text = "Copying SQLite database with online backup..."
+                        loading_overlay.open()
+                        await asyncio.to_thread(SafeStore.import_db_file, selected, dest_path)
+                        ui.notify(f"Imported database '{target_name}' successfully!", color='positive', icon='check_circle')
+                        refresh_projects_cards()
+                        await switch_to_store_workspace(str(dest_path.resolve()))
+                    except Exception as err:
+                        ui.notify(f"Import failed: {err}", color='negative')
+                    finally:
+                        loading_overlay.close()
+
+            ui.button('Import DB', icon='file_upload', on_click=import_external_db).props('outline color=teal size=sm title="Import external .db file"')
+
+            # Database Export Action (Saves current .db cleanly via SQLite Online Backup)
+            async def export_current_db():
+                if not state.store or not state.db_path or state.db_path in (":memory:", ":tempfile:"):
+                    ui.notify("Open a persistent database to export.", color='warning')
+                    return
+                src_name = Path(state.db_path).name
+                dest_dir = Path.home() / "Downloads"
+                dest_path = dest_dir / f"backup_{src_name}"
+                try:
+                    await asyncio.to_thread(state.store.export_db_file, dest_path)
+                    ui.notify(f"Database exported to '{dest_path}'!", color='positive', icon='file_download', duration=7000)
+                except Exception as err:
+                    ui.notify(f"Export failed: {err}", color='negative')
+
+            btn_export_db = ui.button('Export DB', icon='file_download', on_click=export_current_db).props('outline color=teal size=sm title="Export database file"')
+            btn_export_db.bind_visibility_from(btn_all_stores, 'visible')
+
+            # LLM Configuration Center Dialog
+            ui.button('LLM Setup', icon='tune', on_click=lambda: llm_config_dialog.open()).props('outline color=teal size=sm title="Configure LoLLMS / LLM Backend"')
+
             # Quick Create Store Button
             ui.button('New Store', icon='add', on_click=lambda: create_store_dialog.open()).props('color=teal size=sm')
 
@@ -406,6 +548,67 @@ async def render_studio_page(
                     await switch_to_store_workspace(selected)
 
             ui.button('Open DB File', icon='folder_open', on_click=browse_and_open_external_db).props('outline text-color=grey size=sm')
+
+    # =========================================================================
+    # DIALOG: LLM CONFIGURATION CENTER
+    # =========================================================================
+    current_cfg = load_studio_llm_config()
+    with ui.dialog() as llm_config_dialog, ui.card().classes('bg-slate-800 text-slate-100 p-6 w-[40rem] border border-slate-700 space-y-4 shadow-2xl'):
+        with ui.row().classes('w-full justify-between items-center'):
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('smart_toy', size='md').classes('text-teal-400')
+                ui.label('LLM & LoLLMS Configuration Center').classes('text-xl font-bold text-teal-300')
+            llm_status_badge = ui.badge('Configured' if state.llm_generator else 'Not Connected', color='teal' if state.llm_generator else 'slate-700')
+
+        ui.label('Configure the AI model backend used for Sourced Agentic Chat, Knowledge Graph extraction, and SPARQL generation.').classes('text-xs text-slate-400')
+
+        llm_provider_select = ui.select(
+            options={
+                'lollms': 'LoLLMS Client (Ollama, vLLM, WebUI, etc.)',
+                'openai': 'OpenAI SDK / Compatible REST Endpoint'
+            },
+            value=current_cfg.get('provider', 'lollms'),
+            label='Backend Provider'
+        ).classes('w-full').props('dark standout')
+
+        llm_binding_input = ui.input('Binding Name (e.g. ollama, vllm, open_ai)', value=current_cfg.get('binding_name', 'ollama')).classes('w-full').props('dark standout')
+        llm_binding_input.bind_visibility_from(llm_provider_select, 'value', value='lollms')
+
+        with ui.row().classes('w-full gap-4'):
+            llm_model_input = ui.input('Model Name', value=current_cfg.get('model_name', 'mistral:latest')).classes('flex-1').props('dark standout')
+            llm_host_input = ui.input('Host Address / URL', value=current_cfg.get('host_address', 'http://localhost:11434')).classes('flex-1').props('dark standout')
+
+        llm_key_input = ui.input('API / Service Key (Optional)', value=current_cfg.get('service_key', '')).classes('w-full').props('dark standout type=password')
+
+        async def test_and_save_llm():
+            cfg = {
+                "provider": llm_provider_select.value,
+                "binding_name": llm_binding_input.value.strip(),
+                "model_name": llm_model_input.value.strip(),
+                "host_address": llm_host_input.value.strip(),
+                "service_key": llm_key_input.value.strip()
+            }
+            save_studio_llm_config(cfg)
+            ui.notify("Testing connection to AI backend...", color='info')
+            client_inst, gen_func = await asyncio.to_thread(build_lollms_generator_from_config, cfg)
+
+            if gen_func is not None:
+                state.llm_generator = gen_func
+                state.lollms_client = client_inst
+                if state.store:
+                    state.store.set_llm_generator(gen_func)
+                llm_status_badge.text = "Connected"
+                llm_status_badge.props('color=positive')
+                ui.notify(f"Successfully connected to {cfg['model_name']}!", color='positive', icon='check_circle')
+                llm_config_dialog.close()
+            else:
+                llm_status_badge.text = "Failed"
+                llm_status_badge.props('color=negative')
+                ui.notify("Connection test failed. Check host address, model name, and service status.", color='negative', duration=6000)
+
+        with ui.row().classes('w-full justify-end gap-2 mt-4'):
+            ui.button('Cancel', on_click=llm_config_dialog.close).props('flat text-color=grey')
+            ui.button('Test & Save Configuration', icon='save', on_click=test_and_save_llm).props('color=teal')
 
     # Global Loading Dialog
     loading_overlay = ui.dialog().props('persistent backdrop-filter="blur(4px)"')
@@ -442,11 +645,19 @@ async def render_studio_page(
 
             new_store_model = ui.input('Model Name', value='all-MiniLM-L6-v2').classes('flex-1').props('dark standout')
 
+        with ui.column().classes('w-full bg-slate-900/70 p-3.5 rounded-xl border border-slate-700/80 space-y-2'):
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('lock', size='sm').classes('text-amber-400')
+                ui.label('Zero-Leakage Encryption at Rest').classes('text-sm font-bold text-amber-300')
+
+            new_store_enc_toggle = ui.checkbox('Encrypt Entire Database (Documents, Paths, Chunks, and Graph)', value=False).classes('text-xs text-slate-200')
+            with ui.row().classes('w-full gap-3').bind_visibility_from(new_store_enc_toggle, 'value'):
+                new_store_pw = ui.input('Passphrase', placeholder='Enter strong encryption key').classes('flex-1').props('dark standout type=password')
+                new_store_pw_confirm = ui.input('Confirm Passphrase', placeholder='Repeat passphrase').classes('flex-1').props('dark standout type=password')
+
         with ui.row().classes('w-full gap-4 items-center'):
             new_store_shared = ui.checkbox('Use Shared Model Server Daemon (Zero-OOM)', value=True).classes('text-xs text-teal-300')
             new_store_shared.bind_visibility_from(new_store_vec, 'value', value='st')
-
-            new_store_pw = ui.input('Encryption Password (Optional)', placeholder='Leave blank for plaintext').classes('flex-1').props('dark standout type=password')
 
         async def execute_create_store():
             s_name = new_store_name.value.strip() or "New Store"
@@ -461,7 +672,17 @@ async def render_studio_page(
             vec_name = new_store_vec.value
             model_name = new_store_model.value.strip() or "all-MiniLM-L6-v2"
             shared_server = bool(new_store_shared.value) if vec_name == 'st' else False
-            enc_key = new_store_pw.value.strip() or None
+            enc_enabled = bool(new_store_enc_toggle.value)
+            enc_key = new_store_pw.value.strip() if enc_enabled else None
+            enc_confirm = new_store_pw_confirm.value.strip() if enc_enabled else None
+
+            if enc_enabled:
+                if not enc_key:
+                    ui.notify("Encryption passphrase cannot be empty when encryption is enabled.", color='warning')
+                    return
+                if enc_key != enc_confirm:
+                    ui.notify("Encryption passphrases do not match.", color='negative')
+                    return
 
             vec_config = {}
             if vec_name == 'st':
@@ -589,6 +810,7 @@ async def render_studio_page(
             tab_files = ui.tab('Files & Documents', icon='description')
             tab_datalake = ui.tab('Semantic Datalake', icon='scatter_plot')
             tab_clusters = ui.tab('Clusters & Themes', icon='category')
+            tab_chat = ui.tab('Agentic Chat & Q&A', icon='chat')
             tab_graph = ui.tab('Knowledge Graph & SPARQL', icon='share')
             tab_search = ui.tab('RAG Search Studio', icon='search')
             tab_diagnostics = ui.tab('Database Diagnostics', icon='analytics')
@@ -668,16 +890,52 @@ async def render_studio_page(
             # TAB 2: Semantic Datalake (UMAP / PCA / t-SNE)
             # -----------------------------------------------------------------
             with ui.tab_panel(tab_datalake):
-                with ui.row().classes('w-full justify-between items-center mb-4'):
-                    with ui.row().classes('items-center gap-3'):
-                        ui.label('State-of-the-Art Semantic Datalake Explorer').classes('text-2xl font-bold text-teal-400')
-                        datalake_method_select = ui.select(['umap', 'pca', 'tsne'], value='umap', label='Method').classes('w-32').props('dark dense standout')
-                        datalake_dim_select = ui.select([2, 3], value=2, label='Dimensions').classes('w-32').props('dark dense standout')
-                        ui.button('Project', icon='refresh', on_click=lambda: refresh_datalake_view()).props('color=teal size=sm')
+                with ui.card().classes('w-full bg-slate-800/90 p-4 rounded-2xl border border-slate-700 shadow-xl mb-4'):
+                    with ui.row().classes('w-full justify-between items-center flex-wrap gap-4'):
+                        with ui.column().classes('gap-0.5'):
+                            ui.label('Semantic Datalake Explorer').classes('text-2xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-teal-400 to-cyan-400')
+                            with ui.row().classes('items-center gap-2'):
+                                datalake_stats_label = ui.label('Projecting document chunk embeddings into semantic manifold space.').classes('text-xs text-slate-400 font-mono')
+                                datalake_outdated_badge = ui.badge('⚠️ Outdated: New documents added', color='amber-500').classes('text-[10px] font-bold')
+                                datalake_outdated_badge.set_visibility(False)
 
-                with ui.row().classes('w-full gap-6 items-start'):
-                    datalake_plot_container = ui.column().classes('w-3/4 bg-slate-800/80 p-4 rounded-xl border border-slate-700 h-[70vh]')
-                    datalake_inspector_container = ui.column().classes('w-1/4 bg-slate-800/80 p-4 rounded-xl border border-slate-700 h-[70vh] overflow-y-auto')
+                        with ui.row().classes('items-center gap-2.5 flex-wrap'):
+                            datalake_method_select = ui.select(
+                                {'umap': 'UMAP (Manifold)', 'pca': 'PCA (Variance)', 'tsne': 't-SNE (Cluster)'},
+                                value='umap',
+                                label='Method'
+                            ).classes('w-40 text-xs').props('dark dense standout')
+
+                            datalake_dim_select = ui.select(
+                                {2: '2D Plane', 3: '3D Space'},
+                                value=2,
+                                label='Dimension'
+                            ).classes('w-32 text-xs').props('dark dense standout')
+
+                            datalake_show_cog_switch = ui.checkbox('Show Centroids (⌖)', value=True).classes('text-xs text-teal-300 font-semibold')
+                            datalake_show_labels_switch = ui.checkbox('Doc Labels', value=True).classes('text-xs text-slate-300')
+
+                            async def export_datalake_standalone_html():
+                                if not state.store: return
+                                try:
+                                    out_file = Path("datalake_export.html")
+                                    await asyncio.to_thread(
+                                        state.store.export_datalake_html,
+                                        output_file=out_file,
+                                        method=datalake_method_select.value,
+                                        n_components=int(datalake_dim_select.value)
+                                    )
+                                    ui.notify(f"Exported interactive HTML to '{out_file.name}'!", color='positive', icon='download')
+                                except Exception as err:
+                                    ui.notify(f"Export failed: {err}", color='negative')
+
+                            ui.button(icon='file_download', on_click=export_datalake_standalone_html).props('outline color=teal size=sm title="Export Standalone HTML Visualizer"')
+                            datalake_project_btn = ui.button('Project Embeddings', icon='auto_awesome', on_click=lambda: refresh_datalake_view()).props('color=teal size=sm')
+
+                # Main 2-Panel Layout: Plot Canvas (Left) | Semantic Inspector (Right)
+                with ui.row().classes('w-full gap-4 items-stretch h-[75vh]'):
+                    datalake_plot_container = ui.card().classes('flex-1 bg-slate-900/90 rounded-2xl border border-slate-700/80 p-3 flex flex-col relative overflow-hidden shadow-2xl')
+                    datalake_inspector_container = ui.card().classes('w-96 bg-slate-800/90 rounded-2xl border border-slate-700/80 p-4 flex flex-col justify-between overflow-y-auto shadow-xl space-y-3')
 
             # -----------------------------------------------------------------
             # TAB 2.5: Document Clusters & Thematic Analysis
@@ -694,8 +952,57 @@ async def render_studio_page(
                         cluster_themes_switch = ui.checkbox('Generate Thematic Titles & Summaries', value=True).classes('text-xs text-teal-300')
                         cluster_run_btn = ui.button('Cluster Documents', icon='auto_awesome', on_click=lambda: run_document_clustering()).props('color=teal size=sm')
 
+                with ui.row().classes('w-full items-center justify-between mb-2'):
+                    clusters_outdated_banner = ui.card().classes('w-full bg-amber-500/10 border border-amber-500/40 p-2.5 rounded-xl flex justify-between items-center')
+                    with clusters_outdated_banner:
+                        with ui.row().classes('items-center gap-2 text-amber-300 text-xs font-mono'):
+                            ui.icon('warning', size='sm').classes('text-amber-400')
+                            ui.label('New documents added since clusters were generated. Click "Re-Cluster" to update.').classes('font-bold')
+                        ui.button('Re-Cluster Now', icon='refresh', on_click=lambda: run_document_clustering()).props('color=amber-500 text-color=black size=xs font-bold')
+                    clusters_outdated_banner.set_visibility(False)
+
                 clusters_summary_bar = ui.row().classes('w-full items-center justify-between bg-slate-800/80 p-3 rounded-xl border border-slate-700 text-xs font-mono text-slate-300 mb-4')
                 clusters_grid_container = ui.element('div').classes('grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 w-full')
+
+            # -----------------------------------------------------------------
+            # TAB 2.7: Sourced Agentic Chat & Q&A Workspace
+            # -----------------------------------------------------------------
+            with ui.tab_panel(tab_chat):
+                with ui.row().classes('w-full justify-between items-center mb-4'):
+                    with ui.column().classes('gap-0.5'):
+                        ui.label('Talk to Your Documents (Sourced Agentic Q&A)').classes('text-2xl font-bold text-teal-400')
+                        ui.label('Agentic knowledge recovery combining vector semantic search, BM25 keywords, and SPARQL logic with clickable source citations.').classes('text-xs text-slate-400')
+
+                    with ui.row().classes('items-center gap-2'):
+                        chat_top_k_select = ui.select({3: 'Top 3 Chunks', 5: 'Top 5 Chunks', 8: 'Top 8 Chunks'}, value=5, label='Context Span').classes('w-36 text-xs').props('dark dense standout')
+                        chat_include_graph = ui.checkbox('Query Graph Logic (SPARQL)', value=True).classes('text-xs text-teal-300 font-semibold')
+                        ui.button('Clear Chat', icon='delete_sweep', on_click=lambda: clear_agentic_chat()).props('flat text-color=grey size=sm')
+
+                # Main Chat Container: Stream (Left) | Source Evidence Cards (Right)
+                with ui.row().classes('w-full gap-4 items-stretch h-[72vh]'):
+                    with ui.card().classes('flex-1 bg-slate-900/90 rounded-2xl border border-slate-700 p-4 flex flex-col justify-between overflow-hidden shadow-2xl'):
+                        chat_scroll_area = ui.scroll_area().classes('w-full flex-1 pr-3 space-y-4')
+                        with chat_scroll_area:
+                            chat_messages_container = ui.column().classes('w-full space-y-4')
+
+                        with ui.row().classes('w-full items-center gap-2 pt-3 border-t border-slate-800'):
+                            chat_input = ui.input(placeholder='Ask any question about your indexed documents...').classes('flex-1 font-sans text-sm').props('dark standout')
+                            chat_send_btn = ui.button('Ask', icon='send', on_click=lambda: send_agentic_chat()).props('color=teal')
+                            chat_input.on('keydown.enter', lambda: send_agentic_chat())
+
+                    # Right Side: Live Source Evidence Inspector
+                    with ui.card().classes('w-96 bg-slate-800/90 rounded-2xl border border-slate-700 p-4 flex flex-col justify-between overflow-y-auto shadow-xl space-y-3'):
+                        with ui.row().classes('w-full justify-between items-center border-b border-slate-700 pb-2'):
+                            with ui.row().classes('items-center gap-1.5'):
+                                ui.icon('menu_book', size='sm').classes('text-teal-400')
+                                ui.label('Grounding Citations').classes('text-sm font-bold text-slate-200')
+                            chat_source_badge = ui.badge('0 Sources', color='slate-700').classes('text-[10px] font-mono')
+
+                        chat_sources_drawer = ui.column().classes('w-full space-y-3 text-xs font-mono text-slate-300 flex-1')
+                        with chat_sources_drawer:
+                            with ui.column().classes('items-center justify-center h-48 text-center text-slate-500 m-auto space-y-2'):
+                                ui.icon('source', size='lg').classes('text-slate-600')
+                                ui.label('Retrieved chunk citations and SPARQL facts will appear here as the agent recovers knowledge.').classes('text-xs italic max-w-xs')
 
             # -----------------------------------------------------------------
             # TAB 3: Knowledge Graph Visual Studio & W3C SPARQL 1.1 Console
@@ -705,9 +1012,275 @@ async def render_studio_page(
                 with ui.row().classes('w-full justify-between items-center mb-3'):
                     with ui.row().classes('items-center gap-3'):
                         ui.label('Knowledge Graph Studio').classes('text-2xl font-bold text-teal-400')
+                        graph_scope_select = ui.select(
+                            options={
+                                'abox': 'ABox (Instances & Content)',
+                                'tbox': 'TBox (Ontology Schema)',
+                                'both': 'Unified (ABox Content + TBox Schema)'
+                            },
+                            value='abox',
+                            label='Graph Scope'
+                        ).classes('w-64 text-xs').props('dark dense standout')
                         graph_summary_badge = ui.badge('Loading...', color='slate-700').classes('text-xs font-mono')
 
+                    # Dynamic Action Toolbar: Changes based on Scope (ABox vs TBox)
                     with ui.row().classes('items-center gap-2'):
+                        # TBOX AUTHORING DIALOG 1: Add OWL Class
+                        with ui.dialog() as add_class_dialog, ui.card().classes('bg-slate-800 text-slate-100 p-6 w-[36rem] border border-purple-500/50 space-y-4'):
+                            with ui.row().classes('w-full justify-between items-center'):
+                                with ui.row().classes('items-center gap-2'):
+                                    ui.icon('category', size='sm').classes('text-purple-400')
+                                    ui.label('Add Ontology Class (owl:Class)').classes('text-lg font-bold text-purple-300')
+                                ui.button(icon='close', on_click=add_class_dialog.close).props('flat dense round text-color=grey')
+
+                            class_name_input = ui.input('Class Name / Identifier', placeholder='e.g. Microservice, Drone, Scientist').classes('w-full').props('dark standout')
+                            class_label_input = ui.input('Display Label (Optional)', placeholder='e.g. Microservice Component').classes('w-full').props('dark standout')
+                            class_parent_select = ui.select({}, label='Superclass (rdfs:subClassOf)').classes('w-full').props('dark standout')
+                            class_disjoint_select = ui.select({}, label='Disjoint Class Exclusivity (owl:disjointWith)').classes('w-full').props('dark standout')
+
+                            async def execute_add_class():
+                                c_name = class_name_input.value.strip()
+                                if not c_name:
+                                    ui.notify("Class name is required.", color='warning')
+                                    return
+                                try:
+                                    state.graph_store.tbox.add_class(
+                                        class_name_or_uri=c_name,
+                                        label=class_label_input.value.strip() or None,
+                                        sub_class_of=class_parent_select.value or None,
+                                        disjoint_with=class_disjoint_select.value or None
+                                    )
+                                    state.graph_store.save_ontology_to_db()
+                                    ui.notify(f"Added ontology class '{c_name}'!", color='positive', icon='check_circle')
+                                    add_class_dialog.close()
+                                    await refresh_graph_view()
+                                except Exception as err:
+                                    ui.notify(f"Error adding class: {err}", color='negative')
+
+                            with ui.row().classes('w-full justify-end gap-2'):
+                                ui.button('Cancel', on_click=add_class_dialog.close).props('flat text-color=grey')
+                                ui.button('Create Class', icon='add', on_click=execute_add_class).props('color=purple')
+
+                        # TBOX AUTHORING DIALOG 2: Add Object Property (Link between classes)
+                        with ui.dialog() as add_prop_dialog, ui.card().classes('bg-slate-800 text-slate-100 p-6 w-[40rem] border border-cyan-500/50 space-y-4'):
+                            with ui.row().classes('w-full justify-between items-center'):
+                                with ui.row().classes('items-center gap-2'):
+                                    ui.icon('link', size='sm').classes('text-cyan-400')
+                                    ui.label('Add Object Property (Class Link)').classes('text-lg font-bold text-cyan-300')
+                                ui.button(icon='close', on_click=add_prop_dialog.close).props('flat dense round text-color=grey')
+
+                            prop_name_input = ui.input('Property Name / Predicate', placeholder='e.g. dependsOn, communicatesWith, manages').classes('w-full').props('dark standout')
+                            with ui.row().classes('w-full gap-4'):
+                                prop_dom_select = ui.select({}, label='Domain Class (Source)').classes('flex-1').props('dark standout')
+                                prop_rng_select = ui.select({}, label='Range Class (Target)').classes('flex-1').props('dark standout')
+
+                            prop_inv_input = ui.input('Inverse Property Name (Optional)', placeholder='e.g. dependedOnBy').classes('w-full').props('dark standout')
+
+                            with ui.row().classes('w-full gap-4 items-center'):
+                                prop_trans_chk = ui.checkbox('Transitive (A->B->C => A->C)', value=False).classes('text-xs text-cyan-300 font-mono')
+                                prop_sym_chk = ui.checkbox('Symmetric (A->B <=> B->A)', value=False).classes('text-xs text-cyan-300 font-mono')
+                                prop_func_chk = ui.checkbox('Functional (At most 1 value)', value=False).classes('text-xs text-cyan-300 font-mono')
+
+                            async def execute_add_object_property():
+                                p_name = prop_name_input.value.strip()
+                                if not p_name or not prop_dom_select.value or not prop_rng_select.value:
+                                    ui.notify("Property name, Domain, and Range are required.", color='warning')
+                                    return
+                                try:
+                                    state.graph_store.tbox.add_object_property(
+                                        prop_name_or_uri=p_name,
+                                        domain=prop_dom_select.value,
+                                        range_=prop_rng_select.value,
+                                        is_transitive=bool(prop_trans_chk.value),
+                                        is_symmetric=bool(prop_sym_chk.value),
+                                        is_functional=bool(prop_func_chk.value),
+                                        inverse_of=prop_inv_input.value.strip() or None
+                                    )
+                                    state.graph_store.save_ontology_to_db()
+                                    ui.notify(f"Added object property '{p_name}'!", color='positive', icon='check_circle')
+                                    add_prop_dialog.close()
+                                    await refresh_graph_view()
+                                except Exception as err:
+                                    ui.notify(f"Error adding property: {err}", color='negative')
+
+                            with ui.row().classes('w-full justify-end gap-2'):
+                                ui.button('Cancel', on_click=add_prop_dialog.close).props('flat text-color=grey')
+                                ui.button('Create Property', icon='add', on_click=execute_add_object_property).props('color=cyan')
+
+                        # TBOX AUTHORING DIALOG 3: Add Datatype Property (Class Attribute)
+                        with ui.dialog() as add_attr_dialog, ui.card().classes('bg-slate-800 text-slate-100 p-6 w-[36rem] border border-amber-500/50 space-y-4'):
+                            with ui.row().classes('w-full justify-between items-center'):
+                                with ui.row().classes('items-center gap-2'):
+                                    ui.icon('label', size='sm').classes('text-amber-400')
+                                    ui.label('Add Class Attribute (Datatype Property)').classes('text-lg font-bold text-amber-300')
+                                ui.button(icon='close', on_click=add_attr_dialog.close).props('flat dense round text-color=grey')
+
+                            attr_name_input = ui.input('Attribute Name', placeholder='e.g. ipAddress, serialNumber, rating').classes('w-full').props('dark standout')
+                            attr_dom_select = ui.select({}, label='Target Class (Domain)').classes('w-full').props('dark standout')
+                            attr_type_select = ui.select(
+                                ['xsd:string', 'xsd:integer', 'xsd:float', 'xsd:boolean', 'xsd:dateTime'],
+                                value='xsd:string',
+                                label='Data Type'
+                            ).classes('w-full').props('dark standout')
+                            attr_func_chk = ui.checkbox('Functional Attribute (Single value per entity)', value=True).classes('text-xs text-amber-300 font-mono')
+
+                            async def execute_add_attribute():
+                                a_name = attr_name_input.value.strip()
+                                if not a_name or not attr_dom_select.value:
+                                    ui.notify("Attribute name and Target Class are required.", color='warning')
+                                    return
+                                try:
+                                    state.graph_store.tbox.add_datatype_property(
+                                        prop_name_or_uri=a_name,
+                                        domain=attr_dom_select.value,
+                                        range_data_type=attr_type_select.value,
+                                        is_functional=bool(attr_func_chk.value)
+                                    )
+                                    state.graph_store.save_ontology_to_db()
+                                    ui.notify(f"Added attribute '{a_name}' on {attr_dom_select.value}!", color='positive', icon='check_circle')
+                                    add_attr_dialog.close()
+                                    await refresh_graph_view()
+                                except Exception as err:
+                                    ui.notify(f"Error adding attribute: {err}", color='negative')
+
+                            with ui.row().classes('w-full justify-end gap-2'):
+                                ui.button('Cancel', on_click=add_attr_dialog.close).props('flat text-color=grey')
+                                ui.button('Create Attribute', icon='add', on_click=execute_add_attribute).props('color=amber-500')
+
+                        # TBOX BUTTONS (Visible when TBox mode active)
+                        async def open_class_dialog():
+                            if not state.graph_store: return
+                            classes = state.graph_store.tbox.get_classes()
+                            opts = {c: c.split('/')[-1].split('#')[-1] for c in classes}
+                            opts_with_empty = {"": "(None)"}
+                            opts_with_empty.update(opts)
+                            class_parent_select.options = opts_with_empty
+                            class_parent_select.value = ""
+                            class_disjoint_select.options = opts_with_empty
+                            class_disjoint_select.value = ""
+                            add_class_dialog.open()
+
+                        async def open_prop_dialog():
+                            if not state.graph_store: return
+                            classes = state.graph_store.tbox.get_classes()
+                            opts = {c: c.split('/')[-1].split('#')[-1] for c in classes}
+                            prop_dom_select.options = opts
+                            prop_rng_select.options = opts
+                            if opts:
+                                prop_dom_select.value = list(opts.keys())[0]
+                                prop_rng_select.value = list(opts.keys())[-1]
+                            add_prop_dialog.open()
+
+                        async def open_attr_dialog():
+                            if not state.graph_store: return
+                            classes = state.graph_store.tbox.get_classes()
+                            opts = {c: c.split('/')[-1].split('#')[-1] for c in classes}
+                            attr_dom_select.options = opts
+                            if opts: attr_dom_select.value = list(opts.keys())[0]
+                            add_attr_dialog.open()
+
+                        btn_add_class = ui.button('Add Class (OWL)', icon='category', on_click=open_class_dialog).props('color=purple size=sm')
+                        btn_add_obj_prop = ui.button('Add Link / Relation', icon='link', on_click=open_prop_dialog).props('color=cyan size=sm')
+                        btn_add_attr = ui.button('Add Attribute', icon='label', on_click=open_attr_dialog).props('outline color=amber-500 size=sm')
+
+                        # ABOX BUTTONS (Visible when ABox mode active)
+                        # Tabular CSV Mapping Modal
+                        with ui.dialog() as csv_import_dialog, ui.card().classes('bg-slate-800 text-slate-100 p-6 w-[48rem] border border-slate-700 space-y-4 shadow-2xl'):
+                            with ui.row().classes('w-full justify-between items-center'):
+                                with ui.row().classes('items-center gap-2'):
+                                    ui.icon('table_chart', size='md').classes('text-teal-400')
+                                    ui.label('Import Tabular CSV Data to Knowledge Graph').classes('text-xl font-bold text-teal-300')
+                                ui.button(icon='close', on_click=csv_import_dialog.close).props('flat dense round text-color=grey')
+
+                            ui.label('Ingest CSV rows as grounded ABox entities and relationships. Choose manual mapping or let AI synthesize the mapping for review.').classes('text-xs text-slate-400')
+
+                            with ui.row().classes('w-full gap-3 items-center'):
+                                csv_data_input = ui.input('Selected Data CSV File').classes('flex-1').props('dark standout')
+                                async def browse_data_csv():
+                                    sel = await pick_file_dialog("Select Data CSV File", [("CSV Files (*.csv)", "*.csv")])
+                                    if sel: csv_data_input.value = sel
+                                ui.button('Browse CSV...', icon='folder_open', on_click=browse_data_csv).props('color=teal size=sm')
+
+                            with ui.row().classes('w-full gap-4'):
+                                csv_mode_select = ui.select(
+                                    options={
+                                        'ai': 'Auto-Generate Mapping with AI (Review & Apply)',
+                                        'file': 'Provide Existing Mapping File (.csv / .json)'
+                                    },
+                                    value='ai',
+                                    label='Mapping Strategy'
+                                ).classes('flex-1').props('dark standout')
+
+                            with ui.row().classes('w-full gap-3 items-center') as mapping_file_row:
+                                csv_mapping_input = ui.input('Selected Mapping File (.csv/.json)').classes('flex-1').props('dark standout')
+                                async def browse_mapping_file():
+                                    sel = await pick_file_dialog("Select Mapping File", [("Mapping Files (*.csv;*.json)", "*.csv;*.json")])
+                                    if sel: csv_mapping_input.value = sel
+                                ui.button('Browse...', icon='folder_open', on_click=browse_mapping_file).props('outline color=teal size=sm')
+                            mapping_file_row.bind_visibility_from(csv_mode_select, 'value', value='file')
+
+                            csv_guidance_input = ui.textarea('Mapping Guidance (Optional)', placeholder='e.g. Map employee_id to Person, dept_id to Organization, and creates worksFor edges.').classes('w-full text-xs font-mono').props('dark standout rows=2')
+                            csv_guidance_input.bind_visibility_from(csv_mode_select, 'value', value='ai')
+
+                            ui.label('Proposed Declarative Mapping Rules (JSON):').classes('text-xs font-bold text-teal-400')
+                            mapping_json_editor = ui.textarea(
+                                placeholder='Click "Generate AI Mapping" or upload a mapping file to review and edit rules...'
+                            ).classes('w-full font-mono text-xs').props('dark standout rows=8')
+
+                            async def run_ai_mapping_proposal():
+                                d_file = csv_data_input.value.strip()
+                                if not d_file or not Path(d_file).exists():
+                                    ui.notify("Please select a valid Data CSV file first.", color='warning')
+                                    return
+                                from safe_store import TabularMapper
+                                mapper = TabularMapper(store=state.store, tbox=state.graph_store.tbox)
+                                ui.notify("Analyzing CSV headers and generating mapping with AI...", color='info')
+                                try:
+                                    rules = await asyncio.to_thread(
+                                        mapper.propose_mapping_with_llm,
+                                        csv_data_or_path=d_file,
+                                        user_guidance=csv_guidance_input.value.strip() or None
+                                    )
+                                    mapping_json_editor.value = json.dumps(rules, indent=2)
+                                    ui.notify("AI Mapping generated! Review the rules below before applying.", color='positive')
+                                except Exception as err:
+                                    ui.notify(f"Mapping generation failed: {err}", color='negative')
+
+                            async def apply_csv_import():
+                                d_file = csv_data_input.value.strip()
+                                if not d_file or not Path(d_file).exists():
+                                    ui.notify("Please select a valid Data CSV file.", color='warning')
+                                    return
+
+                                mode = csv_mode_select.value
+                                from safe_store import TabularMapper
+                                mapper = TabularMapper(store=state.store, tbox=state.graph_store.tbox)
+
+                                try:
+                                    if mode == 'file' and csv_mapping_input.value.strip():
+                                        m_file = csv_mapping_input.value.strip()
+                                        res = await asyncio.to_thread(mapper.map_csv_with_mapping_file, d_file, m_file)
+                                    else:
+                                        rules_text = mapping_json_editor.value.strip()
+                                        if not rules_text:
+                                            ui.notify("Mapping rules are empty. Generate or enter rules first.", color='warning')
+                                            return
+                                        rules = json.loads(rules_text)
+                                        res = await asyncio.to_thread(mapper.map_csv, d_file, rules)
+
+                                    ui.notify(f"Import complete! Created {res['entities_created']} entities and {res['triples_generated']} triples.", color='positive', icon='check_circle')
+                                    csv_import_dialog.close()
+                                    await refresh_graph_view()
+                                except Exception as err:
+                                    ui.notify(f"Import failed: {err}", color='negative', duration=7000)
+
+                            with ui.row().classes('w-full justify-between items-center mt-3'):
+                                ui.button('Generate AI Mapping', icon='auto_awesome', on_click=run_ai_mapping_proposal).props('outline color=purple size=sm').bind_visibility_from(csv_mode_select, 'value', value='ai')
+                                with ui.row().classes('gap-2'):
+                                    ui.button('Cancel', on_click=csv_import_dialog.close).props('flat text-color=grey')
+                                    ui.button('Verify & Apply Import', icon='cloud_upload', on_click=apply_csv_import).props('color=teal')
+
+                        ui.button('Import CSV Data', icon='table_chart', on_click=csv_import_dialog.open).props('outline color=teal size=sm')
                         # Manual Node Dialog
                         with ui.dialog() as add_node_dialog, ui.card().classes('bg-slate-800 text-slate-100 p-6 w-[32rem] border border-slate-700 space-y-4'):
                             ui.label('Add Graph Node Manually').classes('text-lg font-bold text-teal-400')
@@ -893,7 +1466,7 @@ async def render_studio_page(
                                 stop_btn.set_visibility(False)
                                 start_btn = ui.button('Start Fast Extraction', icon='bolt', on_click=run_fast_graph_build).props('color=teal')
 
-                        ui.button('Add Node', icon='add', on_click=add_node_dialog.open).props('outline color=teal size=sm')
+                        btn_add_node = ui.button('Add Node', icon='add', on_click=add_node_dialog.open).props('outline color=teal size=sm')
 
                         async def open_rel_dialog():
                             if not state.graph_store: return
@@ -906,8 +1479,9 @@ async def render_studio_page(
                                 rel_tgt_select.value = list(opts.keys())[-1]
                             add_rel_dialog.open()
 
-                        ui.button('Add Relationship', icon='link', on_click=open_rel_dialog).props('outline color=cyan size=sm')
-                        ui.button('Build Knowledge Graph', icon='bolt', on_click=build_graph_dialog.open).props('color=teal size=sm')
+                        btn_add_rel = ui.button('Add Relationship', icon='link', on_click=open_rel_dialog).props('outline color=cyan size=sm')
+                        btn_build_kg = ui.button('Build Knowledge Graph', icon='bolt', on_click=build_graph_dialog.open).props('color=teal size=sm')
+                        btn_import_csv = ui.button('Import CSV Data', icon='table_chart', on_click=csv_import_dialog.open).props('outline color=teal size=sm')
 
                 # =============================================================
                 # 3-PANEL RESPONSIVE WORKSPACE
@@ -968,7 +1542,9 @@ async def render_studio_page(
                                 ui.button('Reset Colors', icon='restart_alt', on_click=lambda: client.run_javascript('window.resetGraphHighlight()')).props('flat dense text-color=teal size=sm title="Reset Selection"')
 
                         # The HTML div where vis-network mounts with explicit height
-                        graph_canvas_div = ui.element('div').classes('w-full flex-1').style('width: 100%; height: 100%; min-height: 560px;').props('id=graph-network-container')
+                        graph_canvas_div = ui.element('div').classes('w-full flex-1').style('width: 100%; height: 100%; min-height: 560px;')
+                        graph_canvas_div._props['id'] = 'graph-network-container'
+                        graph_canvas_div.props('id=graph-network-container')
 
                         # Clipboard helper
                         async def copy_to_clipboard(text: str, success_msg: str = "Copied to clipboard!"):
@@ -1096,6 +1672,7 @@ async def render_studio_page(
                             with ui.tab_panel(rtab_sparql).classes('p-0 space-y-3'):
                                 with ui.row().classes('w-full justify-between items-center'):
                                     ui.label('Query & Subselection').classes('text-xs font-bold text-teal-300 uppercase tracking-wider')
+                                    sparql_reasoning_switch = ui.checkbox('OWL/RDFS Reasoning', value=False).classes('text-xs text-teal-300 font-mono')
                                     sparql_presets = ui.select(
                                         options={
                                             'all': 'Preset: 15 Triples',
@@ -1149,26 +1726,32 @@ SELECT ?subject ?predicate ?object WHERE {
                                 ).classes('w-full font-mono text-xs').props('dark standout rows=5')
 
                                 def on_preset_change(e):
-                                    preset = e.value
-                                    if preset == 'all':
+                                    preset = getattr(e, 'value', None)
+                                    if preset is None and hasattr(e, 'args'):
+                                        preset = e.args
+                                    if preset is None:
+                                        preset = sparql_presets.value
+
+                                    preset_str = str(preset or '')
+                                    if 'all' in preset_str:
                                         sparql_editor.value = """PREFIX ex: <http://example.org/>
 PREFIX ont: <http://example.org/ontology/>
 SELECT ?subject ?predicate ?object WHERE {
     ?subject ?predicate ?object .
 } LIMIT 15"""
-                                    elif preset == 'types':
+                                    elif 'types' in preset_str:
                                         sparql_editor.value = """PREFIX ont: <http://example.org/ontology/>
 SELECT ?entity ?label WHERE {
     ?entity ont:label ?label .
 } LIMIT 20"""
-                                    elif preset == 'connected':
+                                    elif 'connected' in preset_str:
                                         sparql_editor.value = """PREFIX ex: <http://example.org/>
 SELECT ?source ?relation ?target WHERE {
     ?source ?relation ?target .
     FILTER(!CONTAINS(STR(?relation), "type") && !CONTAINS(STR(?relation), "label"))
 } LIMIT 20"""
 
-                                sparql_presets.on('update:model-value', on_preset_change)
+                                sparql_presets.on_value_change(on_preset_change)
 
                                 async def execute_sparql_and_highlight():
                                     query_str = sparql_editor.value.strip()
@@ -1178,7 +1761,8 @@ SELECT ?source ?relation ?target WHERE {
                                         ui.label('Running SPARQL query...').classes('text-xs text-slate-400')
 
                                     try:
-                                        res = await asyncio.to_thread(state.graph_store.query_sparql, query_str)
+                                        use_reasoning = bool(sparql_reasoning_switch.value)
+                                        res = await asyncio.to_thread(state.graph_store.query_sparql, query_str, enable_reasoning=use_reasoning)
                                         sparql_results_drawer.clear()
 
                                         if "results" in res and "bindings" in res["results"]:
@@ -1240,8 +1824,28 @@ SELECT ?source ?relation ?target WHERE {
                                         with sparql_results_drawer:
                                             ui.label(f"SPARQL Error: {ex}").classes('text-xs text-rose-400 font-mono')
 
-                                with ui.row().classes('w-full justify-between items-center'):
+                                # Consistency Verification Action
+                                async def run_consistency_check():
+                                    if not state.graph_store: return
+                                    try:
+                                        report = await asyncio.to_thread(state.graph_store.check_consistency)
+                                        sparql_results_drawer.clear()
+                                        with sparql_results_drawer:
+                                            if report["is_consistent"]:
+                                                ui.badge('Logical Graph Consistency: 100% Valid (0 Conflicts)', color='positive').classes('text-xs p-2 w-full text-center')
+                                                ui.label('All exclusivity, disjoint class, and functional constraints are satisfied.').classes('text-[11px] text-slate-300 italic mt-1')
+                                            else:
+                                                ui.badge(f'Consistency Violations Detected: {report["violation_count"]}', color='negative').classes('text-xs p-2 w-full text-center font-bold')
+                                                for v in report["violations"]:
+                                                    with ui.card().classes('w-full bg-slate-950 p-2 rounded border border-rose-500/60 text-xs font-mono space-y-1 mt-1'):
+                                                        ui.label(f"[{v['severity']}] {v['type']}").classes('text-rose-400 font-bold')
+                                                        ui.label(v['conflict']).classes('text-slate-300')
+                                    except Exception as ex:
+                                        ui.notify(f"Consistency check error: {ex}", color='negative')
+
+                                with ui.row().classes('w-full justify-between items-center gap-1.5'):
                                     ui.button('Execute & Highlight', icon='play_arrow', on_click=execute_sparql_and_highlight).props('color=teal size=sm class="flex-1"')
+                                    ui.button('Verify Exclusivity', icon='verified_user', on_click=run_consistency_check).props('outline color=cyan size=sm title="Check Disjointness & Contradictions"')
                                     ui.button(icon='restart_alt', on_click=lambda: client.run_javascript('window.resetGraphHighlight()')).props('outline text-color=grey size=sm title="Reset Highlight"')
 
                                 sparql_results_drawer = ui.column().classes('w-full max-h-48 overflow-y-auto bg-slate-900/80 p-2 rounded-lg border border-slate-700/60')
@@ -1446,19 +2050,50 @@ SELECT ?source ?relation ?target WHERE {
         datalake_inspector_container.clear()
 
         method = datalake_method_select.value
-        n_comp = datalake_dim_select.value
+        n_comp = int(datalake_dim_select.value)
+        show_cog = bool(datalake_show_cog_switch.value)
+        show_labels = bool(datalake_show_labels_switch.value)
+
+        # Check and display outdated state
+        if state.store and hasattr(state.store, "is_datalake_outdated"):
+            datalake_outdated_badge.set_visibility(state.store.is_datalake_outdated())
+
+        # Consistent, distinct color palette for documents
+        DOC_PALETTE = [
+            '#2dd4bf',  # Teal
+            '#38bdf8',  # Sky blue
+            '#f43f5e',  # Rose
+            '#a855f7',  # Purple
+            '#fbbf24',  # Amber
+            '#34d399',  # Emerald
+            '#fb923c',  # Orange
+            '#818cf8',  # Indigo
+            '#ec4899',  # Pink
+            '#4ade80',  # Green
+            '#60a5fa',  # Blue
+            '#e879f9',  # Fuchsia
+            '#facc15',  # Yellow
+            '#94a3b8'   # Slate
+        ]
 
         with datalake_inspector_container:
-            ui.label('Chunk Inspector').classes('text-lg font-bold text-teal-300 mb-2 border-b border-slate-700 pb-2 w-full')
-            inspector_detail = ui.column().classes('space-y-2 text-xs font-mono text-slate-300')
-            with inspector_detail:
-                ui.label('Hover or click on any point in the plot to inspect chunk content and metadata.').classes('text-slate-500 italic')
+            with ui.row().classes('w-full justify-between items-center border-b border-slate-700/80 pb-2 mb-2'):
+                with ui.row().classes('items-center gap-1.5'):
+                    ui.icon('radar', size='sm').classes('text-teal-400')
+                    ui.label('Semantic Inspector').classes('text-base font-bold text-slate-200')
+                inspector_badge = ui.badge('Idle', color='slate-700').classes('text-[10px] font-mono')
+
+            inspector_body = ui.column().classes('w-full space-y-3 text-xs font-mono text-slate-300 flex-1')
+            with inspector_body:
+                with ui.column().classes('items-center justify-center h-48 text-center text-slate-500 m-auto space-y-2'):
+                    ui.icon('touch_app', size='lg').classes('text-slate-600')
+                    ui.label('Click any chunk dot or ⌖ diamond to inspect semantic details and distances.').classes('text-xs italic max-w-xs')
 
         with datalake_plot_container:
-            plot_loading = ui.row().classes('w-full h-full items-center justify-center')
+            plot_loading = ui.row().classes('w-full h-full items-center justify-center space-x-3')
             with plot_loading:
-                ui.spinner(size='lg', color='teal')
-                ui.label(f'Computing {method.upper()} projection in worker thread...').classes('text-sm text-slate-400 ml-3')
+                ui.spinner('dots', size='lg', color='teal')
+                ui.label(f'Calculating {method.upper()} manifold projection in worker thread...').classes('text-sm text-slate-300 font-mono')
 
         points = await asyncio.to_thread(
             state.store.get_datalake_view,
@@ -1471,165 +2106,349 @@ SELECT ?source ?relation ?target WHERE {
         datalake_plot_container.clear()
         with datalake_plot_container:
             if not points:
-                ui.label('No vectorized points found. Index documents to view point cloud.').classes('text-sm text-slate-400 italic m-auto')
+                ui.label('No vectorized points found. Index documents to view semantic point cloud.').classes('text-sm text-slate-400 italic m-auto')
                 return
 
-            fig = go.Figure()
-            doc_groups = {}
+            # Group points by document
+            doc_groups: Dict[str, List[Dict[str, Any]]] = {}
             for p in points:
                 doc = p['document_title']
                 if doc not in doc_groups:
                     doc_groups[doc] = []
                 doc_groups[doc].append(p)
 
-            # Store centroid metadata for interactive inspector lookup
-            cog_lookup = {}
+            datalake_stats_label.text = f"{len(points)} chunks across {len(doc_groups)} document(s) projected via {method.upper()} ({n_comp}D)."
 
-            for doc_title, pts in doc_groups.items():
+            fig = go.Figure()
+
+            # Iterate through each document and assign an identical, shared color for both chunks and CoG
+            for doc_idx, (doc_title, pts) in enumerate(doc_groups.items()):
+                doc_color = DOC_PALETTE[doc_idx % len(DOC_PALETTE)]
+
                 x_vals = [p['x'] for p in pts]
                 y_vals = [p['y'] for p in pts]
 
-                # Compute Center of Gravity (Centroid)
                 cog_x = float(sum(x_vals) / len(x_vals))
                 cog_y = float(sum(y_vals) / len(y_vals))
 
-                hover_texts = [f"<b>{doc_title}</b><br>Chunk #{p['chunk_id']}<br>Path: {p.get('document_path', '')}" for p in pts]
-
+                # Compute distances of each chunk to the document's center of gravity
                 if n_comp == 3:
                     z_vals = [p['z'] for p in pts]
                     cog_z = float(sum(z_vals) / len(z_vals))
-                    cog_lookup[doc_title] = {'x': cog_x, 'y': cog_y, 'z': cog_z, 'count': len(pts), 'path': pts[0].get('document_path', '')}
+                    chunk_dists = [float(np.sqrt((p['x'] - cog_x)**2 + (p['y'] - cog_y)**2 + (p['z'] - cog_z)**2)) for p in pts]
+                else:
+                    cog_z = 0.0
+                    z_vals = None
+                    chunk_dists = [float(np.sqrt((p['x'] - cog_x)**2 + (p['y'] - cog_y)**2)) for p in pts]
 
-                    # Document Chunk Points Trace
+                avg_dist = float(sum(chunk_dists) / len(chunk_dists)) if chunk_dists else 0.0
+                max_dist = max(chunk_dists) if chunk_dists else 0.0
+
+                # Build custom data payloads for direct, unambiguous inspector access
+                chunk_customdata = []
+                for p, dist in zip(pts, chunk_dists):
+                    chunk_customdata.append({
+                        'is_cog': False,
+                        'doc_title': doc_title,
+                        'doc_path': p.get('document_path', ''),
+                        'doc_id': p.get('doc_id'),
+                        'chunk_id': p['chunk_id'],
+                        'x': p['x'],
+                        'y': p['y'],
+                        'z': p.get('z'),
+                        'text': p.get('chunk_text_preview', ''),
+                        'metadata': p.get('metadata', {}),
+                        'dist_to_cog': round(dist, 3),
+                        'color': doc_color
+                    })
+
+                cog_customdata = [{
+                    'is_cog': True,
+                    'doc_title': doc_title,
+                    'doc_path': pts[0].get('document_path', ''),
+                    'doc_id': pts[0].get('doc_id'),
+                    'x': round(cog_x, 3),
+                    'y': round(cog_y, 3),
+                    'z': round(cog_z, 3) if n_comp == 3 else None,
+                    'chunk_count': len(pts),
+                    'avg_dist': round(avg_dist, 3),
+                    'max_dist': round(max_dist, 3),
+                    'color': doc_color
+                }]
+
+                hover_template = (
+                    f"<b>{doc_title}</b><br>" +
+                    "Chunk #%{customdata.chunk_id}<br>" +
+                    "Dist to CoG: %{customdata.dist_to_cog}<extra></extra>"
+                )
+
+                # 1. Document Chunk Points Trace (Colored with doc_color)
+                if n_comp == 3:
                     fig.add_trace(go.Scatter3d(
                         x=x_vals, y=y_vals, z=z_vals,
-                        mode='markers', name=doc_title,
-                        text=hover_texts, hoverinfo='text',
-                        marker=dict(size=5, opacity=0.7)
-                    ))
-
-                    # Center of Gravity (Centroid) Trace
-                    fig.add_trace(go.Scatter3d(
-                        x=[cog_x], y=[cog_y], z=[cog_z],
-                        mode='markers+text',
-                        name=f"⌖ CoG: {doc_title}",
-                        text=[f"⌖ {doc_title}"],
-                        textposition="top center",
-                        textfont=dict(size=10, color='#f1f5f9'),
-                        hovertext=[f"<b>[Center of Gravity] {doc_title}</b><br>Total Chunks: {len(pts)}<br>Centroid: ({cog_x:.3f}, {cog_y:.3f}, {cog_z:.3f})"],
-                        hoverinfo='text',
-                        marker=dict(size=9, symbol='diamond', line=dict(color='#ffffff', width=2))
+                        mode='markers',
+                        name=doc_title,
+                        legendgroup=doc_title,
+                        customdata=chunk_customdata,
+                        hovertemplate=hover_template,
+                        marker=dict(
+                            size=6,
+                            color=doc_color,
+                            opacity=0.85,
+                            line=dict(color='#0f172a', width=0.5)
+                        )
                     ))
                 else:
-                    cog_lookup[doc_title] = {'x': cog_x, 'y': cog_y, 'count': len(pts), 'path': pts[0].get('document_path', '')}
-
-                    # Document Chunk Points Trace
                     fig.add_trace(go.Scatter(
                         x=x_vals, y=y_vals,
-                        mode='markers', name=doc_title,
-                        text=hover_texts, hoverinfo='text',
-                        marker=dict(size=8, opacity=0.7)
+                        mode='markers',
+                        name=doc_title,
+                        legendgroup=doc_title,
+                        customdata=chunk_customdata,
+                        hovertemplate=hover_template,
+                        marker=dict(
+                            size=8,
+                            color=doc_color,
+                            opacity=0.85,
+                            line=dict(color='#0f172a', width=0.5)
+                        )
                     ))
 
-                    # Center of Gravity (Centroid) Trace
-                    fig.add_trace(go.Scatter(
-                        x=[cog_x], y=[cog_y],
-                        mode='markers+text',
-                        name=f"⌖ CoG: {doc_title}",
-                        text=[f"⌖ {doc_title}"],
-                        textposition="top center",
-                        textfont=dict(size=11, color='#f1f5f9'),
-                        hovertext=[f"<b>[Center of Gravity] {doc_title}</b><br>Total Chunks: {len(pts)}<br>Centroid: ({cog_x:.3f}, {cog_y:.3f})"],
-                        hoverinfo='text',
-                        marker=dict(size=14, symbol='diamond', line=dict(color='#ffffff', width=2))
-                    ))
+                # 2. Document Center of Gravity (Centroid) Trace:
+                # MATCHES THE EXACT SAME doc_color AS THE CHUNKS OF THIS DOCUMENT!
+                if show_cog:
+                    cog_hover = (
+                        f"<b>⌖ Center of Gravity: {doc_title}</b><br>" +
+                        f"Chunks in Doc: {len(pts)}<br>" +
+                        f"Mean Radius: {avg_dist:.3f}<extra></extra>"
+                    )
 
-            fig.update_layout(
+                    text_list = [f"⌖ {doc_title}"] if show_labels else None
+                    cog_mode = 'markers+text' if show_labels else 'markers'
+
+                    if n_comp == 3:
+                        fig.add_trace(go.Scatter3d(
+                            x=[cog_x], y=[cog_y], z=[cog_z],
+                            mode=cog_mode,
+                            name=f"⌖ {doc_title}",
+                            legendgroup=doc_title,
+                            showlegend=False,
+                            text=text_list,
+                            textposition="top center",
+                            textfont=dict(size=10, color='#f1f5f9', family='monospace'),
+                            customdata=cog_customdata,
+                            hovertemplate=cog_hover,
+                            marker=dict(
+                                size=12,
+                                symbol='diamond',
+                                color=doc_color,  # <-- SAME COLOR AS CHUNKS!
+                                line=dict(color='#ffffff', width=2)  # White border makes it pop
+                            )
+                        ))
+                    else:
+                        fig.add_trace(go.Scatter(
+                            x=[cog_x], y=[cog_y],
+                            mode=cog_mode,
+                            name=f"⌖ {doc_title}",
+                            legendgroup=doc_title,
+                            showlegend=False,
+                            text=text_list,
+                            textposition="top center",
+                            textfont=dict(size=10, color='#f1f5f9', family='monospace'),
+                            customdata=cog_customdata,
+                            hovertemplate=cog_hover,
+                            marker=dict(
+                                size=15,
+                                symbol='diamond',
+                                color=doc_color,  # <-- SAME COLOR AS CHUNKS!
+                                line=dict(color='#ffffff', width=2)  # White border makes it pop
+                            )
+                        ))
+
+            # Enterprise Dark Theme Styling for Gridlines and Background
+            grid_style = dict(
+                gridcolor='#1e293b',      # Subtle dark slate grid line
+                zerolinecolor='#334155',  # Slightly accented center line
+                showgrid=True,
+                zeroline=True,
+                tickfont=dict(color='#94a3b8', size=10)
+            )
+
+            layout_kwargs = dict(
                 paper_bgcolor='rgba(0,0,0,0)',
-                plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color='#94a3b8'),
-                margin=dict(l=20, r=20, t=30, b=20),
-                legend=dict(orientation='h', y=-0.1),
+                plot_bgcolor='rgba(15, 23, 42, 0.4)',
+                font=dict(color='#94a3b8', family='monospace'),
+                margin=dict(l=20, r=20, t=20, b=40),
+                legend=dict(
+                    orientation='h',
+                    y=-0.12,
+                    x=0.0,
+                    xanchor='left',
+                    font=dict(size=10, color='#cbd5e1')
+                ),
                 hovermode='closest'
             )
+
+            if n_comp == 3:
+                layout_kwargs['scene'] = dict(
+                    xaxis=grid_style,
+                    yaxis=grid_style,
+                    zaxis=grid_style,
+                    bgcolor='rgba(15, 23, 42, 0.4)'
+                )
+            else:
+                layout_kwargs['xaxis'] = grid_style
+                layout_kwargs['yaxis'] = grid_style
+
+            fig.update_layout(**layout_kwargs)
 
             plot = ui.plotly(fig).classes('w-full h-full')
 
             def on_point_click(e):
                 try:
-                    if e.args and 'points' in e.args and len(e.args['points']) > 0:
-                        pt_data = e.args['points'][0]
-                        pt_idx = pt_data.get('pointIndex', 0)
-                        curve_idx = pt_data.get('curveNumber', 0)
+                    if not e.args or 'points' not in e.args or not e.args['points']:
+                        return
+                    pt_entry = e.args['points'][0]
+                    cdata = pt_entry.get('customdata')
+                    if not cdata:
+                        return
 
-                        # Each document has 2 traces: (chunks_trace, cog_trace)
-                        doc_keys = list(doc_groups.keys())
-                        doc_idx = curve_idx // 2
-                        is_cog = (curve_idx % 2 == 1)
+                    inspector_body.clear()
+                    is_cog = cdata.get('is_cog', False)
+                    doc_color = cdata.get('color', '#14b8a6')
 
-                        if doc_idx < len(doc_keys):
-                            target_doc = doc_keys[doc_idx]
-                            inspector_detail.clear()
+                    if is_cog:
+                        inspector_badge.text = "Center of Gravity"
+                        inspector_badge.props('color=amber-500')
+                        with inspector_body:
+                            # Header Bar
+                            with ui.row().classes('w-full justify-between items-center bg-slate-900/90 p-2.5 rounded-xl border border-slate-700/80'):
+                                with ui.row().classes('items-center gap-2 flex-1 truncate'):
+                                    ui.element('span').classes('w-3.5 h-3.5 rounded-sm rotate-45').style(f'background-color: {doc_color}; border: 1.5px solid white;')
+                                    ui.label(cdata['doc_title']).classes('font-bold text-sm text-slate-100 truncate flex-1')
+                                ui.badge(f"{cdata['chunk_count']} chunks", color='slate-700').classes('text-[10px]')
 
-                            if is_cog:
-                                cog_info = cog_lookup.get(target_doc, {})
-                                with inspector_detail:
-                                    ui.badge('Center of Gravity', color='amber-500').classes('text-xs mb-1')
-                                    ui.label(f"Document: {target_doc}").classes('font-bold text-teal-400')
-                                    ui.label(f"Full Origin: {cog_info.get('path', '')}").classes('text-xs text-slate-400 font-mono break-all')
-                                    coords_str = f"({cog_info.get('x', 0):.3f}, {cog_info.get('y', 0):.3f}{', ' + str(round(cog_info.get('z', 0), 3)) if n_comp == 3 else ''})"
-                                    ui.label(f"Centroid Coordinates: {coords_str}")
-                                    ui.label(f"Cluster Size: {cog_info.get('count', 0)} chunks").classes('font-semibold text-teal-300 mt-1')
-                                    ui.label('The Center of Gravity represents the mean semantic embedding coordinate for all chunks in this document.').classes('text-slate-400 text-xs italic mt-2')
-                            else:
-                                pts = doc_groups[target_doc]
-                                if pt_idx < len(pts):
-                                    selected_p = pts[pt_idx]
-                                    with inspector_detail:
-                                        ui.badge('Document Chunk', color='teal').classes('text-xs mb-1')
-                                        ui.label(f"Document: {selected_p['document_title']}").classes('font-bold text-teal-400')
-                                        ui.label(f"Origin Path: {selected_p.get('document_path', '')}").classes('text-xs text-slate-400 font-mono break-all')
-                                        ui.label(f"Chunk ID: {selected_p['chunk_id']}")
-                                        coords_str = f"({selected_p['x']:.3f}, {selected_p['y']:.3f}{', ' + str(round(selected_p['z'], 3)) if n_comp == 3 else ''})"
-                                        ui.label(f"Coordinates: {coords_str}")
-                                        ui.label('Content Preview:').classes('font-semibold text-slate-200 mt-2')
-                                        ui.label(selected_p.get('chunk_text_preview', '(No text preview)')).classes('p-2 bg-slate-900 rounded border border-slate-700 whitespace-pre-wrap')
-                                        ui.label(f"Metadata: {json.dumps(selected_p.get('metadata', {}))}").classes('text-slate-400 text-xs mt-1')
-                except Exception:
-                    pass
+                            # Coordinates & Distribution Box
+                            with ui.column().classes('w-full bg-slate-900/60 p-3 rounded-xl border border-slate-700/60 space-y-1.5'):
+                                ui.label('Centroid Coordinates:').classes('text-[10px] text-teal-400 font-bold uppercase tracking-wider')
+                                coord_text = f"X: {cdata['x']:.3f} | Y: {cdata['y']:.3f}" + (f" | Z: {cdata['z']:.3f}" if cdata.get('z') is not None else "")
+                                ui.label(coord_text).classes('text-xs text-slate-200 font-bold')
+
+                                ui.separator().classes('border-slate-800')
+                                with ui.row().classes('w-full justify-between text-xs text-slate-300'):
+                                    ui.label('Mean Chunk Spread:')
+                                    ui.label(f"{cdata['avg_dist']:.3f} units").classes('text-teal-300 font-bold')
+                                with ui.row().classes('w-full justify-between text-xs text-slate-300'):
+                                    ui.label('Max Chunk Radius:')
+                                    ui.label(f"{cdata['max_dist']:.3f} units").classes('text-amber-400 font-bold')
+
+                            with ui.column().classes('w-full gap-0.5'):
+                                ui.label('Document Origin:').classes('text-[10px] text-slate-400 font-bold uppercase tracking-wider')
+                                ui.label(cdata['doc_path']).classes('text-[11px] text-slate-400 break-all bg-slate-900/40 p-2 rounded')
+
+                            # Quick Actions Bridge
+                            with ui.column().classes('w-full gap-2 pt-2 border-t border-slate-700/60'):
+                                def _search_doc():
+                                    query_input.value = cdata['doc_title'].split('(')[0].strip()
+                                    tabs.value = tab_search
+
+                                ui.button('Search This Document in RAG', icon='search', on_click=_search_doc).props('color=teal size=xs class="w-full"')
+
+                    else:
+                        inspector_badge.text = "Document Chunk"
+                        inspector_badge.props('color=teal')
+                        with inspector_body:
+                            with ui.row().classes('w-full justify-between items-center bg-slate-900/90 p-2.5 rounded-xl border border-slate-700/80'):
+                                with ui.row().classes('items-center gap-2 flex-1 truncate'):
+                                    ui.element('span').classes('w-2.5 h-2.5 rounded-full').style(f'background-color: {doc_color};')
+                                    ui.label(cdata['doc_title']).classes('font-bold text-sm text-slate-100 truncate flex-1')
+                                ui.badge(f"ID #{cdata['chunk_id']}", color='slate-700').classes('text-[10px]')
+
+                            # Coordinates & Outlier Distance
+                            with ui.column().classes('w-full bg-slate-900/60 p-2.5 rounded-xl border border-slate-700/60 space-y-1'):
+                                coord_text = f"X: {cdata['x']:.3f} | Y: {cdata['y']:.3f}" + (f" | Z: {cdata['z']:.3f}" if cdata.get('z') is not None else "")
+                                ui.label(coord_text).classes('text-xs text-slate-200 font-bold')
+                                with ui.row().classes('w-full justify-between text-xs text-slate-300'):
+                                    ui.label('Distance to Document CoG:')
+                                    ui.label(f"{cdata['dist_to_cog']:.3f} units").classes('text-teal-300 font-bold')
+
+                            # Chunk Content Preview
+                            with ui.column().classes('w-full space-y-1'):
+                                with ui.row().classes('w-full justify-between items-center'):
+                                    ui.label('Chunk Text Preview:').classes('text-[10px] text-slate-400 font-bold uppercase tracking-wider')
+                                    ui.button(icon='content_copy', on_click=lambda t=cdata.get('text', ''): asyncio.create_task(copy_to_clipboard(t, "Copied chunk text!"))).props('flat dense size=xs text-color=teal')
+
+                                with ui.scroll_area().classes('w-full max-h-48 p-2.5 bg-slate-900 rounded-xl border border-slate-700/80 text-[11px] whitespace-pre-wrap text-slate-200'):
+                                    ui.label(cdata.get('text') or '(No text preview available)')
+
+                            if cdata.get('metadata'):
+                                with ui.column().classes('w-full gap-0.5'):
+                                    ui.label('Metadata:').classes('text-[10px] text-slate-400 font-bold uppercase tracking-wider')
+                                    ui.label(json.dumps(cdata['metadata'])).classes('text-[10px] text-slate-400 break-all bg-slate-900/40 p-1.5 rounded')
+
+                except Exception as err:
+                    ASCIIColors.warning(f"Datalake inspector click error: {err}")
 
             plot.on('plotly_click', on_point_click)
 
     async def refresh_graph_view():
-        if not state.graph_store: return
+        if not state.graph_store:
+            graph_summary_badge.text = "No GraphStore"
+            graph_summary_badge.props('color=grey')
+            return
 
-        with client:
+        try:
+            scope_raw = str(graph_scope_select.value or '').lower()
             info = await asyncio.to_thread(state.graph_store.get_graph_info)
-            graph_summary_badge.text = f"Nodes: {info['total_nodes']} | Edges: {info['total_relationships']} | Provenance: {info['total_provenance_links']}"
-            graph_summary_badge.props('color=teal')
+            tbox_classes_count = len(state.graph_store.tbox.get_classes())
 
             # Update left sidebar metrics
             left_metrics_box.clear()
             with left_metrics_box:
-                ui.label(f"• Total Nodes : {info['total_nodes']}")
-                ui.label(f"• Total Edges : {info['total_relationships']}")
-                ui.label(f"• Chunk Links : {info['total_provenance_links']}")
-                ui.label(f"• Class Count : {len(info['nodes_by_label'])}")
+                ui.label(f"• Total ABox Nodes : {info['total_nodes']}").classes('text-slate-200 font-bold')
+                ui.label(f"• Total ABox Edges : {info['total_relationships']}").classes('text-slate-200')
+                ui.label(f"• TBox Classes     : {tbox_classes_count}").classes('text-purple-300 font-bold')
+                ui.label(f"• Provenance Links : {info['total_provenance_links']}").classes('text-slate-200')
 
-            # Fetch nodes and edges for visual rendering
-            nodes_raw = await asyncio.to_thread(state.graph_store.get_all_nodes, 1000)
-            edges_raw = await asyncio.to_thread(state.graph_store.get_all_relationships, 2000)
+            # Robust scope matching (handles both key and display string)
+            is_tbox_mode = 'tbox' in scope_raw
+            is_both_mode = 'both' in scope_raw or 'unified' in scope_raw
 
-            # Palette for label coloring
+            # Toggle toolbar button visibility according to scope
+            btn_add_class.set_visibility(is_tbox_mode)
+            btn_add_obj_prop.set_visibility(is_tbox_mode)
+            btn_add_attr.set_visibility(is_tbox_mode)
+
+            btn_add_node.set_visibility(not is_tbox_mode)
+            btn_add_rel.set_visibility(not is_tbox_mode)
+            btn_build_kg.set_visibility(not is_tbox_mode)
+            btn_import_csv.set_visibility(not is_tbox_mode)
+
+            if is_tbox_mode:
+                graph_data = await asyncio.to_thread(state.graph_store.get_tbox_graph)
+                graph_summary_badge.text = f"TBox Schema: {len(graph_data['nodes'])} Classes | {len(graph_data['edges'])} Axioms"
+                graph_summary_badge.props('color=purple')
+            elif is_both_mode:
+                graph_data = await asyncio.to_thread(state.graph_store.get_unified_graph, 800)
+                graph_summary_badge.text = f"Unified: {len(graph_data['nodes'])} Nodes | {len(graph_data['edges'])} Links"
+                graph_summary_badge.props('color=cyan')
+            else:
+                graph_data = await asyncio.to_thread(state.graph_store.get_abox_graph, 1000)
+                graph_summary_badge.text = f"ABox Content: {len(graph_data['nodes'])} Instances | {len(graph_data['edges'])} Facts"
+                graph_summary_badge.props('color=teal')
+
+            # Palette for label coloring with string sanitization
             palette = ['#14b8a6', '#06b6d4', '#f59e0b', '#ec4899', '#8b5cf6', '#3b82f6', '#10b981', '#f97316', '#6366f1', '#e11d48']
+            clean_labels = [str(k) for k in info['nodes_by_label'].keys() if k is not None]
             label_colors = {}
-            for idx, lbl in enumerate(sorted(info['nodes_by_label'].keys())):
+            for idx, lbl in enumerate(sorted(clean_labels)):
                 label_colors[lbl] = palette[idx % len(palette)]
 
             # Render category chips in left sidebar
             node_types_filter_container.clear()
             with node_types_filter_container:
-                for lbl, count in sorted(info['nodes_by_label'].items(), key=lambda x: x[1], reverse=True):
+                for lbl_raw, count in sorted(info['nodes_by_label'].items(), key=lambda x: x[1], reverse=True):
+                    lbl = str(lbl_raw or "Unlabeled")
                     col = label_colors.get(lbl, '#14b8a6')
                     with ui.row().classes('w-full justify-between items-center py-0.5 cursor-pointer hover:bg-slate-700/50 px-1 rounded'):
                         with ui.row().classes('items-center gap-1.5'):
@@ -1637,30 +2456,12 @@ SELECT ?source ?relation ?target WHERE {
                             ui.label(lbl).classes('text-slate-200 font-bold')
                         ui.label(str(count)).classes('text-slate-400')
 
-            # Prepare vis-network payload
-            vis_nodes = []
-            for n in nodes_raw:
-                lbl = n['label']
-                name = str(n['properties'].get('name') or n['properties'].get('identifying_value') or n['properties'].get('title') or lbl)
-                color = label_colors.get(lbl, '#14b8a6')
-                vis_nodes.append({
-                    'id': n['node_id'],
-                    'label': name[:25] + ('...' if len(name) > 25 else ''),
-                    'color': { 'background': color, 'border': '#0f172a', 'highlight': { 'background': '#ffffff', 'border': color } },
-                    'category': lbl
-                })
-
-            vis_edges = []
-            for r in edges_raw:
-                vis_edges.append({
-                    'id': r['relationship_id'],
-                    'from': r['source_node_id'],
-                    'to': r['target_node_id'],
-                    'label': r['type']
-                })
-
-            # Mount vis-network on canvas directly via client handle (zero slot_stack dependency)
-            await client.run_javascript(f"window.initSafeStoreGraph('graph-network-container', {json.dumps(vis_nodes)}, {json.dumps(vis_edges)})")
+            # Mount vis-network on canvas passing element ID
+            div_id = f"c{graph_canvas_div.id}"
+            await client.run_javascript(f"window.initSafeStoreGraph('{div_id}', {json.dumps(graph_data['nodes'])}, {json.dumps(graph_data['edges'])})")
+        except Exception as e:
+            trace_exception(e)
+            ui.notify(f"Graph view error: {e}", color='negative')
 
     async def execute_search():
         raw_val = query_input.value
@@ -1826,8 +2627,190 @@ SELECT ?source ?relation ?target WHERE {
 
                     ui.button('Query in Search Studio', icon='search', on_click=_query_theme).props('outline color=teal size=xs class="w-full mt-2"')
 
+    def clear_agentic_chat():
+        state.chat_history.clear()
+        chat_messages_container.clear()
+        chat_sources_drawer.clear()
+        chat_source_badge.text = "0 Sources"
+        with chat_sources_drawer:
+            with ui.column().classes('items-center justify-center h-48 text-center text-slate-500 m-auto space-y-2'):
+                ui.icon('source', size='lg').classes('text-slate-600')
+                ui.label('Retrieved chunk citations and SPARQL facts will appear here as the agent recovers knowledge.').classes('text-xs italic max-w-xs')
+
+    async def send_agentic_chat():
+        raw_prompt = chat_input.value
+        question = (raw_prompt or "").strip()
+        if not question or not state.store:
+            return
+
+        chat_input.value = ""
+        chat_send_btn.props('disabled')
+
+        # 1. Contextual Query Augmentation for Short/Referential Prompts (e.g. "try again")
+        search_query = question
+        if len(question.split()) <= 4 and state.chat_history:
+            last_user_query = ""
+            for msg in reversed(state.chat_history):
+                if msg["role"] == "user":
+                    last_user_query = msg["content"]
+                    break
+            if last_user_query:
+                search_query = f"{last_user_query} {question}"
+
+        # 2. Record User Turn in History
+        state.chat_history.append({"role": "user", "content": question})
+
+        # 3. Render User Message in Stream
+        with chat_messages_container:
+            with ui.row().classes('w-full justify-end'):
+                with ui.card().classes('bg-teal-600/90 text-white p-3.5 rounded-2xl max-w-xl shadow-md'):
+                    ui.label(question).classes('text-sm whitespace-pre-wrap')
+
+        # 4. Add Thinking Bubble
+        with chat_messages_container:
+            thinking_card = ui.card().classes('bg-slate-800 border border-slate-700 p-3.5 rounded-2xl max-w-2xl shadow-md space-y-2')
+            with thinking_card:
+                with ui.row().classes('items-center gap-2 text-teal-400'):
+                    ui.spinner('dots', size='sm', color='teal')
+                    ui.label('Recovering semantic facts and conversation context...').classes('text-xs font-mono')
+
+        chat_scroll_area.scroll_to(percent=1.0)
+        top_k = int(chat_top_k_select.value or 5)
+        include_sparql = bool(chat_include_graph.value)
+
+        # 5. Agentic Retrieval Pipeline: Semantic Chunks + Graph Logic
+        def _gather_evidence():
+            hits = state.store.hybrid_query(
+                query_text=search_query,
+                top_k=top_k,
+                min_relevance_percent=25.0,
+                reconstruct_overlapping_chunks=True
+            )
+
+            graph_facts = []
+            if include_sparql and state.graph_store:
+                try:
+                    subgraph = state.graph_store.query_graph(search_query, output_mode="graph_only", top_k_nodes=3)
+                    if isinstance(subgraph, dict) and subgraph.get("relationships"):
+                        for r in subgraph["relationships"][:5]:
+                            s_name = r.get("source_node", {}).get("properties", {}).get("name") or r.get("source_node", {}).get("label")
+                            t_name = r.get("target_node", {}).get("properties", {}).get("name") or r.get("target_node", {}).get("label")
+                            graph_facts.append(f"({s_name}) --[{r.get('type')}]--> ({t_name})")
+                except Exception:
+                    pass
+
+            return hits, graph_facts
+
+        hits, graph_facts = await asyncio.to_thread(_gather_evidence)
+
+        # 4. Update Sources Drawer
+        chat_sources_drawer.clear()
+        chat_source_badge.text = f"{len(hits)} Chunk(s) | {len(graph_facts)} Fact(s)"
+        with chat_sources_drawer:
+            if not hits and not graph_facts:
+                ui.label('No matching sources found in knowledge base.').classes('text-xs text-slate-500 italic')
+            else:
+                if graph_facts:
+                    ui.label('Graph Relational Facts:').classes('text-xs font-bold text-cyan-400 font-mono')
+                    with ui.column().classes('w-full bg-slate-900/80 p-2.5 rounded-xl border border-slate-700/60 gap-1'):
+                        for f in graph_facts:
+                            ui.label(f"• {f}").classes('text-[11px] text-cyan-300 font-mono')
+
+                if hits:
+                    ui.label('Document Evidence Chunks:').classes('text-xs font-bold text-teal-400 font-mono mt-1')
+                    for h_idx, hit in enumerate(hits, 1):
+                        with ui.card().classes('w-full bg-slate-900/80 p-3 rounded-xl border border-slate-700/80 space-y-1.5'):
+                            with ui.row().classes('w-full justify-between items-center'):
+                                ui.badge(f"[{h_idx}] {hit.get('document_title', 'Doc')}", color='teal').classes('text-[10px] font-bold')
+                                ui.label(f"{hit.get('relevance_score', 0):.1f}%").classes('text-[10px] font-bold text-teal-300')
+                            ui.label(hit.get('chunk_text', '')[:220] + '...').classes('text-[11px] text-slate-300 whitespace-pre-wrap')
+
+        # 6. Synthesize Multi-Turn Answer using Generator
+        def _generate_answer():
+            if not hits and not graph_facts:
+                return "I couldn't find any relevant facts or passages in the database to answer your question."
+
+            context_blocks = []
+            for idx, h in enumerate(hits, 1):
+                clean_text = h.get('chunk_text', '').replace('\n', ' ')
+                context_blocks.append(f"[Source {idx}: '{h.get('document_title', '')}'] {clean_text}")
+
+            if graph_facts:
+                context_blocks.append("[Graph Relationships]: " + " | ".join(graph_facts))
+
+            full_context = "\n\n".join(context_blocks)
+
+            # Assemble conversation history (last 6 turns prior to current question)
+            history_lines = []
+            prior_messages = state.chat_history[:-1]
+            if prior_messages:
+                for m in prior_messages[-6:]:
+                    r = "User" if m["role"] == "user" else "Assistant"
+                    snippet = m["content"].replace("\n", " ").strip()
+                    history_lines.append(f"{r}: {snippet}")
+
+            history_context = ("\n\nRecent Conversation History:\n" + "\n".join(history_lines)) if history_lines else ""
+
+            system_prompt = (
+                "You are an expert autonomous knowledge assistant grounded in the user's SafeStore database. "
+                "You have full awareness of the conversation history. "
+                "Answer the user's question accurately, taking previous messages into account when asked to clarify, retry, or expand. "
+                "Base your response on the provided grounding sources and graph facts, and explicitly cite your sources "
+                "using tags like [Source 1] or [Source 2] next to your claims."
+            )
+
+            user_prompt = f"""Grounding Knowledge Sources:
+{full_context}{history_context}
+
+Current User Message: {question}
+
+Sourced Answer:"""
+
+            llm = state.llm_generator or getattr(state.store, "llm_generator", None)
+            if llm:
+                try:
+                    return llm(prompt=user_prompt, system_prompt=system_prompt, json_mode=False)
+                except Exception as ex:
+                    return f"Error from LLM generator: {ex}"
+            else:
+                return (
+                    "**[Offline Extraction Preview - Configure LLM in Header for Full AI Synthesis]**\n\n"
+                    f"Found **{len(hits)} relevant source chunk(s)** in your documents:\n\n" +
+                    "\n".join(f"• **{h.get('document_title')}** (Score: {h.get('relevance_score', 0):.1f}%): \"{h.get('chunk_text', '')[:140]}...\"" for h in hits)
+                )
+
+        answer_text = await asyncio.to_thread(_generate_answer)
+
+        # Record assistant answer in conversation history
+        state.chat_history.append({"role": "assistant", "content": answer_text})
+
+        # 6. Render Agent Answer in Chat Stream
+        thinking_card.clear()
+        with thinking_card:
+            with ui.column().classes('w-full space-y-2'):
+                with ui.row().classes('items-center gap-1.5 text-teal-400'):
+                    ui.icon('psychology', size='sm')
+                    ui.label('SafeStore Knowledge Agent').classes('text-xs font-bold font-mono uppercase tracking-wider')
+
+                ui.markdown(answer_text).classes('text-sm text-slate-200 leading-relaxed font-sans')
+
+                # Clickable source pills
+                if hits:
+                    with ui.row().classes('gap-1.5 flex-wrap pt-2 border-t border-slate-700/60'):
+                        ui.label('Citations:').classes('text-[10px] text-slate-400 font-mono')
+                        for idx, h in enumerate(hits, 1):
+                            ui.badge(f"[{idx}] {h.get('document_title', '')}", color='slate-700').classes('text-[10px] font-mono cursor-pointer hover:bg-teal-600')
+
+        chat_send_btn.props(remove='disabled')
+        chat_scroll_area.scroll_to(percent=1.0)
+
     async def refresh_clusters_view():
         if not state.store: return
+
+        # Update outdated banner visibility
+        if hasattr(state.store, "is_clusters_outdated"):
+            clusters_outdated_banner.set_visibility(state.store.is_clusters_outdated())
+
         cached = await asyncio.to_thread(state.store.get_document_clusters, True)
         if cached:
             render_clusters_view(cached)
@@ -1871,28 +2854,30 @@ SELECT ?source ?relation ?target WHERE {
         refresh_diagnostics_view()
 
     # Reactive Tab Switching Listener
+    # Reactive Tab Switching Listener
     async def on_tab_change(e):
-        # Defensively resolve tab target from ValueChangeEventArguments, GenericEventArguments, or tabs.value
         target = getattr(e, 'value', None)
         if target is None and hasattr(e, 'args'):
             target = e.args
         if target is None:
             target = tabs.value
 
+        target_str = str(target or '')
         target_name = getattr(target, 'name', target) if not isinstance(target, str) else target
 
-        if target == tab_graph or target_name == getattr(tab_graph, 'name', 'tab_graph'):
+        if 'Graph' in target_str or target == tab_graph or 'graph' in str(target_name).lower():
             await asyncio.sleep(0.05)
             await refresh_graph_view()
-            await client.run_javascript('setTimeout(() => { if (window.safeStoreNetwork) { window.safeStoreNetwork.redraw(); window.safeStoreNetwork.fit({animation: true}); } }, 200);')
-
-        elif target == tab_datalake or target_name == getattr(tab_datalake, 'name', 'tab_datalake'):
+            await client.run_javascript('setTimeout(() => { if (window.safeStoreNetwork) { window.safeStoreNetwork.redraw(); window.safeStoreNetwork.fit({animation: true}); } }, 250);')
+        elif 'Datalake' in target_str or target == tab_datalake or 'datalake' in str(target_name).lower():
             await refresh_datalake_view()
-        elif target == tab_clusters or target_name == getattr(tab_clusters, 'name', 'tab_clusters'):
+        elif 'Clusters' in target_str or target == tab_clusters or 'clusters' in str(target_name).lower():
             await refresh_clusters_view()
-        elif target == tab_diagnostics or target_name == getattr(tab_diagnostics, 'name', 'tab_diagnostics'):
+        elif 'Chat' in target_str or target == tab_chat or 'chat' in str(target_name).lower():
+            pass
+        elif 'Diagnostics' in target_str or target == tab_diagnostics or 'diagnostics' in str(target_name).lower():
             refresh_diagnostics_view()
-        elif target == tab_files or target_name == getattr(tab_files, 'name', 'tab_files'):
+        elif 'Files' in target_str or target == tab_files or 'files' in str(target_name).lower():
             refresh_files_view()
 
     tabs.on_value_change(on_tab_change)
@@ -1916,8 +2901,16 @@ SELECT ?source ?relation ?target WHERE {
         loading_overlay.open()
         await asyncio.sleep(0.05)
 
+        # Check if database is encrypted and challenges password
+        info = inspect_store_summary(Path(db_path_str))
+        if info.get("is_encrypted") and not getattr(state, "active_encryption_key", None):
+            loading_overlay.close()
+            prompt_unlock_dialog(db_path_str)
+            return
+
         try:
-            await asyncio.to_thread(state.open_store, db_path_str)
+            active_key = getattr(state, "active_encryption_key", None)
+            await asyncio.to_thread(state.open_store, db_path_str, active_key)
             db_label.text = f"DB: {Path(state.db_path).name}"
             projects_container.set_visibility(False)
             workspace_container.set_visibility(True)
@@ -1925,11 +2918,52 @@ SELECT ?source ?relation ?target WHERE {
             tabs.value = tab_files
             refresh_files_view()
             refresh_diagnostics_view()
+            asyncio.create_task(refresh_graph_view())
         except Exception as ex:
             ui.notify(f"Failed to open store: {ex}", color='negative', duration=7000)
             show_projects_view()
         finally:
             loading_overlay.close()
+
+    # Password Challenge Dialog for Encrypted Stores
+    with ui.dialog() as unlock_dialog, ui.card().classes('bg-slate-800 text-slate-100 p-6 w-[32rem] border border-amber-500/60 space-y-4 shadow-2xl'):
+        with ui.row().classes('items-center gap-2'):
+            ui.icon('lock', size='md').classes('text-amber-400')
+            ui.label('Encrypted Database').classes('text-xl font-bold text-amber-300')
+        ui.label('This SafeStore is protected with authenticated encryption. Enter the passphrase to unlock.').classes('text-xs text-slate-400')
+        unlock_target_path = ui.input().classes('hidden')
+        unlock_pw_input = ui.input('Decryption Passphrase', placeholder='Enter passphrase').classes('w-full').props('dark standout type=password')
+
+        async def execute_unlock():
+            t_path = unlock_target_path.value
+            pw = unlock_pw_input.value.strip()
+            if not pw:
+                ui.notify("Passphrase is required.", color='warning')
+                return
+            unlock_dialog.close()
+
+            # Test password validity
+            try:
+                def _test():
+                    test_s = SafeStore(db_path=t_path, encryption_key=pw)
+                    docs = test_s.list_documents()
+                    test_s.close()
+
+                await asyncio.to_thread(_test)
+                state.active_encryption_key = pw
+                await switch_to_store_workspace(t_path)
+            except Exception:
+                ui.notify("Decryption failed: Invalid passphrase or corrupted store.", color='negative', duration=6000)
+
+        unlock_pw_input.on('keydown.enter', execute_unlock)
+        with ui.row().classes('w-full justify-end gap-2'):
+            ui.button('Cancel', on_click=unlock_dialog.close).props('flat text-color=grey')
+            ui.button('Unlock Database', icon='lock_open', on_click=execute_unlock).props('color=amber-500 text-color=black font-bold')
+
+    def prompt_unlock_dialog(db_path_str: str):
+        unlock_target_path.value = db_path_str
+        unlock_pw_input.value = ""
+        unlock_dialog.open()
 
     def refresh_projects_cards():
         projects_grid.clear()
@@ -1977,6 +3011,18 @@ SELECT ?source ?relation ?target WHERE {
                                     delete_store_msg.text = f"Are you sure you want to permanently delete '{info['name']}' ({info['filename']})? This action cannot be undone."
                                     delete_store_dialog.open()
 
+                                async def export_card_db(info=info):
+                                    dest_dir = Path.home() / "Downloads"
+                                    dest = dest_dir / f"exported_{info['filename']}"
+                                    try:
+                                        tmp = SafeStore(db_path=info['path'])
+                                        await asyncio.to_thread(tmp.export_db_file, dest)
+                                        tmp.close()
+                                        ui.notify(f"Exported to '{dest}'!", color='positive', icon='file_download')
+                                    except Exception as ex:
+                                        ui.notify(f"Export error: {ex}", color='negative')
+
+                                ui.button(icon='file_download', on_click=lambda i=info: export_card_db(i)).props('flat round dense size=sm text-color=teal title="Export DB file"')
                                 ui.button(icon='edit', on_click=open_edit).props('flat round dense size=sm text-color=grey')
                                 ui.button(icon='delete', on_click=open_delete).props('flat round dense size=sm text-color=red')
 
@@ -2049,11 +3095,13 @@ def launch_studio(
     CURRENT_LLM_GENERATOR = llm_generator
     CURRENT_LOLLMS_CLIENT = lollms_client
 
-    # Pre-check pywebview availability for native window
+    # Pre-check pywebview availability for native window and configure maximized startup
     if native:
         try:
             import webview
-        except ImportError:
+            if hasattr(app, 'native') and hasattr(app.native, 'window_args'):
+                app.native.window_args['maximized'] = True
+        except (ImportError, AttributeError):
             print("[!] pywebview not installed. Running in browser mode...")
             native = False
 
@@ -2063,7 +3111,7 @@ def launch_studio(
             host=host,
             port=port,
             native=native,
-            window_size=(1366, 850),
+            window_size=(1920, 1080),
             reload=False
         )
     except Exception as e:

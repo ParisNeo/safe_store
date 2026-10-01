@@ -160,6 +160,7 @@ class DocumentClusterer:
             }]
             if save_to_store:
                 self.save_clusters_to_store(single_result)
+                self.store.mark_clusters_clean()
             return single_result
 
         # Determine number of clusters
@@ -214,6 +215,7 @@ class DocumentClusterer:
 
         if save_to_store:
             self.save_clusters_to_store(results)
+            self.store.mark_clusters_clean()
 
         return results
 
@@ -384,11 +386,14 @@ Respond STRICTLY with a single JSON object in this format:
         except Exception as e:
             ASCIIColors.warning(f"Failed to persist clusters in database: {e}")
 
-    def get_cached_clusters(self) -> Optional[List[Dict[str, Any]]]:
-        """Retrieves cached document clusters from store_metadata if available."""
+    def get_cached_clusters(self, allow_outdated: bool = False) -> Optional[List[Dict[str, Any]]]:
+        """Retrieves cached document clusters from store_metadata if available and valid."""
         self.store._ensure_connection()
         conn = self.store.conn
         assert conn is not None
+
+        if not allow_outdated and self.store.is_clusters_outdated():
+            return None
 
         raw = db.get_store_metadata(conn, "document_clusters")
         if not raw:
