@@ -132,6 +132,48 @@ class STVectorizer(BaseVectorizer):
         else:
             self._init_local_model()
 
+    def _resolve_model_dimension(self) -> int:
+        """
+        Resolves the embedding dimension of the loaded model across
+        sentence-transformers versions and test fakes/mocks.
+
+        Resolution order:
+        1. `get_embedding_dimension()` — the modern API
+           (sentence-transformers >= 3.x). Accepted only when it returns a
+           genuine integer, guarding against MagicMock auto-stubs and
+           attribute-name drift in test doubles.
+        2. `get_sentence_embedding_dimension()` — the legacy alias, still
+           present on real ST models (deprecated) and used by existing
+           test fixtures.
+
+        Raises VectorizationError if neither yields a usable integer.
+        """
+        # Attempt 1: modern API
+        modern_getter = getattr(self.model, "get_embedding_dimension", None)
+        if callable(modern_getter):
+            try:
+                dim = modern_getter()
+                if isinstance(dim, (int, np.integer)) and not isinstance(dim, bool):
+                    return int(dim)
+            except Exception:
+                pass
+
+        # Attempt 2: legacy API
+        legacy_getter = getattr(self.model, "get_sentence_embedding_dimension", None)
+        if callable(legacy_getter):
+            try:
+                dim = legacy_getter()
+                if isinstance(dim, (int, np.integer)) and not isinstance(dim, bool):
+                    return int(dim)
+            except Exception:
+                pass
+
+        raise VectorizationError(
+            f"Could not determine embedding dimension for model '{self.model_name}': "
+            "neither get_embedding_dimension() nor get_sentence_embedding_dimension() "
+            "returned a valid integer."
+        )
+
     def _init_local_model(self) -> None:
         try:
             if self.reuse_model_in_process:
@@ -142,7 +184,7 @@ class STVectorizer(BaseVectorizer):
                         shared_model, count = _IN_PROCESS_MODEL_REGISTRY[reg_key]
                         _IN_PROCESS_MODEL_REGISTRY[reg_key] = (shared_model, count + 1)
                         self.model = shared_model
-                        self._dim = self.model.get_sentence_embedding_dimension()
+                        self._dim = self._resolve_model_dimension()
                         ASCIIColors.info(f"Reusing existing in-memory Sentence Transformer model '{self.model_name}' (Active instances: {count + 1})")
                         return
 
@@ -151,7 +193,7 @@ class STVectorizer(BaseVectorizer):
             if self.cache_folder is not None:
                 st_kwargs["cache_folder"] = self.cache_folder
             self.model = SentenceTransformer(self.model_name, **st_kwargs)
-            self._dim = self.model.get_sentence_embedding_dimension()
+            self._dim = self._resolve_model_dimension()
 
             if self.reuse_model_in_process and self._registry_key:
                 with _REGISTRY_LOCK:

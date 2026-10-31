@@ -23,6 +23,7 @@
 14. 🎨 **Semantic Document Clustering & Thematic Synthesis**: Groups documents using vector centroids and synthesizes thematic titles, descriptions, and topic tags with auto-K estimation.
 15. 💬 **Sourced Agentic Document Chat & Q&A**: Talk to your documents using semantic search, full text, and SPARQL logic, with interactive source citation pills and previews.
 11. 🔐 **Total Zero-Leakage Local Encryption**: End-to-end AES-128/HMAC encryption for chunk text, document paths/names (blind indexed), metadata, and knowledge graph nodes/edges at rest.
+16. 📑 **`DocMetadataMode.PARSED` Structural Metadata Engine**: Zero-LLM, structure-aware per-chunk metadata with hierarchical breadcrumbs parsed from Markdown headings (`#`/`##`/`###`), YAML front-matter, or the Python AST — every chunk knows its `path` (chapter/section/subsection), title, authors, and abstract.
 17. 🖥️ **SafeStore Studio Desktop & Web App**: Interactive UI built on NiceGUI and pywebview with LLM Setup, Sourced Chat, VectorDB editing, 2D/3D Datalake, and SPARQL console.
 ---
 
@@ -1149,6 +1150,100 @@ store_exp = SafeStore(
     expand_after=30   # Injects 30 tokens of succeeding context into LLM prompt
 )
 ```
+---
+
+## 📑 Parsed Metadata Mode (`DocMetadataMode.PARSED`) — Zero-LLM Structural Metadata
+
+Not every knowledge base needs (or can afford) an LLM reading the full document to synthesize metadata. **`safe_store` supports three metadata generation modes**, selectable per document at ingestion time:
+
+| Mode | Flag | LLM Calls | Content | Ideal For |
+|:---|:---|:---|:---|:---|
+| **LLM** (default) | `"llm"` / `True` | Yes, once per doc | LLM-synthesized title, summary, keywords | Rich semantic annotations when an LLM is available |
+| **PARSED** | `"parsed"` | **Zero** | Structural breadcrumb `path`, `title`, `authors`, `abstract` extracted from the document itself | Fast/offline ingestion, privacy-sensitive docs, code repositories, large batch indexing |
+| **TITLE_ONLY** | `"title_only"` / `False` | **Zero** | Document title only | Minimal overhead, quick indexing |
+
+### How It Works
+
+Since all ingested formats (PDF, DOCX, HTML…) are normalized to Markdown internally, the parsers operate on a uniform representation:
+
+- **Markdown / converted documents** — `MarkdownMetadataParser` walks the heading tree (`#` → chapter, `##` → section, `###` → subsection…), tracking the character span of every node. It also extracts the **title** (first `#` heading), **authors** (`Authors:` line or YAML front-matter), and **abstract** (the "Abstract" section) when present. Code-fenced blocks are never mistaken for headings.
+- **Python source files** — `ASTMetadataParser` parses the module with `ast`, mapping `ClassDef`/`FunctionDef`/`AsyncFunctionDef` line spans into a module → class → function hierarchy. The module docstring becomes the `title`.
+
+Each chunk is located in the full document via a forward-cursor scan, and its metadata is enriched with the breadcrumb of the structural element containing it.
+
+### Usage
+
+```python
+from safe_store import SafeStore, DocMetadataMode
+# Or from safe_store.indexing.chunking import DocMetadataMode
+
+store = SafeStore("research.db", vectorizer_name="st")
+
+with store:
+    # Markdown document — string or enum, both accepted
+    store.add_document("quantum_paper.pdf", metadata_mode="parsed")
+    store.add_document("notes.md", metadata_mode=DocMetadataMode.PARSED)
+
+    # Plain text works too
+    store.add_text(
+        unique_id="report.md",
+        text="# Q3 Report\n\n## 1. Revenue\n\nStrong growth in all segments.\n",
+        metadata_mode="parsed"
+    )
+
+    # Every other add_* entry point accepts the same parameter
+    store.add_file("module.py", metadata_mode=DocMetadataMode.PARSED)
+
+    results = store.query("revenue growth", top_k=3)
+    for r in results:
+        print(r["chunk_tags"])  # contains the parsed breadcrumb metadata
+```
+
+### Metadata Output Format
+
+For a Markdown document, each chunk is tagged with its full position in the document tree:
+
+```python
+{
+    "path": "Quantum Paper / 1. Background / 1.1 Motivation",  # breadcrumb
+    "title": "Quantum Paper",       # doc-level: first '#' heading
+    "authors": "Jane Doe, John Smith",   # when detected
+    "abstract": "Quantum computers exploit superposition...",  # when detected
+    "chapter": "Quantum Paper",
+    "section": "1. Background",
+    "subsection": "1.1 Motivation"
+}
+```
+
+For Python files, the breadcrumb follows the code structure:
+
+```python
+{
+    "path": "module / MyClass / my_method",
+    "title": "Sample module docstring..."
+}
+```
+
+### Why Use PARSED Mode?
+
+- 🚀 **Speed**: Orders of magnitude faster than LLM summarization — pure local computation.
+- 💸 **Zero cost**: No API tokens, no LLM latency, no rate limits.
+- 🔐 **Privacy**: No document content ever leaves your machine.
+- 🎯 **Deterministic**: The same document always produces the same metadata — no hallucinated summaries.
+- 🧭 **Provenance**: Every chunk knows exactly where it lives in the document hierarchy, enabling section-scoped filtering and richer citations in RAG responses.
+
+### Programmatic Access
+
+The parsers can also be used standalone (`safe_store/indexing/chunking.py`):
+
+```python
+from safe_store.indexing.chunking import build_metadata_parser
+
+parser = build_metadata_parser(source_text, source_path="docs/paper.md")  # .py → AST, else Markdown
+meta = parser.enrich(start=chunk_offset, end=chunk_offset + len(chunk))
+print(meta["path"])
+```
+
 ---
 
 ## 🗺️ Roadmap

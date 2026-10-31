@@ -18,6 +18,7 @@ from safe_store.core.exceptions import (
     VectorizationError, QueryError, ConcurrencyError, SafeStoreError, EncryptionError
 )
 from safe_store.indexing import parser, chunking
+from safe_store.indexing.chunking import DocMetadataMode
 from safe_store.indexing.page_index import PageIndex
 from safe_store.search import similarity
 from safe_store.search.bm25 import BM25Retriever
@@ -615,7 +616,9 @@ class SafeStore:
         with self._instance_lock:
             self._ensure_connection()
             if use_cache:
-                cached = self.clusterer.get_cached_clusters(allow_outdated=allow_outdated)
+                # Read-through stale semantics: an outdated flag means "serve the
+                # full unaltered cached snapshot", never a partial recompute.
+                cached = self.clusterer.get_cached_clusters(allow_outdated=True)
                 if cached is not None:
                     return cached
             return self.cluster_documents()
@@ -951,7 +954,8 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
         remove_line_returns: Optional[bool] = None,
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
-        chunking_strategy: Optional[str] = None
+        chunking_strategy: Optional[str] = None,
+        metadata_mode: Optional[Union[str, DocMetadataMode]] = None
     ) -> Dict[str, int]:
         with self._instance_lock:
             self._ensure_connection()
@@ -967,7 +971,8 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                 skip_chunking=skip_chunking,
                 op_chunk_size=chunk_size,
                 op_chunk_overlap=chunk_overlap,
-                op_chunking_strategy=chunking_strategy
+                op_chunking_strategy=chunking_strategy,
+                metadata_mode=metadata_mode
             )
 
     def add_text(
@@ -983,7 +988,8 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
         remove_line_returns: Optional[bool] = None,
         chunk_size: Optional[int] = None,
         chunk_overlap: Optional[int] = None,
-        chunking_strategy: Optional[str] = None
+        chunking_strategy: Optional[str] = None,
+        metadata_mode: Optional[Union[str, DocMetadataMode]] = None
     ) -> Dict[str, int]:
         with self._instance_lock:
             self._ensure_connection()
@@ -999,10 +1005,11 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                 skip_chunking=skip_chunking,
                 op_chunk_size=chunk_size,
                 op_chunk_overlap=chunk_overlap,
-                op_chunking_strategy=chunking_strategy
+                op_chunking_strategy=chunking_strategy,
+                metadata_mode=metadata_mode
             )
 
-    def _add_content_impl(self, content_id, content_loader, hash_loader, metadata, tags, force_reindex, vectorize_with_metadata, chunk_processor, skip_chunking, remove_line_returns=None, op_chunk_size=None, op_chunk_overlap=None, op_chunking_strategy=None) -> Dict[str, int]:
+    def _add_content_impl(self, content_id, content_loader, hash_loader, metadata, tags, force_reindex, vectorize_with_metadata, chunk_processor, skip_chunking, remove_line_returns=None, op_chunk_size=None, op_chunk_overlap=None, op_chunking_strategy=None, metadata_mode=None) -> Dict[str, int]:
         self._ensure_connection()
         assert self.conn and self.vectorizer is not None
         filename_for_log = Path(content_id).name
@@ -1136,9 +1143,34 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                     doc_id = db.add_document_record(self.conn, content_id, current_hash, stored_full_text, meta_blob, self.encryptor.is_enabled, enc_path_blob, self.encryptor)
 
                 tags_str = ",".join(sorted(list(set(tags)))) if tags else None
+
+                # PARSED metadata mode: structurally locate each chunk and attach
+                # breadcrumb path + doc-level metadata (zero LLM calls).
+                parsed_parser = None
+                if metadata_mode is not None and DocMetadataMode.resolve(metadata_mode) is DocMetadataMode.PARSED:
+                    try:
+                        parsed_parser = chunking.build_metadata_parser(cleaned_text, content_id)
+                    except Exception as e:
+                        ASCIIColors.warning(f"Parsed metadata extraction failed for '{filename_for_log}': {e}")
+                        parsed_parser = None
+
+                find_cursor = 0
                 for i, storage_text in enumerate(storage_texts):
+                    chunk_tags = tags_str
+                    if parsed_parser is not None and not self.encryptor.is_enabled:
+                        start = cleaned_text.find(storage_text, find_cursor)
+                        if start == -1:  # fallback: allow out-of-order/duplicate matches
+                            start = cleaned_text.find(storage_text)
+                        if start != -1:
+                            find_cursor = start + len(storage_text)
+                            chunk_meta = parsed_parser.enrich(start, start + len(storage_text))
+                            envelope: Dict[str, Any] = {"_metadata": chunk_meta}
+                            if tags:
+                                envelope["_tags"] = sorted(list(set(tags)))
+                            chunk_tags = json.dumps(envelope)
+
                     t_store = self.encryptor.encrypt(storage_text) if self.encryptor.is_enabled else storage_text
-                    cid = db.add_chunk_record(self.conn, doc_id, t_store, 0, 0, i, tags=tags_str, is_encrypted=self.encryptor.is_enabled)
+                    cid = db.add_chunk_record(self.conn, doc_id, t_store, 0, 0, i, tags=chunk_tags, is_encrypted=self.encryptor.is_enabled)
                     db.add_vector_record(self.conn, cid, np.ascontiguousarray(vectors[i], dtype=self.vectorizer.dtype))
 
                 self.clear_datalake_cache()
@@ -1744,53 +1776,54 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                 ASCIIColors.warning(f"Document '{_path_or_id}' not found.")
 
     def list_documents(self) -> List[Dict[str, Any]]:
-        with self._instance_lock:
-            self._ensure_connection()
-            assert self.conn is not None
-            docs = []
-            original_factory = self.conn.text_factory
-            self.conn.text_factory = bytes
-            rows = self.conn.execute("SELECT doc_id, file_path, file_hash, added_timestamp, metadata, is_encrypted, encrypted_path FROM documents").fetchall()
-            self.conn.text_factory = original_factory
+            with self._instance_lock:
+                self._ensure_connection()
+                assert self.conn is not None
+                docs = []
+                original_factory = self.conn.text_factory
+                self.conn.text_factory = bytes
+                rows = self.conn.execute("SELECT doc_id, file_path, file_hash, added_timestamp, metadata, is_encrypted, encrypted_path FROM documents").fetchall()
+                self.conn.text_factory = original_factory
 
-            for r in rows:
-                doc_id, file_path_bytes, file_hash_bytes, ts, meta_blob, is_enc, enc_path_blob = r
+                for r in rows:
+                    doc_id, file_path_bytes, file_hash_bytes, ts, meta_blob, is_enc, enc_path_blob = r
 
-                raw_p = file_path_bytes.decode('utf-8')
-                if is_enc:
-                    if self.encryptor.is_enabled and enc_path_blob:
-                        try: resolved_path = self.encryptor.decrypt(enc_path_blob)
-                        except Exception: resolved_path = f"[Encrypted Document #{doc_id}]"
-                    else:
-                        resolved_path = f"[Encrypted Document #{doc_id}]"
-                else:
-                    resolved_path = raw_p
-
-                meta_dict = None
-                if meta_blob:
+                    raw_p = file_path_bytes.decode('utf-8')
                     if is_enc:
-                        if self.encryptor.is_enabled:
-                            try:
-                                meta_json = self.encryptor.decrypt(meta_blob)
-                                meta_dict = json.loads(meta_json)
-                            except Exception:
-                                meta_dict = {"error": "Failed to decrypt metadata"}
+                        if self.encryptor.is_enabled and enc_path_blob:
+                            try: resolved_path = self.encryptor.decrypt(enc_path_blob)
+                            except Exception: resolved_path = f"[Encrypted Document #{doc_id}]"
                         else:
-                            meta_dict = {"error": "Encrypted metadata - key unavailable"}
+                            resolved_path = f"[Encrypted Document #{doc_id}]"
                     else:
-                        try: meta_dict = json.loads(meta_blob.decode('utf-8'))
-                        except Exception: meta_dict = {}
+                        resolved_path = raw_p
 
-                ts_clean = ts.decode('utf-8', errors='ignore') if isinstance(ts, bytes) else str(ts)
-                docs.append({
-                    "doc_id": doc_id,
-                    "file_path": resolved_path,
-                    "file_hash": file_hash_bytes.decode('utf-8') if file_hash_bytes else None,
-                    "added_timestamp": ts_clean,
-                    "metadata": meta_dict,
-                    "is_encrypted": bool(is_enc)
-                })
-            return docs
+                    meta_dict = None
+                    if meta_blob:
+                        if is_enc:
+                            if self.encryptor.is_enabled:
+                                try:
+                                    meta_json = self.encryptor.decrypt(meta_blob)
+                                    meta_dict = json.loads(meta_json)
+                                except Exception:
+                                    meta_dict = {"error": "Failed to decrypt metadata"}
+                            else:
+                                meta_dict = {"error": "Encrypted metadata - key unavailable"}
+                        else:
+                            try: meta_dict = json.loads(meta_blob.decode('utf-8'))
+                            except Exception: meta_dict = {}
+
+                    ts_clean = ts.decode('utf-8', errors='ignore') if isinstance(ts, bytes) else str(ts)
+                    docs.append({
+                        "doc_id": doc_id,
+                        "file_path": resolved_path,
+                        "file_hash": file_hash_bytes.decode('utf-8') if file_hash_bytes else None,
+                        "added_timestamp": ts_clean,
+                        "metadata": meta_dict,
+                        "is_encrypted": bool(is_enc),
+                        "chunk_count": db.count_chunks_by_document(self.conn, doc_id),
+                    })
+                return docs
 
     def vectorize_text(self, text_to_vectorize: str):
         self._ensure_connection()

@@ -101,6 +101,74 @@ class Encryptor:
         key = base64.urlsafe_b64encode(kdf.derive(password.encode('utf-8')))
         return key
 
+    def encrypt_string(self, data: str) -> str:
+        """
+        Encrypts a string and returns it with the 'enc:' detection prefix,
+        matching the pattern used for documents.file_path blind hashes.
+        Returns plaintext unchanged when encryption is disabled.
+        """
+        if not self.is_enabled or self._fernet is None:
+            return data
+        return "enc:" + self.encrypt(data).decode('utf-8')
+
+    def decrypt_string(self, value: Optional[str]) -> Optional[str]:
+        """
+        Decrypts an 'enc:'-prefixed string back to plaintext. Non-prefixed
+        values pass through unchanged, tolerating mixed plaintext/encrypted
+        rows (e.g. rows inserted directly via SQL).
+        """
+        if value is None:
+            return value
+        if not self.is_enabled or self._fernet is None:
+            return value
+        if not value.startswith("enc:"):
+            return value
+        try:
+            return self.decrypt(value[len("enc:"):].encode('utf-8'))
+        except Exception:
+            return "[Encrypted - Decryption Failed]"
+
+    def encrypt_metadata_scalar(self, value: Optional[str]) -> Optional[str]:
+        """
+        None-safe encryption for graph metadata columns (node labels, JSON
+        property blobs, unique signatures, relationship types). Emits the same
+        'enc:' prefix used by documents.file_path so raw SQLite inspection
+        cannot distinguish graph metadata from document metadata ciphertexts.
+
+        Passes through unchanged when encryption is disabled or the value is
+        already prefixed, making this safe to call idempotently.
+        """
+        if value is None:
+            return None
+        if not self.is_enabled or self._fernet is None:
+            return value
+        if isinstance(value, str) and value.startswith("enc:"):
+            return value
+        return self.encrypt_string(value if isinstance(value, str) else str(value))
+
+    def decrypt_metadata_scalar(self, value: Optional[str]) -> Optional[str]:
+        """
+        None-safe inverse of `encrypt_metadata_scalar`. Non-prefixed values
+        pass through unchanged, tolerating legacy plaintext rows inserted
+        directly via SQL. On decryption failure returns the original ciphertext
+        (never raises) so a mismatched key cannot crash the read path.
+        """
+        if value is None:
+            return None
+        if not self.is_enabled or self._fernet is None:
+            return value
+        if not isinstance(value, str) or not value.startswith("enc:"):
+            return value
+        try:
+            return self.decrypt_string(value)
+        except Exception:
+            return value
+
+    @staticmethod
+    def is_encrypted_value(value: Optional[str]) -> bool:
+        """Detects whether a stored value carries the 'enc:' encryption prefix."""
+        return isinstance(value, str) and value.startswith("enc:")
+
     def blind_hash(self, text: str) -> str:
         """
         Computes a deterministic HMAC-SHA256 blind index for searching and unique

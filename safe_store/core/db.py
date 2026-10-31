@@ -6,6 +6,7 @@ from typing import Optional, Any, Tuple, List, Dict, Union
 import json
 from ascii_colors import ASCIIColors
 from .exceptions import DatabaseError, GraphDBError
+from safe_store.indexing.chunking import DocMetadataMode
 
 # --- Type Hinting ---
 SQLQuery = str
@@ -315,6 +316,19 @@ def add_vector_record(conn: sqlite3.Connection, chunk_id: int, vector: np.ndarra
     except sqlite3.Error as e:
         raise DatabaseError(f"Error inserting vector for chunk={chunk_id}: {e}") from e
 
+def count_chunks_by_document(conn: sqlite3.Connection, doc_id: int) -> int:
+    """
+    Returns the DB-truth number of chunk rows attached to a given document.
+
+    Always query the database: session-local counters drift when the store is
+    reopened or when chunks are inserted via a different code path (e.g.,
+    `add_text` vs `add_document`). This is the source of the "0 chunks" bug
+    when a UI lists documents after a process restart.
+    """
+    cursor = conn.execute("SELECT COUNT(*) FROM chunks WHERE doc_id = ?", (doc_id,))
+    row = cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else 0
+
 # --- Metadata Functions ---
 def set_store_metadata(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.execute("INSERT OR REPLACE INTO store_metadata (key, value) VALUES (?, ?)", (key, value))
@@ -343,20 +357,20 @@ def add_or_update_graph_node(
         if row:
             node_id, existing_props_raw = row
             if is_enc:
-                decrypted_json = encryptor.decrypt_str(existing_props_raw)
+                decrypted_json = encryptor.decrypt_string(existing_props_raw)
                 existing_props = json.loads(decrypted_json) if decrypted_json else {}
             else:
                 existing_props = json.loads(existing_props_raw) if existing_props_raw else {}
 
             merged_props = {**existing_props, **properties}
             merged_json = json.dumps(merged_props)
-            to_store = encryptor.encrypt_str(merged_json) if is_enc else merged_json
+            to_store = encryptor.encrypt_string(merged_json) if is_enc else merged_json
             cursor.execute("UPDATE graph_nodes SET node_properties = ? WHERE node_id = ?", (to_store, node_id))
             return node_id
         else:
             props_json = json.dumps(properties)
-            stored_label = encryptor.encrypt_str(label) if is_enc else label
-            stored_props = encryptor.encrypt_str(props_json) if is_enc else props_json
+            stored_label = encryptor.encrypt_string(label) if is_enc else label
+            stored_props = encryptor.encrypt_string(props_json) if is_enc else props_json
             cursor.execute("INSERT INTO graph_nodes (node_label, node_properties, unique_signature) VALUES (?, ?, ?)",
                            (stored_label, stored_props, stored_sig))
             new_id = cursor.lastrowid
@@ -388,8 +402,8 @@ def get_node_details_db(conn: sqlite3.Connection, node_id: int, encryptor: Optio
         props_raw = row[2]
 
         if encryptor and encryptor.is_enabled:
-            lbl = encryptor.decrypt_str(lbl)
-            decrypted_json = encryptor.decrypt_str(props_raw)
+            lbl = encryptor.decrypt_string(lbl)
+            decrypted_json = encryptor.decrypt_string(props_raw)
             props = json.loads(decrypted_json) if decrypted_json else {}
         else:
             try: props = json.loads(props_raw) if props_raw else {}
@@ -424,19 +438,21 @@ def find_node_by_label_and_property_value(conn: sqlite3.Connection, label: str, 
     except sqlite3.Error as e:
         raise GraphDBError(f"DB error finding node by multi-property value LIKE '{value}': {e}") from e
 
-def get_node_details_db(conn: sqlite3.Connection, node_id: int) -> Optional[Dict[str, Any]]:
-    try:
-        cursor = conn.execute("SELECT node_id, node_label, node_properties, unique_signature FROM graph_nodes WHERE node_id = ?", (node_id,))
-        row = cursor.fetchone()
-        if row:
-            return {"node_id": row[0], "label": row[1], "properties": json.loads(row[2]) if row[2] else {}, "unique_signature": row[3]}
-        return None
-    except sqlite3.Error as e:
-        raise GraphDBError(f"DB error getting details for node {node_id}: {e}") from e
-
-def get_nodes_by_label_db(conn: sqlite3.Connection, label: str, limit: int = 100) -> List[Dict[str, Any]]:
+def get_nodes_by_label_db(conn: sqlite3.Connection, label: str, limit: int = 100, encryptor: Optional[Any] = None) -> List[Dict[str, Any]]:
     nodes_found = []
     try:
+        if encryptor and encryptor.is_enabled:
+            # Encrypted labels cannot be filtered via SQL; scan, decrypt, filter.
+            cursor = conn.execute("SELECT node_id, node_label, node_properties, unique_signature FROM graph_nodes")
+            for row in cursor.fetchall():
+                lbl = encryptor.decrypt_string(row[1])
+                if lbl != label:
+                    continue
+                props_raw = encryptor.decrypt_string(row[2])
+                nodes_found.append({"node_id": row[0], "label": lbl, "properties": json.loads(props_raw) if props_raw else {}, "unique_signature": row[3]})
+                if len(nodes_found) >= limit:
+                    break
+            return nodes_found
         cursor = conn.execute("SELECT node_id, node_label, node_properties, unique_signature FROM graph_nodes WHERE node_label = ? LIMIT ?", (label, limit))
         for row in cursor.fetchall():
             nodes_found.append({"node_id": row[0], "label": row[1], "properties": json.loads(row[2]) if row[2] else {}, "unique_signature": row[3]})
@@ -473,6 +489,15 @@ def delete_graph_node_and_relationships_db(conn: sqlite3.Connection, node_id: in
         return cursor.rowcount
     except sqlite3.Error as e:
         raise GraphDBError(f"DB error deleting node {node_id}: {e}") from e
+
+def resolve_document_metadata_mode(mode: Union[str, bool, "DocMetadataMode", None]) -> "DocMetadataMode":
+    """
+    Resolves a user-facing metadata mode into a DocMetadataMode enum.
+    Accepts: 'llm', 'parsed', 'title_only' (strings), legacy bools
+    (True → LLM, False/None → TITLE_ONLY), or DocMetadataMode instances.
+    """
+    return DocMetadataMode.resolve(mode)
+
 
 # --- Graph Relationship Functions ---
 def add_graph_relationship(

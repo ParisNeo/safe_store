@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - feat(vectorization): add detailed ASCII info for vectorizer initialization
 
+## [2026-10-31 14:27]
+
+- Update documentation and version alignment (version bump to 3.8.1)
+
 ## [2026-10-01 23:33]
 
 - refactor(safe_store): update version and improve documentation and API structure

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "safe-store"
-version = "3.7.5"
+version = "3.8.1"
 description = "Simple, concurrent SQLite-based vector store optimized for local RAG pipelines, with optional encryption."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -21,6 +21,9 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Intended Audience :: Developers",
@@ -75,6 +78,7 @@ lollms = [
 dev = [
     "pytest>=7.0",
     "pytest-cov>=3.0",
+    "pytest-mock>=3.14",
     "flake8>=5.0",     # Or ruff
     "black>=22.0",
     "mypy>=0.9",

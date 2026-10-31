@@ -1,5 +1,5 @@
 # safe_store Documentation
-*(Version: 3.6.1)*
+*(Version: 3.8.1)*
 
 ## Table of Contents
 

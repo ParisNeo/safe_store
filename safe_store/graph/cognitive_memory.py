@@ -40,7 +40,7 @@ class CognitiveMemoryStore:
         Records a discrete episodic memory event, linking participants, timestamp,
         and grounding source text chunks.
         """
-        event_time = timestamp or datetime.datetime.utcnow().isoformat()
+        event_time = timestamp or datetime.datetime.now(datetime.UTC).isoformat()
         episode_id_str = f"episode_{uuid.uuid4().hex[:8]}"
 
         properties = {

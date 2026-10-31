@@ -1226,6 +1226,17 @@ class GraphStore:
             try:
                 self.conn.execute("BEGIN")
                 node_id = db.add_or_update_graph_node(self.conn, label, properties, sig)
+                enc = self.store.encryptor
+                if enc.is_enabled:
+                    self.conn.execute(
+                        "UPDATE graph_nodes SET node_label = ?, node_properties = ?, unique_signature = ? WHERE node_id = ?",
+                        (
+                            enc.encrypt_metadata_scalar(label),
+                            enc.encrypt_metadata_scalar(json.dumps(properties)),
+                            enc.encrypt_metadata_scalar(sig),
+                            node_id,
+                        ),
+                    )
                 self._vectorize_and_store_node_update(node_id, label, properties)
                 self.conn.commit()
                 ASCIIColors.success(f"Node added successfully with ID: {node_id}")
@@ -1246,13 +1257,17 @@ class GraphStore:
                     "SELECT node_id, node_label, node_properties, unique_signature FROM graph_nodes LIMIT ?",
                     (limit,)
                 )
+                enc = self.store.encryptor
                 nodes = []
                 for row in cursor.fetchall():
+                    label = enc.decrypt_metadata_scalar(row[1])
+                    props_raw = enc.decrypt_metadata_scalar(row[2]) if row[2] else None
+                    sig = enc.decrypt_metadata_scalar(row[3])
                     nodes.append({
                         "node_id": row[0],
-                        "label": row[1],
-                        "properties": json.loads(row[2]) if row[2] else {},
-                        "unique_signature": row[3]
+                        "label": label,
+                        "properties": json.loads(props_raw) if props_raw else {},
+                        "unique_signature": sig
                     })
                 return nodes
             except sqlite3.Error as e:
@@ -1514,16 +1529,23 @@ class GraphStore:
                 LIMIT ?;
                 """
                 cursor = self.conn.execute(sql, (limit,))
+                enc = self.store.encryptor
                 relationships = []
                 for row in cursor.fetchall():
+                    rel_type = enc.decrypt_metadata_scalar(row[3])
+                    rel_props_raw = enc.decrypt_metadata_scalar(row[4]) if row[4] else None
+                    src_label = enc.decrypt_metadata_scalar(row[5])
+                    src_props_raw = enc.decrypt_metadata_scalar(row[6]) if row[6] else None
+                    tgt_label = enc.decrypt_metadata_scalar(row[7])
+                    tgt_props_raw = enc.decrypt_metadata_scalar(row[8]) if row[8] else None
                     relationships.append({
                         "relationship_id": row[0],
                         "source_node_id": row[1],
                         "target_node_id": row[2],
-                        "type": row[3],
-                        "properties": json.loads(row[4]) if row[4] else {},
-                        "source_node": {"node_id": row[1], "label": row[5], "properties": json.loads(row[6]) if row[6] else {}},
-                        "target_node": {"node_id": row[2], "label": row[7], "properties": json.loads(row[8]) if row[8] else {}}
+                        "type": rel_type,
+                        "properties": json.loads(rel_props_raw) if rel_props_raw else {},
+                        "source_node": {"node_id": row[1], "label": src_label, "properties": json.loads(src_props_raw) if src_props_raw else {}},
+                        "target_node": {"node_id": row[2], "label": tgt_label, "properties": json.loads(tgt_props_raw) if tgt_props_raw else {}}
                     })
                 return relationships
             except sqlite3.Error as e:
@@ -1573,7 +1595,14 @@ class GraphStore:
             try:
                 self.conn.execute("BEGIN")
                 props_json = json.dumps(properties or {})
-                rel_id = db.add_graph_relationship(self.conn, source_node_id, target_node_id, rel_type, props_json)
+                enc = self.store.encryptor
+                if enc.is_enabled:
+                    rel_type_stored = enc.encrypt_metadata_scalar(rel_type)
+                    props_stored = enc.encrypt_metadata_scalar(props_json)
+                else:
+                    rel_type_stored = rel_type
+                    props_stored = props_json
+                rel_id = db.add_graph_relationship(self.conn, source_node_id, target_node_id, rel_type_stored, props_stored)
                 self.conn.commit()
                 return rel_id
             except Exception as e:

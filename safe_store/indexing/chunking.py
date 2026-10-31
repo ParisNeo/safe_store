@@ -1,8 +1,245 @@
 # safe_store/indexing/chunking.py
+"""
+Chunking strategies and structural metadata parsing.
+
+DocMetadataMode controls how document/chunk metadata is produced:
+- LLM        : an external LLM reads the full document and synthesizes metadata (default).
+- PARSED     : structural parsing only (Markdown headings / Python AST). No LLM calls.
+               Every chunk receives a breadcrumb `path` (e.g. "Intro / 1. Background")
+               and doc-level keys (`title`, `authors`, `abstract`) when detected.
+- TITLE_ONLY : only the document title is attached to metadata.
+"""
+import ast
 import re
+from enum import Enum
 from typing import List, Tuple, Callable, Optional, Literal, Any, Union, Dict
 import numpy as np
 from ascii_colors import ASCIIColors
+
+
+class DocMetadataMode(Enum):
+    """How per-document/per-chunk metadata is generated."""
+    LLM = "llm"
+    PARSED = "parsed"
+    TITLE_ONLY = "title_only"
+
+    @classmethod
+    def resolve(cls, value: Union["DocMetadataMode", str, bool, None]) -> "DocMetadataMode":
+        if isinstance(value, cls):
+            return value
+        if value is True:
+            return cls.LLM
+        if value is False or value is None:
+            return cls.TITLE_ONLY
+        normalized = str(value).strip().lower()
+        for member in cls:
+            if member.value == normalized or member.name.lower() == normalized:
+                return member
+        raise ValueError(f"Unknown document metadata mode: {value!r}. Valid: llm, parsed, title_only.")
+
+
+# -----------------------------------------------------------------------------
+# Structural Metadata Parsers (PARSED mode)
+# -----------------------------------------------------------------------------
+class MarkdownMetadataParser:
+    """
+    Parses Markdown source into a heading tree with positional spans.
+    Produces doc-level metadata (title, authors, abstract) and a `path`
+    breadcrumb for any character range of the document.
+    """
+
+    HEADING_RE = re.compile(r'^(#{1,6})\s+(.+?)\s*$')
+    AUTHORS_RE = re.compile(r'^\s*authors?\s*[:\-]\s*(.+)$', re.IGNORECASE)
+
+    def __init__(self, source: str):
+        self.source = source
+        self.title: Optional[str] = None
+        self.authors: Optional[str] = None
+        self.abstract: Optional[str] = None
+        # spans: list of (start_offset, end_offset, crumb_list)
+        self._spans: List[Tuple[int, int, List[str]]] = []
+        self._parse()
+
+    def _strip_front_matter(self, text: str) -> int:
+        """Returns the offset where real content starts, skipping a --- YAML block."""
+        if text.startswith('---'):
+            end = text.find('\n---', 3)
+            if end != -1:
+                nl = text.find('\n', end + 4)
+                return nl + 1 if nl != -1 else len(text)
+        return 0
+
+    def _parse(self) -> None:
+        content_start = self._strip_front_matter(self.source)
+        front_matter = self.source[:content_start]
+        for line in front_matter.splitlines():
+            m = self.AUTHORS_RE.match(line)
+            if m and self.authors is None:
+                self.authors = m.group(1).strip()
+
+        headers: Dict[int, Optional[str]] = {lvl: None for lvl in range(1, 7)}
+        in_code_block = False
+        offset = 0
+        current_span_start = content_start
+        current_crumb: List[str] = []
+        abstract_start: Optional[int] = None
+        abstract_end: Optional[int] = None
+
+        for line in self.source.splitlines(keepends=True):
+            line_start = offset
+            offset += len(line)
+            stripped = line.strip()
+
+            if line_start < content_start:
+                continue
+            if stripped.startswith("```"):
+                in_code_block = not in_code_block
+                continue
+
+            match = self.HEADING_RE.match(line.rstrip('\n')) if not in_code_block else None
+            if match:
+                # Close previous span
+                if line_start > current_span_start:
+                    self._spans.append((current_span_start, line_start, list(current_crumb)))
+                level = len(match.group(1))
+                heading = match.group(2).strip().lstrip('#').strip()
+                for lvl in range(level, 7):
+                    headers[lvl] = None
+                headers[level] = heading
+                current_crumb = [headers[l] for l in range(1, 7) if headers[l]]
+                current_span_start = line_start
+
+                if self.title is None and level == 1:
+                    self.title = heading
+                if any('abstract' in c.lower() for c in current_crumb):
+                    abstract_start = offset
+                elif abstract_start is not None and abstract_end is None:
+                    abstract_end = line_start
+            else:
+                if self.authors is None:
+                    m = self.AUTHORS_RE.match(line)
+                    if m:
+                        self.authors = m.group(1).strip()
+
+        # Final span
+        if len(self.source) > current_span_start:
+            self._spans.append((current_span_start, len(self.source), list(current_crumb)))
+        if abstract_start is not None:
+            end = abstract_end if abstract_end is not None else min(abstract_start + 2000, len(self.source))
+            self.abstract = self.source[abstract_start:end].strip() or None
+
+    def extract(self) -> Dict[str, Any]:
+        result: Dict[str, Any] = {"spans": self._spans}
+        if self.title: result["title"] = self.title
+        if self.authors: result["authors"] = self.authors
+        if self.abstract: result["abstract"] = self.abstract
+        return result
+
+    def crumb_at(self, position: int) -> List[str]:
+        for start, end, crumb in self._spans:
+            if start <= position < end:
+                return crumb
+        return self._spans[-1][2] if self._spans else []
+
+    def enrich(self, start: int, end: int) -> Dict[str, Any]:
+        """Returns metadata for a chunk spanning [start, end) of the source."""
+        crumb = self.crumb_at(start)
+        meta: Dict[str, Any] = {}
+        if self.title: meta["title"] = self.title
+        if self.authors: meta["authors"] = self.authors
+        if self.abstract: meta["abstract"] = self.abstract
+        if crumb:
+            meta["path"] = " / ".join(crumb)
+            for key, idx in (("chapter", 0), ("section", 1), ("subsection", 2)):
+                if len(crumb) > idx:
+                    meta[key] = crumb[idx]
+        return meta
+
+
+class ASTMetadataParser:
+    """
+    Parses Python source via `ast` into module/class/function spans.
+    Produces a `path` breadcrumb like "module / MyClass / my_method".
+    """
+
+    def __init__(self, source: str):
+        self.source = source
+        self.title: Optional[str] = None
+        self._spans: List[Tuple[int, int, List[str]]] = []
+        self._line_offsets = self._build_line_offsets(source)
+        self._parse()
+
+    @staticmethod
+    def _build_line_offsets(source: str) -> List[int]:
+        offsets = [0]
+        for i, ch in enumerate(source):
+            if ch == '\n':
+                offsets.append(i + 1)
+        return offsets
+
+    def _to_offset(self, lineno: int, col: int) -> int:
+        if lineno - 1 < len(self._line_offsets):
+            return self._line_offsets[lineno - 1] + col
+        return len(self.source)
+
+    def _parse(self) -> None:
+        try:
+            tree = ast.parse(self.source)
+        except SyntaxError as e:
+            ASCIIColors.warning(f"ASTMetadataParser: syntax error, no structure extracted: {e}")
+            self._spans = [(0, len(self.source), ["module"])]
+            return
+
+        # Module docstring as title
+        docstring = ast.get_docstring(tree)
+        if docstring:
+            self.title = docstring.strip().splitlines()[0][:200]
+
+        def visit(node: ast.AST, parents: List[str]) -> None:
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) \
+                        and hasattr(child, 'end_lineno'):
+                    start = self._to_offset(child.lineno, child.col_offset)
+                    end = self._to_offset(child.end_lineno, getattr(child, 'end_col_offset', 0))
+                    crumb = parents + [child.name]
+                    self._spans.append((start, end, crumb))
+                    visit(child, crumb)
+                else:
+                    visit(child, parents)
+
+        visit(tree, ["module"])
+        self._spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
+
+    def extract(self) -> Dict[str, Any]:
+        result: Dict[str, Any] = {"spans": self._spans}
+        if self.title: result["title"] = self.title
+        return result
+
+    def crumb_at(self, position: int) -> List[str]:
+        best: List[str] = ["module"]
+        best_size = None
+        for start, end, crumb in self._spans:
+            if start <= position < end:
+                size = end - start
+                if best_size is None or size < best_size:
+                    best, best_size = crumb, size
+        return best
+
+    def enrich(self, start: int, end: int) -> Dict[str, Any]:
+        crumb = self.crumb_at(start)
+        meta: Dict[str, Any] = {"path": " / ".join(crumb)}
+        if self.title: meta["title"] = self.title
+        if len(crumb) > 1: meta["section"] = crumb[1] if len(crumb) > 1 else None
+        if len(crumb) > 2: meta["subsection"] = crumb[-1]
+        return meta
+
+
+def build_metadata_parser(text: str, source_path: Optional[Union[str, Any]] = None):
+    """Selects the right parser based on file extension (Python → AST, else Markdown)."""
+    suffix = str(source_path).lower().rsplit('.', 1)[-1] if source_path and '.' in str(source_path) else ""
+    if suffix == "py":
+        return ASTMetadataParser(text)
+    return MarkdownMetadataParser(text)
 
 Chunk = Tuple[str, str] # (text_for_vectorization, text_for_storage)
 
