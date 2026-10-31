@@ -128,7 +128,21 @@ class STVectorizer(BaseVectorizer):
         self._log_streamer_stop: Optional[threading.Event] = None
 
         if self.use_shared_server:
-            self._init_shared_server()
+            try:
+                self._init_shared_server()
+            except (VectorizationError, ConfigurationError) as e:
+                if model_config.get("fail_on_shared_server_error", False):
+                    raise
+                ASCIIColors.warning(
+                    f"Shared model server unavailable: {e}. "
+                    "Falling back to in-process SentenceTransformer loading."
+                )
+                self._cleanup_shared_server_state()
+                self.use_shared_server = False
+                self.reuse_model_in_process = bool(
+                    model_config.get("reuse_model_in_process", True)
+                )
+                self._init_local_model()
         else:
             self._init_local_model()
 
@@ -174,6 +188,61 @@ class STVectorizer(BaseVectorizer):
             "returned a valid integer."
         )
 
+    def _is_spawnable_python(self) -> bool:
+        """Returns True if ``sys.executable`` is a standard Python launcher
+        suitable for ``-m module`` subprocess use.
+
+        Rejects:
+        - empty/None interpreter paths,
+        - ``pythonw.exe`` / ``pythonw`` (GUI launcher, no console),
+        - frozen interpreters (PyInstaller / Nuitka bundles),
+        - non-Python ``.exe`` launchers (e.g. ``AITIANA_studio.exe``).
+        """
+        exe = sys.executable
+        if not exe:
+            return False
+        if getattr(sys, "frozen", False):
+            return False
+        base = os.path.basename(exe).lower()
+        if base in {"pythonw.exe", "pythonw"}:
+            return False
+        if base.endswith(".exe") and "python" not in base:
+            return False
+        return True
+
+    def _read_last_log_line(self) -> Optional[str]:
+        """Returns the last non-empty stripped line of the server log, or None."""
+        if not self._server_log_file or not os.path.exists(self._server_log_file):
+            return None
+        try:
+            with open(self._server_log_file, "r", encoding="utf-8", errors="replace") as f:
+                lines = [ln.strip() for ln in f.readlines() if ln.strip()]
+            return lines[-1] if lines else None
+        except (IOError, OSError):
+            return None
+
+    def _cleanup_shared_server_state(self) -> None:
+        """Stops the log streamer, closes the client, and terminates any
+        spawned server process. Idempotent and safe to call multiple times."""
+        if self._log_streamer_stop is not None:
+            try:
+                self._log_streamer_stop.set()
+            except Exception:
+                pass
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+            self._client = None
+        if self._server_process is not None:
+            try:
+                if self._server_process.poll() is None:
+                    self._server_process.terminate()
+            except Exception:
+                pass
+            self._server_process = None
+
     def _init_local_model(self) -> None:
         try:
             if self.reuse_model_in_process:
@@ -204,6 +273,13 @@ class STVectorizer(BaseVectorizer):
             raise VectorizationError(f"Failed to load Sentence Transformer model '{self.model_name}': {e}") from e
 
     def _init_shared_server(self) -> None:
+        try:
+            self._init_shared_server_impl()
+        except Exception:
+            self._cleanup_shared_server_state()
+            raise
+
+    def _init_shared_server_impl(self) -> None:
         from safe_store.vectorization.model_server.client import ModelServerClient
 
         if FileLock is None:
@@ -317,6 +393,20 @@ class STVectorizer(BaseVectorizer):
             return None
 
     def _spawn_server(self) -> str:
+        if not self._is_spawnable_python():
+            raise ConfigurationError(
+                f"Interpreter {sys.executable!r} is not a suitable Python launcher "
+                "for subprocess '-m' mode; cannot spawn shared model server."
+            )
+
+        import importlib.util
+        if importlib.util.find_spec("safe_store.vectorization.model_server.run_server") is None:
+            raise ConfigurationError(
+                "The 'safe_store.vectorization.model_server.run_server' module is not installed. "
+                "This usually means the safe_store wheel was built without the model_server sub-package. "
+                "Reinstall safe_store (>= version that ships it) or set use_shared_server=False."
+            )
+
         auth_token = secrets.token_hex(16)
 
         server_module = "safe_store.vectorization.model_server.run_server"
@@ -382,7 +472,11 @@ class STVectorizer(BaseVectorizer):
         while time.time() - start_time < self.SERVER_STARTUP_TIMEOUT:
             if self._server_process and self._server_process.poll() is not None:
                 self._dump_server_log()
-                raise VectorizationError(f"Shared model server process exited prematurely with return code {self._server_process.returncode}.")
+                tail = self._read_last_log_line()
+                raise VectorizationError(
+                    f"Shared model server process exited prematurely with return code {self._server_process.returncode}. "
+                    f"Last server log line: {tail or '<no output>'}"
+                )
             if self._is_port_in_use():
                 try:
                     temp_client = ModelServerClient(self.host, self.port, auth_token)
