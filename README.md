@@ -25,6 +25,7 @@
 11. 🔐 **Total Zero-Leakage Local Encryption**: End-to-end AES-128/HMAC encryption for chunk text, document paths/names (blind indexed), metadata, and knowledge graph nodes/edges at rest.
 16. 📑 **`DocMetadataMode.PARSED` Structural Metadata Engine**: Zero-LLM, structure-aware per-chunk metadata with hierarchical breadcrumbs parsed from Markdown headings (`#`/`##`/`###`), YAML front-matter, or the Python AST — every chunk knows its `path` (chapter/section/subsection), title, authors, and abstract.
 17. 🖥️ **SafeStore Studio Desktop & Web App**: Interactive UI built on NiceGUI and pywebview with LLM Setup, Sourced Chat, VectorDB editing, 2D/3D Datalake, and SPARQL console.
+18. 🔄 **Rechunking & Re-vectorization**: `store.rechunk_and_vectorize(...)` atomically reconstructs every document, applies a new chunking (size / overlap / strategy), and re-embeds with an optionally new vectorizer — one call migrates an entire knowledge base.
 ---
 
 ## 📦 Installation
@@ -762,6 +763,105 @@ new_store = safe_store.SafeStore.import_database(
     encryption_key="newsecret456" # Optional: re-encrypt with a new key
 )
 ```
+
+---
+
+## 🔄 Rechunking & Re-vectorizing a Database
+
+`safe_store` offers two database-wide migration operations:
+
+| Operation | What changes | Preserves chunk layout? | Use when… |
+|-----------|--------------|-------------------------|-----------|
+| `store.revectorize_database(...)` | Embeddings only | ✅ Yes | You switched embedding models but kept the same chunk boundaries. |
+| `store.rechunk_and_vectorize(...)` | Chunk boundaries **and** embeddings | ❌ No — chunks are rebuilt | You changed `chunk_size`, `chunk_overlap` or `chunking_strategy`, or you want structural metadata merged into every chunk. |
+
+### `store.rechunk_and_vectorize(...)`
+
+Rebuilds the chunk layout **and** re-embeds an existing indexed database in place. Every
+document is reconstructed from the database first, re-chunked with the supplied parameters,
+and re-embedded — atomically, per document.
+
+```python
+store.rechunk_and_vectorize(
+    new_chunk_size=2048,
+    new_chunk_overlap=64,
+    new_chunking_strategy="token",
+    new_vectorizer_name="sentense_transformer",
+    new_vectorizer_config={"model": "all-MiniLM-L6-v2"},
+    vectorize_with_metadata=True,
+    metadata_mode="parsed",
+    batch_size=50,
+)
+```
+
+#### Signature
+
+```python
+SafeStore.rechunk_and_vectorize(
+    new_chunk_size: Optional[int] = None,
+    new_chunk_overlap: Optional[int] = None,
+    new_chunking_strategy: Optional[str] = None,
+    new_vectorizer_name: Optional[str] = None,
+    new_vectorizer_config: Optional[Dict[str, Any]] = None,
+    vectorize_with_metadata: Optional[bool] = None,
+    metadata_mode: Optional[Union[str, DocMetadataMode]] = None,
+    batch_size: int = 50,
+) -> Dict[str, Any]
+```
+
+#### Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `new_chunk_size` | `int` | store's `chunk_size` (2048 for new stores) | Target chunk size (tokens/characters, strategy-dependent). |
+| `new_chunk_overlap` | `int` | store's `chunk_overlap` | Overlap between adjacent chunks. Must be strictly `< new_chunk_size`. |
+| `new_chunking_strategy` | `str` | store's `chunking_strategy` | One of `character`, `token`, `paragraph`, `semantic`, `recursive`, `structure`, `markdown`, `contextual`, `late`. |
+| `new_vectorizer_name` | `str` | store's current vectorizer | Vectorizer family (`sentense_transformer`, `openai`, `ollama`, `cohere`, `grepper`, `lollms`, …). |
+| `new_vectorizer_config` | `dict` | store's current config | Model-specific configuration for the new vectorizer. |
+| `vectorize_with_metadata` | `bool` | `True` | Prepend document-level metadata to each chunk's vectorized text. |
+| `metadata_mode` | `str` / `DocMetadataMode` | `None` | `"parsed"` enriches chunks with structural metadata (breadcrumbs, headings, tables). |
+| `batch_size` | `int` | `50` | Batch size for the embedding pass. |
+
+> ⚠️ **At least one parameter must be supplied.** Calling `rechunk_and_vectorize()`
+> with no arguments raises `ConfigurationError` — it would change nothing but waste
+> a full re-embedding pass over the entire database.
+
+#### Execution order
+
+The data-safety contract is the **reconstruct-before-delete** invariant:
+
+1. **Validate** — no parameters supplied → `ConfigurationError`; `overlap >= size` → `ConfigurationError`; unknown strategy → `ConfigurationError`.
+2. **Resolve** the effective parameters (fall back to the store's current values).
+3. **Resolve the vectorizer** — if `new_vectorizer_name` / `new_vectorizer_config` were given, a new instance is created (or a new vectorizer is picked up from the manager).
+4. **Reconstruct** every document's plain text (`reconstruct_document_text(doc_id)`). **This happens before ANY delete** — a reconstruction failure cannot lose data.
+5. **Clear** all existing chunks and vectors in one transaction (the `chunks` table and the FTS index `chunks_fts`).
+6. **Per document**: clean → chunk → batch-embed → insert chunks + vectors. Each document is committed independently, so a failure rolls back only that document and increments `documents_failed`.
+7. **Update** the store-level configuration (`chunk_size`, `chunk_overlap`, `chunking_strategy`) and — if the vectorizer changed — the `vectorizer_info` metadata, atomically.
+8. **Return** a summary dict (below).
+
+#### Return value
+
+```python
+{
+    "documents_processed": 42,
+    "documents_failed": 0,
+    "chunks_created": 1873,
+    "chunk_size": 2048,
+    "chunk_overlap": 64,
+    "chunking_strategy": "token",
+    "vectorizer_name": "sentense_transformer",
+}
+```
+
+#### Behaviour notes
+
+- **Default chunk size is now `2048`** (previously `384`). This default only applies to newly created stores; existing databases load their stored `store_config['chunk_size']` unchanged on reopen.
+- **Changing the vectorizer changes the tokenizer**, so the same numeric `chunk_size` can produce a *different* number of chunks before and after migration.
+- **Encrypted databases**: chunks are re-encrypted with the store's active encryptor. Migrating a database to a **different encryption key** is **not supported** — instantiate `SafeStore` with the same encryptor first.
+- **`metadata_mode="parsed"`** requires plaintext; it is silently disabled on encrypted stores.
+- **LLM-backed strategies** (`semantic`, `contextual`, `late`) require an `llm_generator` callable passed to `SafeStore.__init__`; otherwise those documents are counted under `documents_failed`.
+- **Concurrency**: the operation holds the store's instance lock — concurrent `add_text` / `query` calls block until it completes.
+- **Idempotent**: calling twice with the same parameters produces identical chunk counts and vectors.
 
 ---
 

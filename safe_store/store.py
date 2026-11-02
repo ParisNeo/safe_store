@@ -162,7 +162,7 @@ class SafeStore:
 
         if is_shared:
             self.vectorizer_config["use_shared_server"] = True
-        self.chunk_size = merged_config.get('chunk_size', 384)
+        self.chunk_size = merged_config.get('chunk_size', 2048)
         self.chunk_overlap = merged_config.get('chunk_overlap', 50)
         self.chunking_strategy = merged_config.get('chunking_strategy', 'token')
         self.custom_tokenizer = merged_config.get('custom_tokenizer', None)
@@ -1514,6 +1514,305 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
             except Exception as e:
                 if self.conn.in_transaction: self.conn.rollback()
                 raise SafeStoreError(f"Failed to commit re-vectorization to database: {e}") from e
+
+    def rechunk_and_vectorize(
+        self,
+        new_chunk_size: Optional[int] = None,
+        new_chunk_overlap: Optional[int] = None,
+        new_chunking_strategy: Optional[str] = None,
+        new_vectorizer_name: Optional[str] = None,
+        new_vectorizer_config: Optional[Dict[str, Any]] = None,
+        vectorize_with_metadata: Optional[bool] = None,
+        metadata_mode: Optional[Union[str, DocMetadataMode]] = None,
+        batch_size: int = 50,
+    ) -> Dict[str, Any]:
+        """
+        Reconstructs every document from the database and re-applies chunking + vectorization
+        with new parameters. At least one parameter must be provided, otherwise the call is a no-op.
+
+        Args:
+            new_chunk_size: New chunk size (tokens/characters). Defaults to current store value.
+            new_chunk_overlap: New chunk overlap. Defaults to current store value.
+            new_chunking_strategy: New chunking strategy. Defaults to current store value.
+            new_vectorizer_name: New vectorizer name. Defaults to current store value.
+            new_vectorizer_config: New vectorizer config. Defaults to current store value.
+            vectorize_with_metadata: Whether to prepend document metadata to vector text.
+            metadata_mode: Metadata mode for chunk enrichment (e.g., 'parsed').
+            batch_size: Batch size for vectorization.
+
+        Returns:
+            Dict with summary of changes.
+        """
+        with self._instance_lock, self._optional_file_lock_context("rechunk_and_vectorize"):
+            self._ensure_connection()
+            assert self.conn is not None
+
+            # 1. Validate at least one parameter is provided
+            if all(p is None for p in [
+                new_chunk_size, new_chunk_overlap, new_chunking_strategy,
+                new_vectorizer_name, new_vectorizer_config, vectorize_with_metadata
+            ]):
+                raise ConfigurationError(
+                    "rechunk_and_vectorize requires at least one parameter to be specified."
+                )
+
+            # 2. Resolve effective parameters
+            effective_chunk_size = new_chunk_size if new_chunk_size is not None else self.chunk_size
+            effective_chunk_overlap = new_chunk_overlap if new_chunk_overlap is not None else self.chunk_overlap
+            effective_chunking_strategy = new_chunking_strategy if new_chunking_strategy is not None else self.chunking_strategy
+            effective_vectorize_with_metadata = vectorize_with_metadata if vectorize_with_metadata is not None else True
+
+            if effective_chunk_overlap >= effective_chunk_size:
+                raise ConfigurationError(
+                    f"chunk_overlap ({effective_chunk_overlap}) must be smaller than chunk_size ({effective_chunk_size})."
+                )
+
+            valid_strategies = {
+                'character', 'token', 'paragraph', 'semantic', 'recursive',
+                'structure', 'markdown', 'contextual', 'late'
+            }
+            if str(effective_chunking_strategy).lower() not in valid_strategies:
+                raise ConfigurationError(
+                    f"Unknown chunking strategy: '{effective_chunking_strategy}'. "
+                    f"Valid: {sorted(valid_strategies)}"
+                )
+
+            # 3. Resolve vectorizer
+            vectorizer_changed = (new_vectorizer_name is not None or new_vectorizer_config is not None)
+            if vectorizer_changed:
+                effective_vectorizer_name = new_vectorizer_name if new_vectorizer_name is not None else self.vectorizer_name
+                effective_vectorizer_config = new_vectorizer_config if new_vectorizer_config is not None else self.vectorizer_config
+                ASCIIColors.info(f"Initializing new vectorizer '{effective_vectorizer_name}'...")
+                new_vectorizer = self.vectorizer_manager.get_vectorizer(
+                    effective_vectorizer_name, effective_vectorizer_config
+                )
+            else:
+                effective_vectorizer_name = self.vectorizer_name
+                effective_vectorizer_config = self.vectorizer_config
+                new_vectorizer = self.vectorizer
+
+            # 4. Resolve tokenizer for chunking
+            tokenizer_for_chunking = None
+            if str(effective_chunking_strategy).lower() in ('token', 'paragraph', 'semantic', 'recursive'):
+                tokenizer_for_chunking = new_vectorizer.get_tokenizer()
+                if tokenizer_for_chunking is None:
+                    if self.custom_tokenizer is not None:
+                        tokenizer_for_chunking = get_tokenizer(self.custom_tokenizer)
+                    else:
+                        tokenizer_for_chunking = get_tokenizer({"name": "tiktoken", "model": "cl100k_base"})
+
+            # 5. Fetch all documents
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT doc_id, file_path, metadata, is_encrypted FROM documents ORDER BY doc_id ASC")
+            all_docs = cursor.fetchall()
+
+            if not all_docs:
+                ASCIIColors.warning("No documents found in the database to rechunk.")
+                return {"documents_processed": 0, "chunks_created": 0}
+
+            ASCIIColors.info(f"Reconstructing {len(all_docs)} documents before rechunking...")
+
+            # 6. Reconstruct all documents BEFORE deleting anything
+            reconstructed_docs = []
+            for doc_id, path_bytes, meta_bytes, is_enc in all_docs:
+                full_text = self.reconstruct_document_text(doc_id)
+                if full_text is None:
+                    ASCIIColors.warning(f"Could not reconstruct document {doc_id}, skipping.")
+                    continue
+
+                meta_dict = None
+                if meta_bytes:
+                    decrypted_meta = self._decrypt_payload(meta_bytes, bool(is_enc), "Encrypted Metadata")
+                    if decrypted_meta:
+                        try:
+                            meta_dict = json.loads(decrypted_meta)
+                        except Exception:
+                            meta_dict = None
+
+                reconstructed_docs.append({
+                    "doc_id": doc_id,
+                    "file_path": path_bytes.decode('utf-8', errors='ignore'),
+                    "full_text": full_text,
+                    "metadata": meta_dict,
+                })
+
+            if not reconstructed_docs:
+                ASCIIColors.warning("No documents could be reconstructed.")
+                return {"documents_processed": 0, "chunks_created": 0}
+
+            # 7. Clear existing chunks and vectors (keep documents)
+            try:
+                self.conn.execute("BEGIN")
+                self.conn.execute("DELETE FROM vectors")
+                self.conn.execute("DELETE FROM chunks")
+                try:
+                    self.conn.execute("DELETE FROM chunks_fts")
+                except Exception:
+                    pass
+                self.conn.commit()
+            except Exception as e:
+                if self.conn.in_transaction:
+                    self.conn.rollback()
+                raise SafeStoreError(f"Failed to clear existing chunks: {e}") from e
+
+            # 8. Re-chunk and re-vectorize each document
+            total_chunks = 0
+            processed_docs = 0
+            failed_docs = 0
+
+            for doc_info in reconstructed_docs:
+                doc_id = doc_info["doc_id"]
+                full_text = doc_info["full_text"]
+                metadata = doc_info["metadata"]
+
+                if not full_text or not full_text.strip():
+                    continue
+
+                try:
+                    cleaned_text = self.text_cleaner(full_text)
+
+                    raw_chunks_data = chunking.generate_chunks(
+                        text=cleaned_text,
+                        strategy=effective_chunking_strategy,
+                        chunk_size=effective_chunk_size,
+                        chunk_overlap=effective_chunk_overlap,
+                        expand_before=self.expand_before,
+                        expand_after=self.expand_after,
+                        tokenizer=tokenizer_for_chunking,
+                        vectorizer_fn=new_vectorizer.vectorize if str(effective_chunking_strategy).lower() == 'semantic' else None,
+                        **self.chunking_kwargs
+                    )
+
+                    valid_chunks = [c for c in raw_chunks_data if c[0] and c[0].strip()]
+                    if not valid_chunks:
+                        continue
+
+                    vector_texts = [c[0] for c in valid_chunks]
+                    storage_texts = [c[1] for c in valid_chunks]
+
+                    if effective_vectorize_with_metadata and metadata:
+                        metadata_string = "--- Document Context ---\n" + "\n".join(
+                            f"{str(k).title()}: {str(v)}" for k, v in metadata.items()
+                        ) + "\n------------------------\n\n"
+                        vector_texts = [metadata_string + t for t in vector_texts]
+
+                    if hasattr(new_vectorizer, 'fit') and hasattr(new_vectorizer, '_fitted') and not new_vectorizer._fitted:
+                        new_vectorizer.fit(vector_texts)
+
+                    vectors = []
+                    for i in range(0, len(vector_texts), batch_size):
+                        batch = vector_texts[i:i + batch_size]
+                        batch_vecs = new_vectorizer.vectorize(batch)
+                        vectors.extend(batch_vecs)
+
+                    if len(vectors) != len(valid_chunks):
+                        raise VectorizationError(
+                            f"Vectorizer returned {len(vectors)} vectors, expected {len(valid_chunks)}."
+                        )
+
+                    # Optional parsed metadata enrichment
+                    parsed_parser = None
+                    if metadata_mode is not None and DocMetadataMode.resolve(metadata_mode) is DocMetadataMode.PARSED:
+                        try:
+                            parsed_parser = chunking.build_metadata_parser(cleaned_text, doc_info["file_path"])
+                        except Exception as e:
+                            ASCIIColors.warning(f"Parsed metadata extraction failed for doc {doc_id}: {e}")
+
+                    if not self.conn.in_transaction:
+                        self.conn.execute("BEGIN")
+
+                    find_cursor = 0
+                    for i, storage_text in enumerate(storage_texts):
+                        chunk_tags = None
+                        if parsed_parser is not None and not self.encryptor.is_enabled:
+                            start = cleaned_text.find(storage_text, find_cursor)
+                            if start == -1:
+                                start = cleaned_text.find(storage_text)
+                            if start != -1:
+                                find_cursor = start + len(storage_text)
+                                chunk_meta = parsed_parser.enrich(start, start + len(storage_text))
+                                chunk_tags = json.dumps({"_metadata": chunk_meta})
+
+                        t_store = self.encryptor.encrypt(storage_text) if self.encryptor.is_enabled else storage_text
+                        cid = db.add_chunk_record(
+                            self.conn, doc_id, t_store, 0, 0, i,
+                            tags=chunk_tags, is_encrypted=self.encryptor.is_enabled
+                        )
+                        db.add_vector_record(
+                            self.conn, cid,
+                            np.ascontiguousarray(vectors[i], dtype=new_vectorizer.dtype)
+                        )
+
+                    self.conn.commit()
+                    total_chunks += len(valid_chunks)
+                    processed_docs += 1
+
+                except Exception as e:
+                    if self.conn.in_transaction:
+                        self.conn.rollback()
+                    ASCIIColors.error(f"Failed to rechunk document {doc_id}: {e}")
+                    failed_docs += 1
+                    continue
+
+            # 9. Update store config and vectorizer info atomically
+            try:
+                self.conn.execute("BEGIN")
+
+                if vectorizer_changed:
+                    unique_name = self.vectorizer_manager._create_unique_name(
+                        effective_vectorizer_name, effective_vectorizer_config
+                    )
+                    vectorizer_info = {
+                        "unique_name": unique_name,
+                        "name": effective_vectorizer_name,
+                        "vectorizer_name": effective_vectorizer_name,
+                        "vectorizer_config": effective_vectorizer_config,
+                        "dim": new_vectorizer.dim,
+                        "dtype": new_vectorizer.dtype.name,
+                    }
+                    db.set_store_metadata(self.conn, "vectorizer_info", json.dumps(vectorizer_info))
+
+                raw_store_config = db.get_store_metadata(self.conn, "store_config")
+                store_config = json.loads(raw_store_config) if raw_store_config else {}
+                store_config['chunk_size'] = effective_chunk_size
+                store_config['chunk_overlap'] = effective_chunk_overlap
+                store_config['chunking_strategy'] = effective_chunking_strategy
+                if vectorizer_changed:
+                    store_config['vectorizer_name'] = effective_vectorizer_name
+                    store_config['vectorizer_config'] = effective_vectorizer_config
+                db.set_store_metadata(self.conn, "store_config", json.dumps(store_config))
+
+                self.clear_datalake_cache()
+                self.conn.commit()
+            except Exception as e:
+                if self.conn.in_transaction:
+                    self.conn.rollback()
+                raise SafeStoreError(f"Failed to update store config: {e}") from e
+
+            # 10. Update instance state
+            self.chunk_size = effective_chunk_size
+            self.chunk_overlap = effective_chunk_overlap
+            self.chunking_strategy = effective_chunking_strategy
+            if vectorizer_changed:
+                self.vectorizer_name = effective_vectorizer_name
+                self.vectorizer_config = effective_vectorizer_config
+                self.vectorizer = new_vectorizer
+                self.tokenizer_for_chunking = tokenizer_for_chunking
+
+            ASCIIColors.success(
+                f"Rechunked and re-vectorized {processed_docs} documents into {total_chunks} chunks."
+                + (f" ({failed_docs} failed)" if failed_docs else "")
+            )
+
+            return {
+                "documents_processed": processed_docs,
+                "documents_failed": failed_docs,
+                "chunks_created": total_chunks,
+                "chunk_size": effective_chunk_size,
+                "chunk_overlap": effective_chunk_overlap,
+                "chunking_strategy": effective_chunking_strategy,
+                "vectorizer_name": effective_vectorizer_name,
+            }
 
     def export_database(self, output_path: Union[str, Path], decrypt: bool = False) -> None:
         """
