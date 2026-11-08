@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 import numpy as np
 
@@ -11,16 +12,61 @@ def strip_metadata_header(text: str) -> str:
     return re.sub(pattern, '', text, flags=re.DOTALL)
 
 
-def format_metadata_header(metadata: Optional[Dict[str, Any]]) -> str:
-    """Formats a single standardized metadata header block."""
-    if not metadata or not isinstance(metadata, dict):
+def extract_document_head_snippet(full_text: Optional[str], max_chars: int = 500) -> str:
+    """
+    Returns a small, single-line-normalized snapshot from the start of a document.
+    Used to give the LLM a title / authors / abstract hint when no structured
+    metadata is available — purely LLM-less, purely heuristic.
+    """
+    if not full_text:
         return ""
-    clean_items = {k: v for k, v in metadata.items() if k not in ("error", "raw") and v is not None}
-    if not clean_items:
+    head = full_text.lstrip()[:max_chars]
+    # Collapse runs of whitespace so the header stays a compact preview
+    head = re.sub(r'\s+', ' ', head).strip()
+    return head
+
+
+def format_metadata_header(
+    metadata: Optional[Dict[str, Any]],
+    document_title: Optional[str] = None,
+    file_path: Optional[str] = None,
+    head_snippet: Optional[str] = None,
+) -> str:
+    """
+    Formats a single standardized metadata header block.
+
+    Guarantees a header whenever `document_title` or `file_path` is supplied —
+    even when no structured metadata exists. This is critical when documents
+    are ingested without `metadata=` and the caller still needs provenance.
+    """
+    clean_items = {}
+    if isinstance(metadata, dict):
+        clean_items = {
+            k: v for k, v in metadata.items()
+            if k not in ("error", "raw") and v is not None
+        }
+
+    title = document_title
+    if not title and clean_items.get("title"):
+        title = str(clean_items["title"])
+    path = file_path or clean_items.get("path")
+
+    # If we truly have nothing to say, emit no header at all (caller may prefer empty)
+    if not title and not path and not clean_items and not head_snippet:
         return ""
-    lines = ["--- Document Context ---"]
+
+    lines = []
+    if title:
+        lines.append(f"--- Document: {title} ---")
+    if path:
+        lines.append(f"Path: {path}")
+    # Include any explicit metadata keys (title/path already rendered above)
     for k, v in clean_items.items():
+        if k in ("title", "path") and str(v) == str(title or path):
+            continue
         lines.append(f"{str(k).title()}: {str(v)}")
+    if head_snippet:
+        lines.append(f"Head: {head_snippet}")
     lines.append("------------------------\n\n")
     return "\n".join(lines)
 
@@ -197,7 +243,24 @@ def reconstruct_document_chunks(
 
     # Extract document-level metadata and top scores
     metadata = sorted_chunks[0].get("document_metadata")
-    metadata_header = format_metadata_header(metadata) if add_metadata else ""
+    file_path = sorted_chunks[0].get("file_path", "")
+    document_title = (
+        sorted_chunks[0].get("document_title")
+        or sorted_chunks[0].get("metadata_title")
+        or (Path(file_path).name if file_path else None)
+    )
+    # If the full document text is available, take a short head snapshot to
+    # surface title / authors / abstract even when no structured metadata exists.
+    head_snippet = extract_document_head_snippet(full_document_text)
+
+    metadata_header = (
+        format_metadata_header(
+            metadata,
+            document_title=document_title,
+            file_path=file_path,
+            head_snippet=head_snippet,
+        ) if add_metadata else ""
+    )
 
     final_chunk_text = f"{metadata_header}{reconstructed_body}".strip()
 
@@ -212,8 +275,9 @@ def reconstruct_document_chunks(
 
     result_payload = {
         "doc_id": sorted_chunks[0].get("doc_id"),
-        "file_path": sorted_chunks[0].get("file_path", ""),
-        "document_title": sorted_chunks[0].get("document_title") or sorted_chunks[0].get("file_path", "").split("/")[-1].split("\\")[-1],
+        "file_path": file_path,
+        "document_title": document_title or file_path.split("/")[-1].split("\\")[-1],
+        "head_snippet": head_snippet,
         "chunk_text": final_chunk_text,
         "chunk_id": best_chunk.get("chunk_id"),
         "fused_chunk_ids": all_chunk_ids,

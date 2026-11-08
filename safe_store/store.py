@@ -1115,6 +1115,16 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
             if vectorize_with_metadata and metadata:
                 metadata_string = "--- Document Context ---\n" + "\n".join(f"{str(k).title()}: {str(v)}" for k, v in metadata.items()) + "\n------------------------\n\n"
                 vector_texts = [metadata_string + text for text in vector_texts]
+            elif vectorize_with_metadata:
+                # No document metadata supplied: warn once so operators know that
+                # query results will carry only the filename header (not doc-level
+                # metadata). Use `metadata_mode="parsed"` or an explicit `metadata=`
+                # dict to enrich chunks.
+                ASCIIColors.warning(
+                    f"Document '{filename_for_log}' is being indexed without `metadata=`. "
+                    f"Query results will only expose its filename header. "
+                    f"Pass `metadata={{...}}` or `metadata_mode='parsed'` to add context."
+                )
 
             if hasattr(self.vectorizer, 'fit') and hasattr(self.vectorizer, '_fitted') and not self.vectorizer._fitted:
                 if self.vectorizer_name in ['tf_idf', 'tfidf']:
@@ -1209,8 +1219,9 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
         top_k: int = 5,
         min_relevance_percent: float = 0.0,
         min_similarity_percent: Optional[float] = None,
-        reconstruct_overlapping_chunks: bool = False,
+        reconstruct_overlapping_chunks: bool = True,
         add_metadata: bool = True,
+        group_by_document: bool = False,
         **kwargs
     ) -> List[Dict[str, Any]]:
         """
@@ -1218,9 +1229,18 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
         Every result contains a standardized 0-100 grade (relevance_score & similarity_percent).
         Results below min_relevance_percent are excluded.
         If reconstruct_overlapping_chunks is True, overlapping chunks are fused in chronological order.
+        If group_by_document is True, chunks are aggregated into one entry per document
+        (see `group_results_by_document`); each document's `relevance_score` equals the
+        maximum chunk relevance for backward compatibility.
         """
         should_reconstruct = reconstruct_overlapping_chunks or kwargs.get('reconstruct_chunks', False)
+        should_group = group_by_document or kwargs.get('group_by_document', False)
         threshold = min_similarity_percent if min_similarity_percent is not None else min_relevance_percent
+
+        # When grouping, `top_k` is a document budget, not a chunk budget.
+        # Over-fetch chunks so multiple distinct documents survive the top-K cuts.
+        chunk_fetch_k = self._resolve_chunk_fetch_k(top_k) if should_group else top_k
+
         with self._instance_lock:
             ASCIIColors.info(f"Received query. Searching with '{self.vectorizer_name}', top_k={top_k}, threshold={threshold}%")
 
@@ -1228,7 +1248,10 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
             assert self.conn and self.vectorizer is not None
             custom_search = getattr(self.vectorizer, 'custom_search', None)
             if callable(custom_search):
-                return custom_search(self.conn, query_text, top_k, threshold)
+                raw_hits = custom_search(self.conn, query_text, chunk_fetch_k, threshold)
+                if should_group:
+                    return self.group_results_by_document(raw_hits, top_k_docs=top_k if top_k > 0 else None)
+                return raw_hits
 
             query_vector = self.vectorizer.vectorize([query_text])[0]
 
@@ -1256,7 +1279,7 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
             grades_passing = percent_grades[pass_mask]
             chunk_ids_passing = np.array(chunk_ids)[pass_mask]
 
-            k = min(top_k, len(scores_passing)) if top_k > 0 else len(scores_passing)
+            k = min(chunk_fetch_k, len(scores_passing)) if chunk_fetch_k > 0 else len(scores_passing)
             top_indices = np.argsort(grades_passing)[::-1][:k]
             top_chunk_ids = chunk_ids_passing[top_indices]
             top_scores = scores_passing[top_indices]
@@ -1270,7 +1293,7 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                     SELECT c.chunk_id, c.chunk_text, c.start_pos, c.end_pos,
                            c.is_encrypted AS chunk_is_encrypted, d.file_path,
                            d.metadata AS doc_metadata, d.is_encrypted AS doc_is_encrypted,
-                           c.doc_id, c.chunk_seq
+                           c.doc_id, c.chunk_seq, c.tags AS chunk_tags
                     FROM chunks c JOIN documents d ON c.doc_id = d.doc_id
                     WHERE c.chunk_id IN ({placeholders})
                 """
@@ -1282,7 +1305,9 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                 self.conn.text_factory = original_factory
 
             for row in details_raw:
-                chunk_id, chunk_text_data, start, end, chunk_is_enc, path, doc_meta_data, doc_is_enc, doc_id, chunk_seq = row
+                chunk_id, chunk_text_data, start, end, chunk_is_enc, path, doc_meta_data, doc_is_enc, doc_id, chunk_seq, chunk_tags_data = row
+
+                chunk_tags_str: Optional[str] = chunk_tags_data.decode('utf-8') if chunk_tags_data else None
                 
                 chunk_text: str
                 if chunk_is_enc:
@@ -1309,9 +1334,19 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                         try: meta_dict = json.loads(meta_json_str)
                         except json.JSONDecodeError: meta_dict = {"error": "Could not parse metadata JSON"}
                 
-                if isinstance(meta_dict, dict) and "error" not in meta_dict:
-                    doc_metadata_text += "--- Document Context ---\n"
+                # Always emit a minimal document header so callers (and RAG prompts)
+                # never receive a chunk stripped of its provenance. When doc-level
+                # metadata is absent (e.g. ingested without `metadata=`), fall back
+                # to the filename so the chunk still identifies its source.
+                file_path_str = path.decode('utf-8')
+                if isinstance(meta_dict, dict) and "error" not in meta_dict and meta_dict:
+                    doc_metadata_text += f"--- Document: {Path(file_path_str).name} ---\n"
+                    doc_metadata_text += f"Path: {file_path_str}\n"
                     for kd, vd in meta_dict.items(): doc_metadata_text += f"{str(kd).title()}: {str(vd)}\n"
+                    doc_metadata_text += "------------------------\n\n"
+                elif file_path_str:
+                    doc_metadata_text += f"--- Document: {Path(file_path_str).name} ---\n"
+                    doc_metadata_text += f"Path: {file_path_str}\n"
                     doc_metadata_text += "------------------------\n\n"
 
                 details_map[chunk_id] = {
@@ -1320,7 +1355,8 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                     "chunk_seq": int(chunk_seq),
                     "raw_chunk_text": chunk_text,
                     "chunk_text": doc_metadata_text + chunk_text, "start_pos": start, "end_pos": end,
-                    "file_path": path.decode('utf-8'), "document_metadata": meta_dict
+                    "file_path": file_path_str, "document_metadata": meta_dict,
+                    "chunk_tags": chunk_tags_str
                 }
             
             ordered_results = []
@@ -1339,6 +1375,8 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                 })
                 ordered_results.append(res)
 
+            if should_group:
+                return self.group_results_by_document(ordered_results, top_k_docs=top_k if top_k > 0 else None)
             if should_reconstruct:
                 return self.reconstruct_overlapping_chunks(ordered_results, add_metadata=add_metadata)
             return ordered_results
@@ -1354,39 +1392,275 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
         min_similarity_percent: Optional[float] = None,
         reconstruct_overlapping_chunks: bool = False,
         add_metadata: bool = True,
+        group_by_document: bool = False,
         **kwargs
     ) -> List[Dict[str, Any]]:
         """
         Executes a Tri-Modal Hybrid query combining Dense Vector search and Sparse BM25 lexical search via RRF.
         Standardizes relevance onto a 0-100 grade and filters out results below the threshold.
+        If group_by_document is True, chunks are aggregated into one entry per document.
         """
         threshold = min_similarity_percent if min_similarity_percent is not None else min_relevance_percent
         with self._instance_lock:
             self._ensure_connection()
             assert self.conn is not None
 
+            should_reconstruct = reconstruct_overlapping_chunks or kwargs.get('reconstruct_chunks', False)
+            should_group = group_by_document or kwargs.get('group_by_document', False)
+
+            # When grouping, `top_k` is a document budget. Over-fetch chunks so
+            # we still return `top_k` distinct documents after aggregation.
+            if should_group:
+                chunk_fetch_k = self._resolve_chunk_fetch_k(top_k)
+            elif should_reconstruct:
+                chunk_fetch_k = top_k * 3
+            else:
+                chunk_fetch_k = top_k * 3
+
             # 1. Fetch Dense Vector Results (without early false-cutoff)
-            dense_results = self.query(query_text, top_k=top_k * 3, min_relevance_percent=0.0)
+            dense_results = self.query(query_text, top_k=chunk_fetch_k, min_relevance_percent=0.0)
 
             # 2. Fetch BM25 Lexical Results
             bm25_retriever = BM25Retriever(self.conn)
-            bm25_results = bm25_retriever.search(query_text, top_k=top_k * 3, min_relevance_percent=0.0)
+            bm25_results = bm25_retriever.search(query_text, top_k=chunk_fetch_k, min_relevance_percent=0.0)
 
             # 3. Fuse Results with Score-Calibrated Reciprocal Rank Fusion
-            should_reconstruct = reconstruct_overlapping_chunks or kwargs.get('reconstruct_chunks', False)
-
             fused = reciprocal_rank_fusion(
                 ranked_lists=[dense_results, bm25_results],
                 weights=[dense_weight, bm25_weight],
                 k=rrf_k,
-                top_k=top_k if not should_reconstruct else top_k * 2,
+                top_k=chunk_fetch_k,
                 min_relevance_percent=threshold
             )
 
+            if should_group:
+                return self.group_results_by_document(fused, top_k_docs=top_k if top_k > 0 else None)
             if should_reconstruct:
                 reconstructed = self.reconstruct_overlapping_chunks(fused, add_metadata=add_metadata)
                 return reconstructed[:top_k]
             return fused
+
+    @staticmethod
+    def _resolve_chunk_fetch_k(top_k_docs: int, minimum_fetch: int = 100, multiplier: int = 20) -> int:
+        """
+        Translates a document-level `top_k` budget into a chunk-level retrieval cap.
+
+        When grouping, we need enough chunk candidates to guarantee we can surface
+        `top_k_docs` DISTINCT documents even if the top chunks clump onto one file.
+        The heuristic: fetch `max(minimum_fetch, top_k_docs * multiplier)` chunks.
+        A `top_k_docs <= 0` means "all documents", signalled by returning 0
+        (the downstream query interprets 0 as "no cap").
+        """
+        if top_k_docs <= 0:
+            return 0
+        return max(minimum_fetch, top_k_docs * multiplier)
+
+    @staticmethod
+    def _extract_document_head_snippet(full_text: Optional[str], max_chars: int = 500) -> str:
+        """
+        Returns a compact, single-line snapshot of the first `max_chars` of a document.
+        Used to hint title / authors / abstract to callers when structured metadata
+        was never indexed for the document (LLM-less fallback).
+        """
+        if not full_text:
+            return ""
+        import re as _re
+        head = full_text.lstrip()[:max_chars]
+        return _re.sub(r'\s+', ' ', head).strip()
+
+    @staticmethod
+    def _parse_chunk_level_metadata(chunk_tags: Optional[str]) -> Optional[Dict[str, Any]]:
+        """
+        Extracts PARSED-mode breadcrumb metadata (`_metadata`) from a chunk's `tags` column.
+
+        The `tags` field may hold:
+        - `None` / empty → returns `None`.
+        - A plain comma-separated tag string (e.g. `"foo,bar"`) → returns `None`.
+        - A JSON envelope `{"_metadata": {...}, "_tags": [...]}` written by
+          `DocMetadataMode.PARSED` → returns the inner dict (title / authors /
+          abstract / path / chapter / section / subsection …).
+
+        Tolerant by design: any malformed input is silently ignored so a legacy
+        plain tag string never breaks metadata extraction.
+        """
+        if not chunk_tags:
+            return None
+        try:
+            envelope = json.loads(chunk_tags)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+        if not isinstance(envelope, dict):
+            return None
+        inner = envelope.get("_metadata")
+        return inner if isinstance(inner, dict) and inner else None
+
+    def group_results_by_document(
+        self,
+        results: List[Dict[str, Any]],
+        top_k_docs: Optional[int] = None,
+        gap_marker: str = "... (hidden content) ..."
+    ) -> List[Dict[str, Any]]:
+        """
+        Aggregates a flat list of chunk-level query hits into one entry per document.
+
+        Each returned document contains:
+        - document_title / file_path / doc_id / document_metadata
+        - relevance_score: MAX(chunk relevance) → backward compatible with chunk-level code
+        - chunks_found: number of chunks matched for this document
+        - chunks: [{"chunk_id", "chunk_seq", "relevance_score", "chunk_text"}, ...] sorted by chunk_seq
+        - chunk_text: combined text of matched chunks ordered by chunk_seq, non-contiguous
+          gaps replaced with `gap_marker`
+        - chunk_seqs: seq list for compatibility with reconstruct_overlapping_chunks output
+        - chunk_id / similarity_score / similarity_percent: mirror the top-scoring chunk
+          so single-document callers stay drop-in compatible
+        - rag_context: ready-to-paste LLM block (title + metadata + fused text)
+
+        Parameters
+        ----------
+        results : list of chunk-level hits (output of query / hybrid_query / bm25 search)
+        top_k_docs : optional cap on the number of documents returned
+        gap_marker : string inserted between non-contiguous chunk sequences
+        """
+        if not results:
+            return []
+
+        grouped: Dict[int, List[Dict[str, Any]]] = {}
+        for hit in results:
+            doc_id = hit.get("doc_id")
+            if doc_id is None:
+                continue
+            grouped.setdefault(int(doc_id), []).append(hit)
+
+        if not grouped:
+            return []
+
+        def _rel(h: Dict[str, Any]) -> float:
+            return float(h.get("relevance_score", h.get("similarity_percent", 0.0)))
+
+        documents: List[Dict[str, Any]] = []
+        for doc_id, hits in grouped.items():
+            # Best chunk first, so the representative header mirrors the top hit
+            hits_sorted_by_rel = sorted(hits, key=_rel, reverse=True)
+            top_hit = hits_sorted_by_rel[0]
+
+            # Sort chronologically for stitched text / RAG context
+            hits_chrono = sorted(hits, key=lambda h: int(h.get("chunk_seq", 0)))
+
+            file_path = top_hit.get("file_path", "")
+            document_title = Path(file_path).name if file_path else f"Document {doc_id}"
+            doc_metadata = top_hit.get("document_metadata")
+
+            # Merge doc-level metadata (documents.metadata column) with
+            # PARSED-mode chunk-level breadcrumbs (chunks.tags._metadata).
+            # Doc-level always wins on conflicts; chunk-level fills the gaps.
+            merged_metadata: Dict[str, Any] = {}
+            if isinstance(doc_metadata, dict) and doc_metadata and "error" not in doc_metadata:
+                merged_metadata.update(doc_metadata)
+            # Look across all hits (top first) for chunk-level metadata; typically
+            # every chunk carries the same doc-wide title/authors/abstract.
+            for cand in [top_hit] + [h for h in hits_chrono if h is not top_hit]:
+                cm = self._parse_chunk_level_metadata(cand.get("chunk_tags"))
+                if cm:
+                    for key in ("title", "authors", "abstract", "path"):
+                        if key in cm and key not in merged_metadata:
+                            merged_metadata[key] = cm[key]
+                    break
+
+            combined_parts: List[str] = []
+            prev_seq: Optional[int] = None
+            chunk_entries: List[Dict[str, Any]] = []
+            for h in hits_chrono:
+                seq = int(h.get("chunk_seq", 0))
+                if prev_seq is not None and seq > prev_seq + 1:
+                    combined_parts.append(gap_marker)
+                # Prefer raw text: query() prepends metadata header into chunk_text,
+                # but for a grouped document we synthesize our own unified header.
+                text = h.get("raw_chunk_text")
+                if text is None:
+                    text = h.get("chunk_text", "")
+                combined_parts.append(text)
+                prev_seq = seq
+                chunk_entries.append({
+                    "chunk_id": int(h.get("chunk_id", -1)),
+                    "chunk_seq": seq,
+                    "relevance_score": round(_rel(h), 2),
+                    "chunk_text": text,
+                    "metadata": self._parse_chunk_level_metadata(h.get("chunk_tags")),
+                    "chunk_tags": h.get("chunk_tags"),
+                })
+
+            combined_text = "\n".join(combined_parts)
+            chunks_found = len(hits_chrono)
+            max_rel = round(_rel(top_hit), 2)
+
+            # Unified metadata header for the document.
+            # Falls back to a head-of-document snapshot when no structured
+            # metadata is available, so callers always get a schematic preview.
+            head_snippet = ""
+            try:
+                full_text = self.reconstruct_document_text(doc_id)
+                head_snippet = self._extract_document_head_snippet(full_text)
+            except Exception:
+                head_snippet = ""
+
+            header_parts: List[str] = [f"--- Document: {document_title} ---"]
+            if file_path:
+                header_parts.append(f"Path: {file_path}")
+            if merged_metadata:
+                for kd, vd in merged_metadata.items():
+                    header_parts.append(f"{str(kd).title()}: {str(vd)}")
+            if head_snippet:
+                header_parts.append(f"Head: {head_snippet}")
+            header_parts.append(f"Matched Chunks: {chunks_found}")
+            header_parts.append("-" * 24 + "\n")
+            header = "\n".join(header_parts)
+
+            # Backward-compatible singleton fields
+            sim_score = float(top_hit.get("similarity_score", 0.0))
+
+            documents.append({
+                "doc_id": doc_id,
+                "file_path": file_path,
+                "document_title": document_title,
+                "metadata_title": merged_metadata.get("title"),
+                "head_snippet": head_snippet,
+                # Merged doc-level + PARSED chunk-level metadata (empty dict → None)
+                "document_metadata": merged_metadata if merged_metadata else doc_metadata,
+                # Backward compatible: does not distinguish doc-level from chunk-level
+                "relevance_score": max_rel,
+                "similarity_percent": max_rel,
+                "similarity_score": sim_score,
+                # Preserve top chunk's identity for legacy callers
+                "chunk_id": chunk_entries[0]["chunk_id"] if chunk_entries else -1,
+                "chunk_seq": chunk_entries[0]["chunk_seq"] if chunk_entries else 0,
+                # Document-level aggregation
+                "chunks_found": chunks_found,
+                "chunks": chunk_entries,
+                "chunk_seqs": [c["chunk_seq"] for c in chunk_entries],
+                "chunk_text": header + combined_text,
+                "combined_text": combined_text,
+                "rag_context": header + combined_text,
+            })
+
+        # Deterministic: highest relevance first, then doc_id as tie-breaker
+        documents.sort(key=lambda d: (-d["relevance_score"], d["doc_id"]))
+        if top_k_docs is not None and top_k_docs > 0:
+            documents = documents[:top_k_docs]
+        return documents
+
+    def query_grouped(self, query_text: str, top_k_docs: int = 3, **kwargs) -> List[Dict[str, Any]]:
+        """
+        Convenience wrapper for `query(..., group_by_document=True)`.
+        `top_k_docs` is a DOCUMENT budget, not a chunk budget.
+        """
+        return self.query(query_text, top_k=top_k_docs, group_by_document=True, **kwargs)
+
+    def hybrid_query_grouped(self, query_text: str, top_k_docs: int = 3, **kwargs) -> List[Dict[str, Any]]:
+        """
+        Convenience wrapper for `hybrid_query(..., group_by_document=True)`.
+        `top_k_docs` is a DOCUMENT budget, not a chunk budget.
+        """
+        return self.hybrid_query(query_text, top_k=top_k_docs, group_by_document=True, **kwargs)
 
     def get_vectorization_details(self) -> Optional[Dict[str, Any]]:
          with self._instance_lock:

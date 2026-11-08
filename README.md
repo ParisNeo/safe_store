@@ -112,7 +112,138 @@ store = safe_store.SafeStore("knowledge.db")
 store.info()
 
 # 2. Or retrieve structured dictionary for APIs and dashboards
+db_info = store.get_database_info()
+print(f"Total Docs: {db_info['documents']['total_documents']}")
 ```
+
+---
+
+### 0.2 Document-Level Query Aggregation (`group_by_document=True`)
+
+In classic chunk retrieval, a single query that matches several passages of the same document returns **multiple rows for the same file**. The caller then has to re-group, sort, dedupe, and fuse them before sending context to an LLM.
+
+`safe_store` collapses this for you: pass `group_by_document=True` and every result row becomes **one entry per document**, containing:
+
+- a **unified metadata header** (filename, path, document metadata);
+- the matched chunks **ordered by `chunk_seq`**, with non-contiguous spans bridged by `... (hidden content) ...`;
+- a **`chunks_found`** counter;
+- a compact **`chunks`** list with each chunk's `chunk_id`, `chunk_seq`, and `relevance_score`;
+- a **`relevance_score`** equal to `max(chunk relevance)` — so legacy callers that read `results[0]['relevance_score']` on a chunk-level result keep working unchanged (one document behaves like its best-matching chunk).
+
+#### Usage
+
+```python
+import safe_store
+
+store = safe_store.SafeStore("docs.db")
+
+# Dense
+docs = store.query(
+    "how to configure TLS and reload supervisor",
+    top_k=3,
+    group_by_document=True,
+)
+
+# Hybrid (dense + BM25 + RRF)
+docs = store.hybrid_query(
+    "ERR-4091 supervisor daemon restart",
+    top_k=3,
+    group_by_document=True,
+)
+
+for doc in docs:
+    print(f"{doc['document_title']}  (relevance: {doc['relevance_score']:.1f}%)")
+    print(f"Matched chunks: {doc['chunks_found']}  -> seq {doc['chunk_seqs']}")
+    for c in doc["chunks"]:
+        print(f"  • chunk_seq={c['chunk_seq']:>3}  id={c['chunk_id']:>5}  rel={c['relevance_score']:.1f}%")
+    print(doc["rag_context"][:200], "...\n")
+```
+
+#### Re-group any existing result list
+
+You can also apply grouping retroactively to any chunk-level result list (e.g. produced by `bm25.search(...)` or `query()` without the flag):
+
+```python
+raw_hits = store.query("tls certificates", top_k=20)
+grouped  = store.group_results_by_document(raw_hits, top_k_docs=3)
+```
+
+#### Output schema (per document)
+
+| Key | Type | Description |
+|:---|:---|:---|
+| `doc_id` | `int` | Document identifier. |
+| `file_path` | `str` | Full path of the source document. |
+| `document_title` | `str` | `Path(file_path).name`. |
+| `document_metadata` | `dict \| None` | Document-level metadata (LLM-synthesized, `PARSED`-extracted, or `None`). |
+| `relevance_score` | `float` | **`max(chunk_relevance)`** — backward-compatible drop-in for legacy code. |
+| `similarity_percent` | `float` | Alias of `relevance_score` (kept for compatibility). |
+| `similarity_score` | `float` | Raw cosine score of the top-scoring chunk. |
+| `chunks_found` | `int` | Number of matched chunks in this document. |
+| `chunks` | `list[dict]` | Ordered by `chunk_seq`; each entry has `chunk_id`, `chunk_seq`, `relevance_score`, `chunk_text`. |
+| `chunk_seqs` | `list[int]` | Convenience `[c['chunk_seq'] for c in chunks]`. |
+| `chunk_text` | `str` | **Unified header + fused content** — non-contiguous spans separated by `... (hidden content) ...`. |
+| `combined_text` | `str` | Fused content only (no header). |
+| `rag_context` | `str` | Alias of `chunk_text` — ready to paste into an LLM prompt. |
+| `head_snippet` | `str` | **First ~500 chars of the document**, whitespace-collapsed — LLM-less title/authors/abstract hint (see below). |
+| `metadata_title` | `str \| None` | Shortcut for `document_metadata.get("title")` when present. |
+| `chunk_id` / `chunk_seq` | `int` | Identity of the top-scoring chunk (legacy compatibility). |
+
+#### Guaranteed Header & Head Snippet Fallback
+
+Every grouped document **always** carries a `--- Document: ... ---` header — even when the document was indexed **without `metadata=`**. This makes chunk/documents self-describing out of the box, so downstream UIs and RAG prompts never receive a bare body of text with no provenance.
+
+The header is assembled from three independent sources, in this priority order:
+
+| Priority | Source | When present | Emitted as |
+|:---:|:---|:---|:---|
+| 1 | **Document-level metadata** (`documents.metadata` column) | `store.add_document(..., metadata={...})` | header + `Title:`, `Authors:` etc. lines |
+| 2 | **PARSED chunk-level metadata** (`chunks.tags._metadata`) | `store.add_document(..., metadata_mode="parsed")` | merged into the same header (`title`, `authors`, `abstract`, `path`) |
+| 3 | **Filename + path** (always available) | any indexed document | `--- Document: <filename> ---` + `Path: ...` |
+| ★ | **Head snippet** (top of document) | any document with stored `full_text` | `Head: <first 500 chars> ...` |
+
+The **head snippet** is *purely heuristic and LLM-less*: it takes the first ~500 characters of the document, collapses runs of whitespace to a single line, and injects it into the header. This lets most scientific / technical documents surface their **title, authors, and abstract** even when no structured metadata exists — zero LLM calls, zero indexing cost.
+
+Example output for a document indexed with no metadata:
+
+```
+--- Document: SXX-1_V2_GHZ_RF_front-end_circuits_in_CMOS_SIMOX.pdf ---
+Path: \\fileserver\papers\SXX-1_V2_GHZ_RF_front-end_circuits_in_CMOS_SIMOX.pdf
+Head: 0.5-1V 2GHz RF Front-End Circuits in CMOS-SIMOX  Jane Doe, John Smith  Abstract — This paper presents a fully integrated RF front-end ...
+Matched Chunks: 3
+------------------------
+
+<chunk 0 text>
+... (hidden content) ...
+<chunk 1 text>
+```
+
+The same guarantees apply to `reconstruct_overlapping_chunks=True` (see [§0.1](#01-overlapping-chunk-reconstruction--anti-hallucination-fusion)) — both retrieval paths return `document_title`, `head_snippet`, and a populated header.
+
+> 💡 **Tip — get richer metadata without an LLM**: pass `metadata_mode="parsed"` at ingestion to have `safe_store` extract structural breadcrumbs (`title`, `chapter`, `section`, `subsection`, `authors`, `abstract`) directly from the document. For documents already indexed, call `store.rechunk_and_vectorize(metadata_mode="parsed")` once to upgrade them in place.
+
+#### Customizing the gap marker
+
+```python
+grouped = store.group_results_by_document(
+    raw_hits,
+    gap_marker="\n[... omitted from source ...]\n",
+)
+```
+
+#### Comparison with `reconstruct_overlapping_chunks`
+
+| Aspect | `reconstruct_overlapping_chunks=True` | `group_by_document=True` |
+|:---|:---|:---|
+| Groups by document | ✅ | ✅ |
+| Sorts chunks chronologically | ✅ | ✅ |
+| Deduplicates overlapping boundary text | ✅ | ❌ (keeps chunks verbatim) |
+| Bridges non-contiguous spans with `...` | ✅ | ✅ |
+| Exposes `chunks_found` + per-chunk list | ❌ | ✅ |
+| Backward-compatible `relevance_score = max(...)` | ❌ (`max`-like, but header-formatted differently) | ✅ (guaranteed) |
+| Preserves original chunk text exactly | ❌ (rewrites boundaries) | ✅ |
+
+Use **`reconstruct_overlapping_chunks`** when you want the most natural, prose-like document text for LLM consumption. Use **`group_by_document`** when you want a precise per-document audit trail (which chunks matched, at which sequence position, at what score) with a fused block that preserves chunk boundaries verbatim.
 
 ---
 
@@ -142,7 +273,8 @@ for doc in results:
 # Option B: Run on any existing result list
 reconstructed = store.reconstruct_overlapping_chunks(raw_results, add_metadata=True)
 ```
-```
+
+> 🏷️ **Always-on header + head snippet**: since the reconstruction path is used as a RAG-facing view, the returned `chunk_text` **always** begins with a `--- Document: ... ---` header — falling back to the filename when no metadata exists — and adds a `Head: ...` snippet (first ~500 chars of the document, LLM-less) when structured metadata is unavailable. The `head_snippet` field is also exposed verbatim on each result so callers can render it separately. See [§0.2 — Guaranteed Header & Head Snippet Fallback](#guaranteed-header--head-snippet-fallback) for the exact priority order.
 
 ---
 
