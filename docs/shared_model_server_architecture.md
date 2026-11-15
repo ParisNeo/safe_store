@@ -1,260 +1,211 @@
-# Shared Model Server Architecture & Hardening Blueprint
-**Author:** ParisNeo & Lollms  
-**Scope:** Multi-Process AI Model Serving, IPC Architecture, Dynamic Micro-Batching & Security
+# Shared Local Model Server (Vectorizer)
 
----
+The shared model server provides a single-process, TCP-based embedding service
+that many `SafeStore` clients can reuse. It avoids loading one `SentenceTransformer`
+per process and gives the host application (e.g. lollms) a way to release VRAM
+on demand so the LLM/TTI models can take priority.
 
-## 1. Executive Summary & Problem Statement
+The implementation lives in `safe_store/vectorization/model_server/`:
 
-In modern AI service architectures (such as FastAPI/Uvicorn multi-worker setups, Celery task workers, or desktop GUIs with worker processes), hosting deep learning models (SentenceTransformers, LLMs via llama.cpp/transformers, or vision encoders) directly within each application process introduces severe bottlenecks:
+- `run_server.py` — CLI entry point and control verbs (start / status / health / load / unload / stop).
+- `server.py` — `ModelServer`, the socket daemon with lazy loading and micro-batching.
+- `client.py` — `ModelServerClient`, a thread-safe client wrapper.
+- `protocol.py` — framing helpers (`send_message`, `recv_message`, `send_array`, `recv_array`).
 
-1. **Out-of-Memory (OOM) Explosions**: If each worker process loads its own model weights into RAM or GPU VRAM, memory usage scales linearly ($N \times \text{Model Size}$). For four 1.5 GB workers, 6 GB of VRAM is wasted solely on redundant weight copies.
-2. **Zero Request Batching**: Concurrent requests arriving from different users or workers are processed sequentially in isolation, failing to utilize GPU tensor cores.
-3. **Slow Process Spawning**: Every time an application worker restarts or scales, it incurs a multi-second delay to re-load model weights from disk.
+## 1. Design goals
 
-### The Solution: The Self-Spawning Shared Daemon
-A lightweight, zero-dependency, local Inter-Process Communication (IPC) daemon running on loopback (`127.0.0.1`):
-- **First Instance Wins**: The first process that needs the model spawns the daemon in the background; all subsequent processes attach to it.
-- **Single Model Footprint**: Exactly **one** instance of the model resides in memory across the entire machine.
-- **Dynamic Micro-Batching**: Requests from independent processes are gathered across an adaptive time window (e.g., 20ms) and executed in a single vector/tensor pass.
-- **Persistent Daemon with Explicit Shutdown**: The daemon outlives individual worker processes and stays alive until commanded to terminate via an authenticated shutdown RPC.
+- **Fast startup.** Starting the daemon must not load a model, import `torch`,
+  or allocate GPU memory. Binding the port and writing the token file is all
+  the daemon does before going live.
+- **On-demand load.** The embedding model is materialized on the first
+  `vectorize` request, or explicitly via the `load` control command.
+- **On-demand unload.** The host can release the model at any time, and an
+  idle timer can release it automatically without killing the daemon.
+- **Cross-process sharing.** All local clients benefit from the same resident
+  model via a single TCP endpoint.
+- **Observability.** Callers can query whether the model is loaded, which
+  device it lives on, and roughly how much VRAM/RAM it occupies.
 
----
-
-## 2. High-Level Architecture & Lifecycle
+## 2. Architecture
 
 ```
-[ Application Process 1 ] ──┐
-  (FastAPI Worker / User A) │
-                            ├─► (Port 8765, TCP Loopback) ──► [ ModelServer Daemon ]
-[ Application Process 2 ] ──┤   [HMAC Token Authenticated]     │  - Single Model in VRAM
-  (FastAPI Worker / User B) │                                  │  - Dynamic Micro-Batching Loop
-                            │                                  │  - Model Forward Pass
-[ Application Process N ] ──┘                                  ▼
-                                                    [ Special Shutdown Command ]
-                                                      (SafeStore.shutdown_shared_vectorizer)
+┌────────────────────┐     JSON + ndarray over TCP     ┌────────────────────┐
+│  ModelServerClient │ ──────────────────────────────▶ │    ModelServer     │
+│  (SafeStore / app) │ ◀────────────────────────────── │  (daemon process)  │
+└────────────────────┘                                 └────────────────────┘
+        │                                                       │
+        │  one socket per request, guarded by a Lock            │
+        │                                                       ├─► auth token check
+        │                                                       ├─► command dispatch
+        │                                                       ├─► micro-batch queue
+        │                                                       └─► SentenceTransformer
 ```
 
-### The Lifecycle Flow
-1. **Lock Acquisition (`FileLock`)**: When an application process needs the model, it acquires an OS-level file lock (`safe_store_server_<port>.lock`).
-2. **Probe Existing Daemon**: The process reads the local token file (`safe_store_server_<port>.token`) and sends a fast `ping` command (timeout $\le 1.5$s).
-3. **Self-Spawning**: If no daemon responds, the process spawns `run_server.py` as an independent background daemon and writes a cryptographically secure token (`secrets.token_hex(16)`).
-4. **Immediate Port Binding**: The daemon binds the TCP socket **first**, ensuring subsequent processes immediately detect the port as active.
-5. **Model Initialization**: The daemon loads model weights into memory while client connections wait in the OS TCP backlog (up to 128 queue length).
-6. **Release Lock & Ready**: Once `ping` returns `{"status": "ok"}`, the spawning process releases the lock. All workers can now issue concurrent requests.
-7. **Explicit RPC Termination**: At deployment teardown or server maintenance, any authorized process sends `{"kind": "shutdown", "token": "..."}`, allowing the server to finish in-flight batches, close sockets, and exit cleanly.
+- **Transport:** TCP (default `127.0.0.1:5555`).
+- **Framing:** JSON control messages via `send_message`/`recv_message`,
+  optionally followed by a raw NumPy array via `send_array`/`recv_array` for
+  `vectorize` responses.
+- **Auth:** every message carries a `token` field compared with
+  `hmac.compare_digest`. Requests without a valid token get
+  `{"status": "error", "error": "unauthorized"}` and the connection is closed.
+- **Concurrency:** the acceptor thread handles one connection at a time; the
+  batch loop drains the pending queue and runs a single inference pass across
+  all enqueued texts. The model-load path is serialized by an `RLock`.
+- **Persistence:** the daemon writes the auth token to a token file so control
+  verbs (`--status`, `--health`, `--load`, `--unload`, `--stop`) can reconnect
+  without passing `--token` explicitly. The file is removed on clean shutdown.
 
----
+## 3. Protocol commands
 
-## 3. Dynamic Micro-Batching Algorithm
+Every request is a JSON object with `token` and `kind`. Supported `kind` values:
 
-Traditional sequential serving processes one request at a time. The shared daemon implements **event-driven dynamic micro-batching**:
+| `kind`      | Purpose                                   | Response                                        |
+| ----------- | ----------------------------------------- | ----------------------------------------------- |
+| `ping`      | Liveness without side effects             | `{"status": "ok", "dim": ..., "model_loaded": ...}` |
+| `status`    | Lightweight daemon snapshot               | `{"status": "ok", "pid", "uptime_s", "model_loaded", "pending_requests"}` |
+| `health`    | Full state incl. resource usage           | see §4                                           |
+| `load`      | Force the model to load unless loaded     | `{"status": "ok", "loaded", "was_loaded", "load_time_ms", ...}` |
+| `unload`    | Release model weights, free VRAM/RAM      | `{"status": "ok", "loaded": false, "freed_vram_bytes", "freed_ram_bytes"}` |
+| `shutdown`  | Graceful daemon stop                      | `{"status": "ok", "message": "Server shutting down."}` |
+| `vectorize` | Enqueue texts for batched embedding       | `{"status": "ok"}` followed by a `float32` ndarray (`send_array`) |
 
-```python
-# Server-side micro-batching loop (Zero CPU busy-wait)
-def _batch_loop(self) -> None:
-    while not self._shutdown.is_set():
-        # 1. Sleep on an OS event until at least one request arrives (0% CPU idle)
-        signaled = self._pending_event.wait(timeout=1.0)
-        if not signaled:
-            if self.idle_timeout > 0 and (time.time() - self._last_activity > self.idle_timeout):
-                break # Optional auto-exit if configured
-            continue
+`vectorize` responses are two-frame: the JSON header confirms success, then
+raw NumPy bytes carry the embeddings. On server-side error the JSON body has
+`status: "error"` and an `error` string, and no array is sent.
 
-        # 2. Open a short micro-batch window (e.g., 20ms) to allow concurrent requests to join
-        if self.batch_window > 0:
-            time.sleep(self.batch_window)
+## 4. `health` payload
 
-        # 3. Drain pending requests up to max_batch_size
-        batch = []
-        with self._pending_lock:
-            while self._pending and len(batch) < self.max_batch_size:
-                batch.append(self._pending.pop(0))
-            if not self._pending:
-                self._pending_event.clear()
-
-        # 4. Perform a single batched inference pass
-        if batch:
-            self._last_activity = time.time()
-            self._process_batch(batch)
+```json
+{
+  "status": "ok",
+  "model_name": "all-MiniLM-L6-v2",
+  "model_loaded": true,
+  "device": "cuda:0",
+  "dtype": "float32",
+  "vram_bytes": 431509504,
+  "ram_bytes": 138412032,
+  "pending_requests": 0,
+  "uptime_s": 812.4,
+  "idle_s": 12.7,
+  "last_used_ts": 1730000000.0,
+  "lazy": true,
+  "pid": 12345,
+  "host": "127.0.0.1",
+  "port": 5555
+}
 ```
 
-### Why this beats individual processing:
-- **Zero Busy-Waiting**: The thread sleeps on `threading.Event.wait()`, consuming 0% CPU while idle.
-- **Latency vs. Throughput Balance**: A 20ms collection window adds negligible latency to interactive requests while allowing 5–20 concurrent user queries to merge into a single tensor core operation.
-- **Fair Slicing**: The server groups all input strings, encodes them in one pass, slices the resulting matrix per client, and delivers the exact response slice back to each client's socket.
+- `vram_bytes` is `torch.cuda.memory_allocated(device)` for the model's device,
+  or `0` on CPU-only builds or when the model is unloaded.
+- `ram_bytes` is `Σ numel × element_size` over the model's parameters and
+  buffers.
+- `idle_s` is time since the last successful encode, or time since startup
+  when the model has never been used.
+- `model_loaded: false` is a normal, non-error state.
 
----
+## 5. Server lifecycle
 
-## 4. Critical Quirks & Pitfalls to Avoid Next Time
+1. **Start.** `run_server.py` parses arguments and constructs `ModelServer`.
+   `ModelServer.start()` binds the socket and writes the token file, then
+   enters the accept/batch loops. **No model is loaded at this point** unless
+   `--eager` was passed.
+2. **First request.** A `vectorize` (or explicit `load`) triggers
+   `ensure_loaded()`, which instantiates the `SentenceTransformer` under the
+   load lock. Concurrent requests wait on that lock and then share the batch.
+3. **Idle unload.** After `model_idle_timeout` seconds with no encode, the
+   batch loop calls `unload_model()`. The daemon stays alive; the next request
+   reloads the model transparently.
+4. **Process idle exit (optional).** If `idle_timeout > 0`, the daemon exits
+   completely after that many idle seconds, using the same `_cleanup` path
+   (unload + token file removal).
+5. **Explicit shutdown.** `shutdown` (or `--stop`) sets the shutdown event,
+   unloads the model, removes the token file, and prints a clean-termination
+   line.
 
-During the design and implementation of this architecture, several subtle cross-platform and deep learning quirks were diagnosed and resolved. Keep this checklist handy for any future LOLLMS bindings or daemon services:
+## 6. Client contract
 
-### 4.1. Binary Length Framing vs. Magic Headers (The `\x93NUMPY` Bug)
-* **The Quirk**: `np.save()` writes a raw binary stream starting with the magic header `b"\x93NUMPY\x01\x00"`. If you send this over a socket without an explicit 8-byte big-endian length prefix, the receiver’s `recv_array()` reads `\x93NUMPY\x01\x00` and interprets it as a 64-bit integer (`struct.unpack(">Q", header)`). In decimal, that is:
-  ```text
-  10,614,515,162,307,690,752 bytes (> 10 Exabytes!)
-  ```
-  This immediately triggers a `ValueError: Array exceeds maximum size`.
-* **The Rule**: **Always maintain strict protocol symmetry.** Every message—whether a JSON dictionary or a NumPy binary array—must be preceded by an exact 8-byte length prefix:
-  ```python
-  def encode_array(arr: np.ndarray) -> bytes:
-      buffer = io.BytesIO()
-      np.save(buffer, arr, allow_pickle=False)
-      payload = buffer.getvalue()
-      return struct.pack(">Q", len(payload)) + payload # MUST prepend 8-byte header!
-  ```
+`ModelServerClient` is thread-safe via an internal `threading.Lock`. Each call
+opens a fresh connection, sends one request, reads the response, and closes
+the socket — no long-lived state on the wire.
 
-### 4.2. Windows `subprocess.Popen` Creation Flags Conflict
-* **The Quirk**: On Windows, combining `subprocess.CREATE_NO_WINDOW` and `subprocess.DETACHED_PROCESS` in `creationflags` violates the Windows Process Creation API. Furthermore, passing `close_fds=True` alongside redirected `stdout=log_handle` strips file handle inheritance, causing the child Python process to crash with `[WinError 6] The handle is invalid` on its first `print()`.
-* **The Rule**:
-  - On Windows: Use `creationflags = subprocess.CREATE_NO_WINDOW` without `DETACHED_PROCESS` or `close_fds=True`.
-  - On POSIX/Linux/macOS: Use `start_new_session=True` with `close_fds=True`.
-  - In the parent process: Always call `log_handle.close()` immediately after `Popen()` to avoid Windows file-sharing locks (`WinError 32: The process cannot access the file because it is being used by another process`).
+| Method                                 | Returns                | Notes                                                      |
+| -------------------------------------- | ---------------------- | ---------------------------------------------------------- |
+| `vectorize(texts)`                     | `np.ndarray`           | Raises `RuntimeError` on server-side error; 120 s timeout. |
+| `ping(timeout=3)`                      | `bool`                 | Never raises.                                              |
+| `status(timeout=3)`                    | `Optional[dict]`       | `None` on transport/protocol failure.                      |
+| `health(timeout=5)`                    | `Optional[dict]`       | `None` on transport/protocol failure.                      |
+| `ensure_loaded(timeout=120)`           | `Optional[dict]`       | `None` on transport/protocol failure.                      |
+| `unload_model(timeout=30)`             | `Optional[dict]`       | `None` on transport/protocol failure.                      |
+| `shutdown(timeout=5)`                  | `bool`                 | Never raises.                                              |
 
-### 4.3. Socket Lifecycle & Stale Connection Recycling
-* **The Quirk**: If the server closes the connection after sending the response (`finally: conn.close()`), a client that caches its socket without resetting it will attempt to send subsequent requests over a dead socket, producing `BrokenPipeError` or `ConnectionResetError`.
-* **The Rule**: The client must explicitly reset its socket handle after completing every request cycle:
-  ```python
-  def vectorize(self, texts: List[str]) -> np.ndarray:
-      with self._lock:
-          try:
-              # connect, send request, receive response
-              ...
-              return arr
-          finally:
-              self._close_locked() # Cleanly close and reset self._sock to None
-  ```
+Because `vectorize` may trigger a lazy load, its timeout is 120 s while
+control verbs default to shorter timeouts.
 
-### 4.4. Aggressive Probe Timeouts on Loopback
-* **The Quirk**: Defaulting client socket timeouts to 30s or 60s for `ping()` or `shutdown()` causes the application to freeze for an entire minute if an old or un-killable process is holding the port.
-* **The Rule**: Local loopback (`127.0.0.1`) control frames (`ping` and `shutdown`) should timeout in **1.5 to 3.0 seconds**. If a local daemon does not respond to a ping in 2 seconds, it is either uninitialized or dead.
+## 7. CLI reference (run_server.py)
 
-### 4.5. Race-Free Socket Binding
-* **The Quirk**: If `run_server.py` loads model weights *before* creating its listener socket, the port remains closed for 5–15 seconds during startup. Other worker processes checking `is_port_in_use()` will see the port closed, assume the server failed, delete the token file, and attempt to spawn duplicate servers.
-* **The Rule**: **Bind the socket and write the token file first.** Only then proceed to load model weights. Any concurrent process checking the port will see that it is occupied and wait for the ping probe to succeed.
+| Flag                        | Default              | Meaning                                                   |
+| --------------------------- | -------------------- | --------------------------------------------------------- |
+| `--host`                    | `127.0.0.1`          | Bind host.                                                |
+| `--port`                    | *(required)*         | Port to listen on or connect to.                          |
+| `--model`                   | `all-MiniLM-L6-v2`   | SentenceTransformer model name.                           |
+| `--token`                   | *(required when starting)* | Auth token.                                        |
+| `--token-file`              | temp file            | Path to persist/read the token.                           |
+| `--idle-timeout SEC`        | `0` (never)          | Exit the process entirely after N idle seconds.           |
+| `--model-idle-timeout SEC`  | `300` (`0` = never)  | Unload weights after N idle seconds, keep daemon alive.   |
+| `--eager`                   | off                  | Load the model at startup (legacy behavior).              |
+| `--batch-window SEC`        | `0.02`               | Micro-batching window.                                    |
+| `--max-batch-size N`        | `64`                 | Cap on queued requests per batch.                         |
+| `--status` / `--health` / `--load` / `--unload` / `--stop` | | Mutually exclusive control verbs that print JSON. |
 
-### 4.6. Subprocess Package Name Mismatches (`pm.ensure_packages`)
-* **The Quirk**: Distribution names on PyPI often contain hyphens (e.g., `sentence-transformers`), but Python module import names use underscores (`sentence_transformers`). If an automatic package installer checks `find_spec("sentence-transformers")` at the module level, it fails to find it and silently blocks execution running `pip install` in the background on every import!
-* **The Rule**: Always use a fast-path try/import before invoking any package manager:
-  ```python
-  try:
-      from sentence_transformers import SentenceTransformer
-  except ImportError:
-      pm.ensure_packages(["sentence-transformers"])
-      from sentence_transformers import SentenceTransformer
-  ```
+Control verbs run in a lightweight process: they never import `torch` or
+allocate GPU memory, and they exit with `0` on success, `2` when the daemon is
+unreachable, `3` when no token is available, `4` when the daemon is too old to
+support the requested endpoint, and `5` on server-side failure.
 
-### 4.7. PyTorch / Torchvision C++ Kernel Incompatibility
-* **The Quirk**: When `torchvision` is installed with a mismatched PyTorch build, PyTorch's C++ operator registry fails with:
-  ```text
-  RuntimeError: operator torchvision::nms does not exist
-  ```
-  Because text embedding models do not use vision kernels, having `torchvision` probe these C++ symbols during `transformers` initialization causes an unhandled fatal exception.
-* **The Rule**: Neutralize `torchvision` by removing it from `sys.modules` and assigning `sys.modules["torchvision"] = None`. Python's import system will cleanly inform `transformers` that vision dependencies are absent without triggering C++ binary crashes.
+## 7.1 Runtime configuration via `VectorizationManager`
 
----
+`SafeStore` callers pass shared-server behaviour through `vectorizer_config`.
+`VectorizationManager.RUNTIME_TRANSPORT_KEYS` (see `safe_store/vectorization/manager.py`)
+strips these from the vectorizer identity so they do **not** create a distinct
+cached vectorizer:
 
-## 5. Security Architecture & Hardening Doctrine
+`use_shared_server`, `shared_server`, `shared_mode`, `shared`, `port`, `host`,
+`idle_timeout`, `batch_window`, `max_batch_size`, `stream_server_logs`,
+`reuse_model_in_process`, `cache_folder`, `api_key`, `service_key`,
+`verify_ssl_certificate`.
 
-When deploying a shared daemon across processes or user accounts on the same machine, follow these security invariants:
+> ⚠️ `idle_timeout` here is the **process-level** idle exit (maps to the
+> daemon's `--idle-timeout`). The weights-only idle timer (`--model-idle-timeout`,
+> default 300 s) is currently **CLI-only** and is not wired through
+> `vectorizer_config` — set it on the daemon launch command.
 
-### 5.1. Constant-Time Authentication (`hmac.compare_digest`)
-- Never use standard string equality (`==`) to verify authentication tokens, as it is vulnerable to timing attacks.
-- Generate high-entropy tokens:
-  ```python
-  auth_token = secrets.token_hex(32) # 256 bits of entropy
-  ```
-- Authenticate requests in constant time:
-  ```python
-  if not hmac.compare_digest(request_token, self.auth_token):
-      self._send_error(conn, "unauthorized")
-      conn.close()
-      return
-  ```
+The vectorizer/model identity (`_filter_semantic_config`) therefore only keeps
+`model` / `model_name` (normalized to `model`) plus any model-specific knobs
+(e.g. `device`), so switching ports won't spawn duplicate entries in the
+`VectorizationManager` cache.
 
-### 5.2. Strict Loopback Binding (`127.0.0.1`)
-- The server must **never** bind to `0.0.0.0` or public network interfaces.
-- Binding to `127.0.0.1` ensures that only local processes on the same host can establish TCP connections.
+## 8. Integrating with a host (e.g. lollms)
 
-### 5.3. File Permissions on Tokens
-- Token files must be written with strict user-only read/write permissions (`0o600`):
-  ```python
-  fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-  with os.fdopen(fd, 'w', encoding='utf-8') as f:
-      f.write(token)
-  ```
-- This prevents other unprivileged users on shared Linux/macOS multi-user servers from reading the authentication token.
+- **VRAM arbitration.** Before loading an LLM/TTI model, call
+  `client.unload_model()`. The daemon drops the vectorizer and keeps serving
+  control commands; call `client.ensure_loaded()` before the next embedding
+  request if you want to pre-warm.
+- **Observability.** Poll `client.health()` to decide whether it is safe to
+  allocate GPU memory elsewhere, and to log `vram_bytes` / `ram_bytes`.
+- **Automatic relaxation.** Set `--model-idle-timeout` low (e.g. 60 s) on
+  shared hosts so the vectorizer releases VRAM while other workloads run.
 
-### 5.4. Denial-of-Service & Message Cap Protection
-- Enforce strict size limits before allocating buffers in memory:
-  ```python
-  HEADER_SIZE = 8
-  MAX_MESSAGE_SIZE = 512 * 1024 * 1024  # 512 MB hard ceiling
-  MAX_TEXTS_PER_REQUEST = 10000         # Maximum chunks per batch
-  ```
-- If a client sends a header indicating a length greater than `MAX_MESSAGE_SIZE`, the socket is closed immediately before attempting to allocate memory.
+## 9. Troubleshooting
 
-### 5.5. Safe Serialization (Zero Pickle Vulnerability)
-- Never use Python's `pickle` module for inter-process communication, as untrusted data can trigger arbitrary Remote Code Execution (RCE).
-- Use **JSON** for control messages and **`allow_pickle=False`** for NumPy arrays:
-  ```python
-  np.save(buffer, arr, allow_pickle=False)
-  np.load(io.BytesIO(data), allow_pickle=False)
-  ```
-
----
-
-## 6. Generalizing to Other LOLLMS Bindings
-
-This architecture can be reused across any LOLLMS binding (e.g., `llama.cpp`, `exllama`, `transformers`, `diffusers`, `whisper`).
-
-### Recommended Protocol Schema for LLM Generation
-For text generation models, expand the message protocol:
-
-| Kind | Payload | Response | Notes |
-| :--- | :--- | :--- | :--- |
-| `"ping"` | `{"token": "..."}` | `{"status": "ok", "model": "..."}` | Health and readiness check. |
-| `"vectorize"` | `{"token": "...", "texts": [...]}` | `{"status": "ok"}` + Binary Array | Batched embedding matrix. |
-| `"generate"` | `{"token": "...", "prompt": "...", "params": {...}}` | `{"status": "ok", "text": "..."}` | Batched or queued text generation. |
-| `"generate_stream"`| `{"token": "...", "prompt": "..."}` | Chunked stream over socket | Real-time token streaming. |
-| `"shutdown"` | `{"token": "..."}` | `{"status": "ok"}` | Clean daemon teardown. |
-
-### Boilerplate for Future Bindings
-To adapt this for another backend:
-1. Create a `ModelServer` subclass implementing `_load_model()` and `_process_batch()`.
-2. Keep `client.py` and `protocol.py` identical.
-3. In your binding's `__init__.py`, use the same `_init_shared_server()` and `_spawn_server()` helper methods.
-
----
-
-## 7. Operational Cheat Sheet
-
-### Programmatic Usage (Python)
-```python
-import safe_store
-
-# Connect to or automatically spawn the shared daemon
-store = safe_store.SafeStore(
-    "database.db",
-    vectorizer_name="st",
-    vectorizer_config={
-        "model_name": "all-MiniLM-L6-v2",
-        "use_shared_server": True, # Enables shared daemon
-        "port": 8765,
-        "idle_timeout": 0.0        # Stay alive until shutdown command
-    }
-)
-
-# Shutdown the shared daemon when taking down the application
-safe_store.shutdown_shared_vectorizer(port=8765)
-```
-
-### Command-Line Usage (CLI)
-```bash
-# Start a standalone model server on port 8765
-python -m safe_store.vectorization.model_server.run_server --port 8765 --model all-MiniLM-L6-v2 --token "my_secret_token"
-
-# Send the special shutdown command to terminate a running server
-python -m safe_store.vectorization.model_server.run_server --stop --port 8765
-```
+- **`{"error": "not_running"}`** — nothing is listening on the port. Start the
+  daemon first, or confirm the port/host.
+- **`{"error": "unauthorized"}`** — the token does not match the daemon's
+  `--token`. Use the token file written at startup or pass `--token` explicitly.
+- **`{"status": "unsupported"}`** from a control verb — the running daemon is
+  older than the CLI and does not implement that endpoint. Restart it with the
+  updated package.
+- **First `vectorize` is slow** — that is the lazy model load. Use
+  `client.ensure_loaded()` at process start to pre-warm if desired.
+- **`vram_bytes` stays `0` while `device` is `cuda`** — the process may not see
+  other allocations via `memory_allocated`; the value tracks *this* daemon's
+  own usage, which is what matters for unload decisions.

@@ -4,6 +4,8 @@ import base64
 from pathlib import Path
 import hashlib
 import threading
+import sys
+import time
 from typing import Optional, List, Dict, Any, Union, Literal, ContextManager, Callable
 import tempfile
 from contextlib import contextmanager
@@ -72,6 +74,18 @@ def _is_tempfile_path(path: Union[str, Path, None]) -> bool:
         or s.endswith(":tempfile:")
         or getattr(path, "name", "") == ":tempfile:"
     )
+
+
+def _log_init_timing(label: str, started: float) -> None:
+    """Emit a precise elapsed-time line for a SafeStore construction phase.
+
+    Diagnostic instrumentation: attributes any startup delay to a specific
+    phase (schema init, vectorizer construction, file-lock acquisition,
+    verification) instead of leaving it opaque.
+    """
+    elapsed_ms = (time.monotonic() - started) * 1000.0
+    ASCIIColors.info(f"[SafeStore timing] {label}: {elapsed_ms:.1f} ms")
+
 
 class SafeStore:
     """
@@ -209,8 +223,13 @@ class SafeStore:
         self._graph_store: Optional[Any] = None
 
         try:
+            _t = time.monotonic()
             self._connect_and_initialize()
+            _log_init_timing("_connect_and_initialize (schema + properties)", _t)
+
+            _t = time.monotonic()
             self._initialize_and_verify_vectorizer()
+            _log_init_timing("_initialize_and_verify_vectorizer (total)", _t)
         except Exception as e:
             if self.conn:
                 try:
@@ -228,6 +247,98 @@ class SafeStore:
 
     @classmethod
     def from_db(cls, db_path: Union[str, Path], **kwargs) -> "SafeStore":
+        return cls(db_path=db_path, **kwargs)
+
+    @staticmethod
+    def read_vectorizer_identity(
+        db_path: Union[str, Path],
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Read the vectorizer identity recorded inside an existing SafeStore DB.
+
+        Returns ``{"vectorizer_name": str, "vectorizer_config": dict}`` if the DB
+        exists and carries a ``store_metadata['vectorizer_info']`` row, else
+        ``None``. This is a *pure* metadata read:
+
+        - No `SafeStore` instance is constructed.
+        - No vectorizer is imported, instantiated, or its weights loaded.
+        - No lock is acquired; opens the DB read-only via URI mode so a WAL-mode
+          DB is not modified, and closes it immediately.
+
+        Used by ``SafeStore.from_db_auto`` (and any caller needing to inspect a
+        DB's vectorizer before opening) — eliminates the classic
+        ``ConfigurationError: incompatible vectorizer`` when a caller guesses
+        the wrong vectorizer for an existing DB.
+        """
+        if _is_in_memory_path(db_path) or _is_tempfile_path(db_path):
+            return None
+        path = Path(db_path)
+        if not path.exists():
+            return None
+        conn: Optional[sqlite3.Connection] = None
+        try:
+            # mode=ro: never mutate the file, never create a -journal we could
+            # leave behind. Missing file → sqlite3 raises; we already checked.
+            conn = sqlite3.connect(
+                f"file:{path.as_posix()}?mode=ro",
+                uri=True,
+                detect_types=sqlite3.PARSE_DECLTYPES,
+            )
+            raw = db.get_store_metadata(conn, "vectorizer_info")
+            if not raw:
+                return None
+            info = json.loads(raw)
+            if not isinstance(info, dict):
+                return None
+            stored_unique = info.get("unique_name", "") or ""
+            vectorizer_name = (
+                info.get("vectorizer_name")
+                or info.get("name")
+                or (stored_unique.split(":", 1)[0] if ":" in stored_unique else "")
+            )
+            vectorizer_config = info.get("vectorizer_config")
+            if vectorizer_config is None and ":" in stored_unique:
+                try:
+                    vectorizer_config = json.loads(stored_unique.split(":", 1)[1])
+                except (ValueError, TypeError):
+                    vectorizer_config = {}
+            if not vectorizer_name:
+                return None
+            return {
+                "vectorizer_name": vectorizer_name,
+                "vectorizer_config": vectorizer_config or {},
+            }
+        except (sqlite3.Error, OSError, ValueError):
+            return None
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
+
+    @classmethod
+    def from_db_auto(cls, db_path: Union[str, Path], **kwargs) -> "SafeStore":
+        """
+        Open an existing SafeStore DB using *its own* recorded vectorizer.
+
+        For an existing DB, the stored ``vectorizer_info`` identity overrides
+        any caller-supplied ``vectorizer_name`` / ``vectorizer_config`` — so
+        reopening a DB whose vectorizer differs from the app default never
+        raises ``ConfigurationError: incompatible vectorizer``.
+
+        For a new / in-memory / temp DB (no stored record), the caller's
+        ``vectorizer_name`` / ``vectorizer_config`` are used unchanged — i.e.
+        the first-open path behaves exactly like ``SafeStore(...)``.
+
+        Drop-in replacement for ``SafeStore(**kwargs)`` on inspection /
+        reopen paths. Callers that need strict mismatch detection (e.g. a
+        reactive migration tool) should continue using the plain constructor.
+        """
+        stored = cls.read_vectorizer_identity(db_path)
+        if stored is not None:
+            kwargs["vectorizer_name"] = stored["vectorizer_name"]
+            kwargs["vectorizer_config"] = stored["vectorizer_config"]
         return cls(db_path=db_path, **kwargs)
 
     def set_llm_generator(self, generator: Callable[..., str]) -> None:
@@ -353,65 +464,195 @@ class SafeStore:
                 pass
 
     def _initialize_and_verify_vectorizer(self):
+        # ── FAST-FAIL GUARD ────────────────────────────────────────────────
+        # Read the DB's stored vectorizer identity FIRST, before constructing
+        # (and fully loading) any vectorizer. Constructing an ONNX /
+        # sentence-transformers vectorizer downloads or materializes model
+        # weights (multi-second cost on cold cache); if the DB was indexed
+        # with a different vectorizer, `_assert_vectorizer_compatibility`
+        # is guaranteed to reject the instance right after — so constructing
+        # the vectorizer first wastes the entire load on an open that is
+        # doomed. On the inspection path used by `data_view`
+        # (StoreDetailsWorker), this happened on EVERY panel refresh.
+        #
+        # The check below raises `ConfigurationError` with the exact same
+        # message as the post-construction path, so error semantics are
+        # unchanged — only the ordering is improved.
+        preview_stored = self._read_stored_vectorizer_info()
+        if preview_stored is not None:
+            preview_stored_dict = json.loads(preview_stored)
+            preview_unique = self.vectorizer_manager._create_unique_name(
+                self.vectorizer_name, self.vectorizer_config
+            )
+            stored_unique = preview_stored_dict.get("unique_name", "")
+            stored_vec_name = (
+                preview_stored_dict.get("vectorizer_name")
+                or preview_stored_dict.get("name")
+                or stored_unique.split(":")[0]
+            )
+            stored_config = preview_stored_dict.get("vectorizer_config")
+            if stored_config is None and ":" in stored_unique:
+                try:
+                    stored_config = json.loads(stored_unique.split(":", 1)[1])
+                except Exception:
+                    stored_config = {}
+            stored_semantic_id = self.vectorizer_manager._create_unique_name(
+                stored_vec_name, stored_config
+            )
+            if stored_semantic_id != preview_unique:
+                raise ConfigurationError(
+                    f"Database at '{self.db_path}' has an incompatible vectorizer: "
+                    f"'{preview_stored_dict.get('unique_name')}'. "
+                    f"This instance is configured with '{preview_unique}'."
+                )
+        # ──────────────────────────────────────────────────────────────────
+
+        t0 = time.monotonic()
         self.vectorizer = self.vectorizer_manager.get_vectorizer(self.vectorizer_name, self.vectorizer_config)
+        _log_init_timing(f"get_vectorizer('{self.vectorizer_name}')", t0)
 
         if self.chunking_strategy in ['token', 'paragraph', 'semantic', 'recursive']:
-            tokenizer = self.vectorizer.get_tokenizer()
-            if tokenizer is not None:
-                self.tokenizer_for_chunking = tokenizer
+            # Only resolve a tokenizer that is already cheap and local (native to the
+            # vectorizer). Defer the tiktoken / custom-tokenizer path to first use:
+            # `tiktoken.get_encoding("cl100k_base")` can trigger an HTTPS download and
+            # a multi-second regex init on Windows, which must never block store init.
+            t_tok = time.monotonic()
+            native_tokenizer = (
+                self.vectorizer.get_tokenizer()
+                if hasattr(self.vectorizer, "get_tokenizer")
+                else None
+            )
+            if native_tokenizer is not None:
+                self.tokenizer_for_chunking = native_tokenizer
             elif self.custom_tokenizer is not None:
                 self.tokenizer_for_chunking = get_tokenizer(self.custom_tokenizer)
-            else:
-                self.tokenizer_for_chunking = get_tokenizer({"name": "tiktoken", "model": "cl100k_base"})
+            # else: leave None — resolved lazily by _ensure_chunking_tokenizer()
+            _log_init_timing("chunking tokenizer resolution", t_tok)
 
-        with self._optional_file_lock_context("verify vectorizer compatibility"):
-            assert self.conn is not None
+        t_verify = time.monotonic()
+        self._verify_vectorizer_compatibility_body()
+        _log_init_timing("verify vectorizer compatibility", t_verify)
+
+        ASCIIColors.success(f"SafeStore is ready with vectorizer '{self.vectorizer_name}'.")
+
+    def _read_stored_vectorizer_info(self) -> Optional[str]:
+        """Return the raw stored `vectorizer_info` JSON, or None if absent.
+
+        This is a pure READ (no transaction, no lock). Safe under SQLite WAL
+        for concurrent readers — used to fail fast on a vectorizer mismatch
+        BEFORE the caller pays for model loading.
+        """
+        if self.conn is None:
+            return None
+        try:
+            return db.get_store_metadata(self.conn, "vectorizer_info")
+        except Exception:
+            return None
+
+    def _verify_vectorizer_compatibility_body(self) -> None:
+        """Verify that the configured vectorizer matches the DB's stored one.
+
+        The READ path (existing DB already carries ``vectorizer_info``) takes
+        **no file lock**: it only reads ``store_metadata`` (safe under SQLite
+        WAL for concurrent readers) and performs no write. This is critical —
+        a ``FileLock.acquire()`` on the verify step can block for tens of
+        seconds on Windows when another thread/process briefly holds the same
+        ``.lock`` path (e.g. AITIANA's StoreDetailsWorker opening the same DB),
+        which manifested as a ~52 s post-panel stall on an existing database.
+
+        Only the WRITE path (first-open / legacy DB with no stored
+        ``vectorizer_info``) acquires the lock — and re-checks inside it
+        (double-checked locking) so concurrent first-openers stay correct.
+        """
+        assert self.conn is not None
+        unique_name_from_instance = self.vectorizer_manager._create_unique_name(
+            self.vectorizer_name, self.vectorizer_config
+        )
+
+        stored_info_json = db.get_store_metadata(self.conn, "vectorizer_info")
+        if stored_info_json:
+            # Read-only compatibility check — no lock required, no write occurs.
+            self._assert_vectorizer_compatibility(stored_info_json, unique_name_from_instance)
+            return
+
+        # Write path: serialize only the initial vectorizer_info write.
+        with self._optional_file_lock_context("write vectorizer compatibility info"):
             stored_info_json = db.get_store_metadata(self.conn, "vectorizer_info")
-
-            unique_name_from_instance = self.vectorizer_manager._create_unique_name(self.vectorizer_name, self.vectorizer_config)
-
             if stored_info_json:
-                stored_info = json.loads(stored_info_json)
-                stored_unique = stored_info.get("unique_name", "")
+                self._assert_vectorizer_compatibility(stored_info_json, unique_name_from_instance)
+                return
 
-                stored_vec_name = stored_info.get("vectorizer_name") or stored_info.get("name") or stored_unique.split(":")[0]
-                stored_config = stored_info.get("vectorizer_config")
-                if stored_config is None and ":" in stored_unique:
-                    try:
-                        stored_config = json.loads(stored_unique.split(":", 1)[1])
-                    except Exception:
-                        stored_config = {}
+            vectorizer_info = {
+                "unique_name": unique_name_from_instance,
+                "name": self.vectorizer_name,
+                "vectorizer_name": self.vectorizer_name,
+                "vectorizer_config": self.vectorizer_config,
+                "dim": self.vectorizer.dim,
+                "dtype": self.vectorizer.dtype.name,
+            }
+            try:
+                self.conn.execute("BEGIN")
+                db.set_store_metadata(self.conn, "vectorizer_info", json.dumps(vectorizer_info))
+                self.conn.commit()
+            except Exception as e:
+                if self.conn.in_transaction: self.conn.rollback()
+                raise SafeStoreError("Failed to store vectorizer info in database") from e
 
-                stored_semantic_id = self.vectorizer_manager._create_unique_name(stored_vec_name, stored_config)
-                current_semantic_id = unique_name_from_instance
+    def _assert_vectorizer_compatibility(self, stored_info_json: str, unique_name_from_instance: str) -> None:
+        stored_info = json.loads(stored_info_json)
+        stored_unique = stored_info.get("unique_name", "")
 
-                stored_dim = stored_info.get("dim")
-                current_dim = getattr(self.vectorizer, "dim", None)
-                dim_mismatch = (stored_dim is not None and current_dim is not None and stored_dim != current_dim)
+        stored_vec_name = stored_info.get("vectorizer_name") or stored_info.get("name") or stored_unique.split(":")[0]
+        stored_config = stored_info.get("vectorizer_config")
+        if stored_config is None and ":" in stored_unique:
+            try:
+                stored_config = json.loads(stored_unique.split(":", 1)[1])
+            except Exception:
+                stored_config = {}
 
-                if stored_semantic_id != current_semantic_id or dim_mismatch:
-                    raise ConfigurationError(
-                        f"Database at '{self.db_path}' has an incompatible vectorizer: '{stored_info.get('unique_name')}'. "
-                        f"This instance is configured with '{unique_name_from_instance}'."
-                    )
-            else:
-                vectorizer_info = {
-                    "unique_name": unique_name_from_instance,
-                    "name": self.vectorizer_name,
-                    "vectorizer_name": self.vectorizer_name,
-                    "vectorizer_config": self.vectorizer_config,
-                    "dim": self.vectorizer.dim,
-                    "dtype": self.vectorizer.dtype.name,
-                }
-                try:
-                    self.conn.execute("BEGIN")
-                    db.set_store_metadata(self.conn, "vectorizer_info", json.dumps(vectorizer_info))
-                    self.conn.commit()
-                except Exception as e:
-                    if self.conn.in_transaction: self.conn.rollback()
-                    raise SafeStoreError("Failed to store vectorizer info in database") from e
-            
-            ASCIIColors.success(f"SafeStore is ready with vectorizer '{self.vectorizer_name}'.")
+        stored_semantic_id = self.vectorizer_manager._create_unique_name(stored_vec_name, stored_config)
+
+        stored_dim = stored_info.get("dim")
+        current_dim = getattr(self.vectorizer, "dim", None)
+        dim_mismatch = (stored_dim is not None and current_dim is not None and stored_dim != current_dim)
+
+        if stored_semantic_id != unique_name_from_instance or dim_mismatch:
+            raise ConfigurationError(
+                f"Database at '{self.db_path}' has an incompatible vectorizer: '{stored_info.get('unique_name')}'. "
+                f"This instance is configured with '{unique_name_from_instance}'."
+            )
+
+    def _ensure_chunking_tokenizer(self):
+        """Resolve the chunking tokenizer lazily, on first actual chunking call.
+
+        Deferring this away from ``__init__`` prevents the constructor from
+        blocking on a tiktoken encoding download (or a slow regex build) —
+        which is very noticeable on Windows and completely unnecessary when
+        the store is merely being opened for inspection.
+
+        Resolution order:
+          1. Native tokenizer exposed by the vectorizer (no external download).
+          2. User-supplied ``custom_tokenizer`` config.
+          3. tiktoken ``cl100k_base`` fallback.
+
+        The resolved tokenizer is cached in ``self.tokenizer_for_chunking``;
+        subsequent calls return immediately. Idempotent and thread-safe under
+        the instance lock (all call sites already hold it).
+        """
+        if self.tokenizer_for_chunking is not None:
+            return self.tokenizer_for_chunking
+
+        if self.vectorizer is not None and hasattr(self.vectorizer, "get_tokenizer"):
+            native = self.vectorizer.get_tokenizer()
+            if native is not None:
+                self.tokenizer_for_chunking = native
+                return self.tokenizer_for_chunking
+
+        if self.custom_tokenizer is not None:
+            self.tokenizer_for_chunking = get_tokenizer(self.custom_tokenizer)
+        else:
+            self.tokenizer_for_chunking = get_tokenizer({"name": "tiktoken", "model": "cl100k_base"})
+        return self.tokenizer_for_chunking
 
     def _connect_and_initialize(self) -> None:
         with self._optional_file_lock_context("DB connection/schema setup"):
@@ -461,10 +702,15 @@ class SafeStore:
         if self._file_lock:
             try:
                 op_name = description.split(':')[0]
-                ASCIIColors.debug(f"Attempting to acquire write lock for {op_name}")
+                ASCIIColors.info(f"[SafeStore timing] lock ATTEMPT for '{op_name}'")
+                t_acquire = time.monotonic()
                 with self._file_lock:
-                    ASCIIColors.info(f"Write lock acquired for {op_name}")
+                    acquire_ms = (time.monotonic() - t_acquire) * 1000.0
+                    ASCIIColors.info(f"Write lock acquired for {op_name} (waited {acquire_ms:.1f} ms)")
+                    t_body = time.monotonic()
                     yield
+                    body_ms = (time.monotonic() - t_body) * 1000.0
+                    ASCIIColors.info(f"[SafeStore timing] locked body '{op_name}' took {body_ms:.1f} ms")
                 ASCIIColors.debug(f"Write lock released for {description}")
             except Timeout as e:
                 msg = f"Timeout ({self.lock_timeout}s) acquiring write lock for {description}"
@@ -1080,10 +1326,18 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
             c_overlap = op_chunk_overlap if op_chunk_overlap is not None else self.chunk_overlap
             c_strategy = op_chunking_strategy if op_chunking_strategy is not None else self.chunking_strategy
 
+            # Resolve the chunking tokenizer lazily — never during store init. This
+            # absorbs the one-time tiktoken / custom-tokenizer cost at first ingest,
+            # where it is expected, instead of on every SafeStore() open.
+            if c_strategy in ('token', 'paragraph', 'semantic', 'recursive'):
+                chunk_tokenizer = self._ensure_chunking_tokenizer()
+            else:
+                chunk_tokenizer = None
+
             raw_chunks_data = []
             if skip_chunking:
                 storage_text = cleaned_text
-                v_text = self.tokenizer_for_chunking.decode(self.tokenizer_for_chunking.encode(cleaned_text)[:c_size]) if self.tokenizer_for_chunking else cleaned_text[:c_size]
+                v_text = chunk_tokenizer.decode(chunk_tokenizer.encode(cleaned_text)[:c_size]) if chunk_tokenizer else cleaned_text[:c_size]
                 raw_chunks_data = [(v_text, storage_text)]
             else:
                 raw_chunks_data = chunking.generate_chunks(
@@ -1093,7 +1347,7 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                     chunk_overlap=c_overlap, 
                     expand_before=self.expand_before,
                     expand_after=self.expand_after, 
-                    tokenizer=self.tokenizer_for_chunking,
+                    tokenizer=chunk_tokenizer,
                     vectorizer_fn=self.vectorizer.vectorize if c_strategy == 'semantic' else None,
                     **self.chunking_kwargs
                 )
@@ -1669,16 +1923,97 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
             info_json = db.get_store_metadata(self.conn, "vectorizer_info")
             return json.loads(info_json) if info_json else None
 
-    def delete_document_by_id(self, doc_id: int) -> None:
+    def _resolve_deletion_target(self, target: Union[int, str, Path]) -> int:
+        """Resolves a ``doc_id`` (int or numeric string) or a path-like target
+        (absolute path, path-like string, or basename) to a document id.
+
+        Rationale: callers (AITIANA's data_view) historically pass filenames
+        or basenames to ``delete_document_by_id`` even though the underlying
+        SQL keys on ``doc_id``. Without resolution the DELETE silently matched
+        zero rows, meaning "Delete" did nothing but log a lock acquisition.
+
+        Raises ``SafeStoreError`` if no document matches — resolving to a
+        wrong-but-existing id is not attempted, and silently returning 0 is
+        impossible from this helper.
+        """
+        if isinstance(target, bool):
+            raise SafeStoreError(f"Cannot delete document: {target!r} is a bool.")
+        if isinstance(target, int):
+            return target
+        if isinstance(target, str):
+            stripped = target.strip()
+            if stripped.lstrip("-").isdigit():
+                return int(stripped)
+
+        if not isinstance(target, (str, Path)):
+            raise SafeStoreError(
+                f"Cannot delete document: unsupported target type "
+                f"{type(target).__name__} ({target!r})."
+            )
+
+        self._ensure_connection()
+        assert self.conn is not None
+
+        target_str = str(target)
+        path_variants: List[str] = []
+        for candidate in (
+            target_str,
+            str(Path(target_str).resolve()) if target_str else "",
+            Path(target_str).name,
+        ):
+            if candidate and candidate not in path_variants:
+                path_variants.append(candidate)
+
+        for variant in path_variants:
+            row = self.conn.execute(
+                "SELECT doc_id FROM documents WHERE file_path = ?", (variant,)
+            ).fetchone()
+            if row:
+                return int(row[0])
+
+        # Last-resort suffix match: handles basename-only callers on paths
+        # whose stored form uses a different separator or absolute prefix.
+        basename = Path(target_str).name
+        if basename:
+            row = self.conn.execute(
+                "SELECT doc_id FROM documents WHERE file_path LIKE ? LIMIT 1",
+                (f"%{basename}",),
+            ).fetchone()
+            if row:
+                return int(row[0])
+
+        raise SafeStoreError(
+            f"No document matched target {target!r} "
+            f"(tried numeric id, exact path, resolved path, basename suffix)."
+        )
+
+    def delete_document_by_id(self, doc_id: Union[int, str, Path]) -> None:
+        """Deletes a single document.
+
+        Accepts a numeric ``doc_id`` (int or numeric string), an absolute or
+        relative path, or a basename. Resolution is delegated to
+        ``_resolve_deletion_target`` so a silent no-op (``affected == 0``)
+        is impossible: unresolvable targets raise ``SafeStoreError``.
+        """
         with self._instance_lock, self._optional_file_lock_context(f"delete_document: {doc_id}"):
             self._ensure_connection()
             assert self.conn is not None
+            resolved_id = self._resolve_deletion_target(doc_id)
             try:
                 self.conn.execute("BEGIN")
-                rows = self.conn.execute("DELETE FROM documents WHERE doc_id = ?", (doc_id,))
+                cursor = self.conn.execute("DELETE FROM documents WHERE doc_id = ?", (resolved_id,))
+                affected = cursor.rowcount
                 self.clear_datalake_cache()
                 self.conn.commit()
-                if rows > 0: ASCIIColors.success(f"Deleted document ID {doc_id}.")
+                if affected > 0:
+                    ASCIIColors.success(f"Deleted document ID {resolved_id}.")
+                else:
+                    # Resolution succeeded but the row vanished before delete —
+                    # concurrent deletion; do not treat this as a silent success.
+                    ASCIIColors.warning(
+                        f"Document ID {resolved_id} matched no row at delete time "
+                        f"(possibly deleted concurrently)."
+                    )
             except sqlite3.Error as e:
                 if self.conn.in_transaction: self.conn.rollback()
                 raise DatabaseError from e
@@ -2348,6 +2683,130 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
             else:
                 ASCIIColors.warning(f"Document '{_path_or_id}' not found.")
 
+    class _NullProgressBar:
+        """No-op stand-in for tqdm when progress is disabled or tqdm is unavailable."""
+        def update(self, n: int = 1) -> None:
+            pass
+        def close(self) -> None:
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            self.close()
+
+    @classmethod
+    def _make_progress_bar(cls, total: int, description: str, enabled: Optional[bool] = None):
+        """Returns a tqdm-compatible bar honouring TTY detection and tqdm availability.
+
+        - ``enabled=None`` auto-detects: bars appear only when ``sys.stderr`` is a TTY.
+        - ``enabled=False`` forces a silent no-op bar (GUI, CI, tests, redirection).
+        - ``enabled=True`` forces a bar when ``tqdm`` is importable.
+        """
+        if enabled is None:
+            enabled = sys.stderr.isatty()
+        if enabled:
+            try:
+                from tqdm import tqdm as _tqdm
+                return _tqdm(total=total, desc=description, unit="doc", leave=True)
+            except ImportError:
+                ASCIIColors.debug("tqdm not installed; progress bar disabled.")
+        return cls._NullProgressBar()
+
+    def _delete_documents_iter(self, doc_ids: List[int]):
+        """Yields ``(completed, total, doc_id, error)`` once per document.
+
+        Per-document exceptions are captured (not raised) so a single failure
+        cannot abort a batch. Callers are expected to surface ``error`` values.
+        """
+        total = len(doc_ids)
+        for idx, doc_id in enumerate(doc_ids, start=1):
+            error: Optional[Exception] = None
+            try:
+                self.delete_document_by_id(doc_id)
+            except Exception as exc:
+                error = exc
+            yield idx, total, doc_id, error
+
+    def delete_documents(
+        self,
+        doc_ids: List[int],
+        show_progress: Optional[bool] = None
+    ) -> Dict[str, Any]:
+        """Deletes multiple documents by ID with a live progress bar.
+
+        Parameters
+        ----------
+        doc_ids :
+            Document IDs to delete. Duplicates are collapsed; order preserved.
+        show_progress :
+            ``None`` (default) auto-detects TTY on ``sys.stderr``; ``True``
+            forces a bar when tqdm is available; ``False`` forces a silent bar.
+
+        Returns
+        -------
+        dict with keys ``total``, ``deleted``, ``failed``, ``errors``.
+        Each entry of ``errors`` is ``{"doc_id": int, "error": str}``.
+        """
+        # Dedupe while preserving order so callers can pass ad-hoc lists.
+        unique_ids: List[int] = []
+        seen: set = set()
+        for d in doc_ids:
+            di = int(d)
+            if di not in seen:
+                seen.add(di)
+                unique_ids.append(di)
+
+        total = len(unique_ids)
+        if total == 0:
+            return {"total": 0, "deleted": 0, "failed": 0, "errors": []}
+
+        deleted = 0
+        errors: List[Dict[str, Any]] = []
+
+        bar = self._make_progress_bar(total, "Deleting documents", enabled=show_progress)
+        try:
+            for _completed, _total, doc_id, error in self._delete_documents_iter(unique_ids):
+                if error is None:
+                    deleted += 1
+                else:
+                    ASCIIColors.warning(f"Failed to delete document ID {doc_id}: {error}")
+                    errors.append({"doc_id": doc_id, "error": str(error)})
+                bar.update(1)
+        finally:
+            bar.close()
+
+        return {
+            "total": total,
+            "deleted": deleted,
+            "failed": len(errors),
+            "errors": errors,
+        }
+
+    def delete_documents_by_paths(
+        self,
+        file_paths: List[Union[str, Path]],
+        show_progress: Optional[bool] = None
+    ) -> Dict[str, Any]:
+        """Deletes documents by path or basename, resolving each to a ``doc_id``.
+
+        Accepts absolute paths, path-like strings, or basenames. Unmatched
+        entries are reported under ``missing_paths`` and do not fail the batch.
+        """
+        self._ensure_connection()
+        assert self.conn is not None
+
+        resolved_ids: List[int] = []
+        missing_paths: List[str] = []
+        for p in file_paths:
+            try:
+                resolved_ids.append(self._resolve_deletion_target(p))
+            except SafeStoreError:
+                missing_paths.append(str(p))
+
+        result = self.delete_documents(resolved_ids, show_progress=show_progress)
+        result["missing_paths"] = missing_paths
+        return result
+
     def list_documents(self) -> List[Dict[str, Any]]:
             with self._instance_lock:
                 self._ensure_connection()
@@ -2743,6 +3202,487 @@ Chunk Links   : {info['knowledge_graph']['total_provenance_links']}
                 "has_next_page": page < total_pages,
                 "chunks": chunks,
                 "stitched_text": "\n\n".join(stitched_parts)
+            }
+
+    def _iter_document_chunks(
+        self,
+        doc_id: int,
+        *,
+        decrypt: bool = True,
+        page_size: int = 500
+    ):
+        """
+        Yield every chunk of a document in `chunk_seq` order as a normalized dict:
+
+        ``{"chunk_id", "chunk_seq", "start_pos", "end_pos", "text",
+           "metadata", "tags"}``
+
+        ``metadata`` is the PARSED-mode breadcrumb dict (title/authors/abstract/
+        path/chapter/section/subsection), or ``None`` when the chunks were
+        indexed without ``DocMetadataMode.PARSED`` (LLM/TITLE_ONLY modes, or a
+        plain comma-separated tag string).
+
+        Assumes the caller already holds ``self._instance_lock`` and has
+        ensured the connection is live; this helper does not re-acquire locks.
+        """
+        assert self.conn is not None
+        offset = 0
+        while True:
+            rows, _total = db.get_document_chunks_paginated(
+                self.conn, doc_id, offset=offset, limit=page_size
+            )
+            if not rows:
+                break
+            for cid, _did, chunk_b, start_p, end_p, seq, tags_raw, is_enc in rows:
+                tags_str: Optional[str] = None
+                if tags_raw is not None:
+                    if isinstance(tags_raw, bytes):
+                        try:
+                            tags_str = tags_raw.decode("utf-8", errors="ignore")
+                        except Exception:
+                            tags_str = None
+                    else:
+                        tags_str = str(tags_raw)
+
+                text = self._decrypt_payload(chunk_b, bool(is_enc), "Encrypted Chunk") if decrypt else ""
+                yield {
+                    "chunk_id": int(cid),
+                    "chunk_seq": int(seq),
+                    "start_pos": start_p,
+                    "end_pos": end_p,
+                    "text": text or "",
+                    "metadata": self._parse_chunk_level_metadata(tags_str),
+                    "tags": tags_str,
+                }
+            offset += page_size
+            if len(rows) < page_size:
+                break
+
+    def _resolve_doc_id(self, doc_id_or_path: Union[int, str, Path]) -> int:
+        """
+        Resolve an int doc_id or a path-like value to a concrete doc_id.
+        Raises ``SafeStoreError`` when no document matches.
+
+        Caller must hold the instance lock and have an open connection.
+        """
+        assert self.conn is not None
+        if isinstance(doc_id_or_path, int) and not isinstance(doc_id_or_path, bool):
+            return doc_id_or_path
+        if isinstance(doc_id_or_path, str) and doc_id_or_path.strip().lstrip("-").isdigit():
+            return int(doc_id_or_path.strip())
+        _path_or_id = str(
+            Path(doc_id_or_path).resolve()
+            if isinstance(doc_id_or_path, Path)
+            else doc_id_or_path
+        )
+        doc_id = db.get_document_id_by_path(self.conn, _path_or_id)
+        if doc_id is None:
+            raise SafeStoreError(f"Document '{doc_id_or_path}' not found.")
+        return int(doc_id)
+
+    def _decrypt_document_metadata(
+        self, doc_row: Optional[Tuple], include_metadata: bool
+    ) -> Optional[Dict[str, Any]]:
+        """Decrypt & parse a document row's metadata blob into a plain dict."""
+        if not include_metadata or not doc_row:
+            return None
+        meta_bytes = doc_row[4]
+        if not meta_bytes:
+            return None
+        doc_is_enc = bool(doc_row[5])
+        decrypted = self._decrypt_payload(meta_bytes, doc_is_enc, "Encrypted Metadata")
+        if not decrypted or decrypted.startswith("[Encrypted"):
+            return None
+        try:
+            parsed = json.loads(decrypted)
+        except (json.JSONDecodeError, TypeError):
+            return {"raw": decrypted}
+        return parsed if isinstance(parsed, dict) else {"value": parsed}
+
+    def get_document_content(
+        self,
+        doc_id_or_path: Union[int, str, Path],
+        include_metadata: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Return a document's COMPLETE text in a single convenience call.
+
+        Prefers the stored ``documents.full_text`` blob when present (fast path);
+        otherwise reconstructs the text by concatenating all chunks in
+        ``chunk_seq`` order. Encrypted documents are transparently decrypted via
+        the configured encryptor.
+
+        Parameters
+        ----------
+        doc_id_or_path : int | str | Path
+            Document id, absolute path, or path-like identifier.
+        include_metadata : bool
+            When True (default), attach the decrypted document metadata dict.
+
+        Returns
+        -------
+        dict with keys ``doc_id``, ``file_path``, ``content``,
+        ``chunk_count``, ``metadata``.
+        """
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+
+            doc_id = self._resolve_doc_id(doc_id_or_path)
+            doc_row = db.get_document_record_by_id(self.conn, doc_id)
+            if not doc_row:
+                raise SafeStoreError(f"Document '{doc_id_or_path}' not found.")
+
+            _doc_id_val, path_bytes, _hash_b, full_text_bytes, _meta_b, doc_enc, _ts = doc_row[:7]
+            file_path = path_bytes.decode("utf-8", errors="ignore") if path_bytes else ""
+
+            content = ""
+            if full_text_bytes:
+                decrypted_full = self._decrypt_payload(
+                    full_text_bytes, bool(doc_enc), "Encrypted Document"
+                )
+                if decrypted_full and not decrypted_full.startswith("[Encrypted"):
+                    content = decrypted_full
+
+            chunk_count = db.count_chunks_by_document(self.conn, doc_id)
+            if not content:
+                # Fallback: concatenate decrypted chunks in sequential order.
+                content = "\n".join(
+                    c["text"] for c in self._iter_document_chunks(doc_id, decrypt=True)
+                )
+
+            return {
+                "doc_id": doc_id,
+                "file_path": file_path,
+                "content": content,
+                "chunk_count": chunk_count,
+                "metadata": self._decrypt_document_metadata(doc_row, include_metadata),
+            }
+
+    def get_document_structure(
+        self, doc_id_or_path: Union[int, str, Path]
+    ) -> Dict[str, Any]:
+        """
+        Return a document's STRUCTURE (outline / table of contents) WITHOUT its
+        chunk text.
+
+        The outline is built from PARSED-mode breadcrumbs stored per chunk in the
+        ``chunks.tags`` column. Each chunk carries a ``path`` such as
+        ``"Intro / 1. Background / 1.2 Details"`` plus ``chapter`` / ``section`` /
+        ``subsection``. Chunks are sequence-ordered, so outline entries preserve
+        first-occurrence order.
+
+        NOTE: Structural breadcrumbs require indexing the document under
+        ``DocMetadataMode.PARSED`` (pass ``metadata_mode="parsed"`` when calling
+        ``add_document`` / ``add_text``). Without it, ``mode_available`` is False
+        and ``outline`` is empty.
+
+        Returns
+        -------
+        dict with keys ``doc_id``, ``file_path``, ``title``, ``authors``,
+        ``abstract``, ``outline``, ``chunk_count``, ``mode_available``, ``note``.
+        Each outline entry is::
+
+            {
+                "path": "Intro / 1. Background",
+                "chapter": "Intro",
+                "section": "1. Background",
+                "subsection": "1.2 Details",   # when present
+                "level": 2,                     # number of crumb components
+                "first_chunk_id": 42,
+                "first_chunk_seq": 3,
+                "chunk_ids": [42, 43, 44],
+            }
+        """
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+
+            doc_id = self._resolve_doc_id(doc_id_or_path)
+            doc_row = db.get_document_record_by_id(self.conn, doc_id)
+            if not doc_row:
+                raise SafeStoreError(f"Document '{doc_id_or_path}' not found.")
+
+            path_bytes = doc_row[1]
+            file_path = path_bytes.decode("utf-8", errors="ignore") if path_bytes else ""
+
+            title: Optional[str] = None
+            authors: Optional[str] = None
+            abstract: Optional[str] = None
+
+            outline_by_path: Dict[str, Dict[str, Any]] = {}
+            ordered_paths: List[str] = []
+            chunk_count = 0
+
+            for chunk in self._iter_document_chunks(doc_id, decrypt=False):
+                chunk_count += 1
+                meta = chunk["metadata"]
+                if not meta:
+                    continue
+                if title is None and meta.get("title"):
+                    title = meta["title"]
+                if authors is None and meta.get("authors"):
+                    authors = meta["authors"]
+                if abstract is None and meta.get("abstract"):
+                    abstract = meta["abstract"]
+
+                crumb_path = meta.get("path")
+                if not crumb_path:
+                    continue
+
+                if crumb_path not in outline_by_path:
+                    crumb_parts = [p.strip() for p in crumb_path.split(" / ") if p.strip()]
+                    entry: Dict[str, Any] = {
+                        "path": crumb_path,
+                        "chapter": meta.get("chapter"),
+                        "section": meta.get("section"),
+                        "subsection": meta.get("subsection"),
+                        "level": len(crumb_parts),
+                        "first_chunk_id": chunk["chunk_id"],
+                        "first_chunk_seq": chunk["chunk_seq"],
+                        "chunk_ids": [chunk["chunk_id"]],
+                    }
+                    # Trim None-valued keys except path/level/chunk bookkeeping.
+                    for k in ("chapter", "section", "subsection"):
+                        if entry[k] is None:
+                            entry.pop(k, None)
+                    outline_by_path[crumb_path] = entry
+                    ordered_paths.append(crumb_path)
+                else:
+                    outline_by_path[crumb_path]["chunk_ids"].append(chunk["chunk_id"])
+
+            outline = [outline_by_path[p] for p in ordered_paths]
+            mode_available = bool(outline)
+
+            return {
+                "doc_id": doc_id,
+                "file_path": file_path,
+                "title": title,
+                "authors": authors,
+                "abstract": abstract,
+                "outline": outline,
+                "chunk_count": chunk_count,
+                "mode_available": mode_available,
+                "note": (
+                    None
+                    if mode_available
+                    else "Structural breadcrumbs require DocMetadataMode.PARSED; "
+                         "re-index the document with metadata_mode='parsed' to "
+                         "populate the outline."
+                ),
+            }
+
+    def get_section_by_address(
+        self,
+        doc_id_or_path: Union[int, str, Path],
+        address: Union[str, List[str], Dict[str, str]],
+        *,
+        match: Literal["exact", "prefix", "contains", "regex"] = "exact"
+    ) -> Dict[str, Any]:
+        """
+        Resolve a chapter/section/subsection ADDRESS to its concatenated content.
+
+        Requires PARSED-mode indexing (``metadata_mode="parsed"``) so that chunks
+        carry ``path`` / ``chapter`` / ``section`` / ``subsection`` breadcrumbs.
+
+        Parameters
+        ----------
+        doc_id_or_path : int | str | Path
+        address : str | List[str] | Dict[str, str]
+            - A full breadcrumb string ``"Intro / 1. Background"``.
+            - A crumb list ``["Intro", "1. Background"]``.
+            - A dict of ``{"chapter": "...", "section": "...", "subsection": "..."}``.
+            - A single heading name matched as a path suffix at any depth.
+        match : {"exact", "prefix", "contains", "regex"}
+            Match strategy applied to the chunk ``path``. ``exact`` also
+            accepts a bare heading that equals any breadcrumb component.
+
+        Returns
+        -------
+        dict with keys ``doc_id``, ``file_path``, ``address``, ``resolved_path``,
+        ``matched_chunks`` (list of ``{"chunk_id", "chunk_seq"}``), ``content``,
+        ``found``. When no chunk matches, ``found`` is False and ``content`` is "".
+        """
+        if match not in ("exact", "prefix", "contains", "regex"):
+            raise SafeStoreError(
+                f"Invalid match mode '{match}'. Use 'exact', 'prefix', 'contains', or 'regex'."
+            )
+
+        import re as _re
+
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+
+            doc_id = self._resolve_doc_id(doc_id_or_path)
+            doc_row = db.get_document_record_by_id(self.conn, doc_id)
+            if not doc_row:
+                raise SafeStoreError(f"Document '{doc_id_or_path}' not found.")
+            path_bytes = doc_row[1]
+            file_path = path_bytes.decode("utf-8", errors="ignore") if path_bytes else ""
+
+            # Normalize the address into either a dict of fields or a path string.
+            field_filter: Dict[str, str] = {}
+            path_query: Optional[str] = None
+            regex_obj = None
+
+            if isinstance(address, dict):
+                field_filter = {
+                    k: str(v).strip()
+                    for k, v in address.items()
+                    if k in ("chapter", "section", "subsection") and v is not None and str(v).strip()
+                }
+                if not field_filter:
+                    raise SafeStoreError(
+                        "Address dict must contain at least one of: "
+                        "chapter, section, subsection."
+                    )
+            elif isinstance(address, (list, tuple)):
+                crumb = [str(p).strip() for p in address if str(p).strip()]
+                if not crumb:
+                    raise SafeStoreError("Address crumb list is empty.")
+                path_query = " / ".join(crumb)
+            elif isinstance(address, str):
+                stripped = address.strip()
+                if not stripped:
+                    raise SafeStoreError("Address string is empty.")
+                if " / " in stripped:
+                    path_query = " / ".join(p.strip() for p in stripped.split(" / ") if p.strip())
+                else:
+                    path_query = stripped
+            else:
+                raise SafeStoreError(f"Unsupported address type: {type(address).__name__}.")
+
+            if match == "regex" and path_query is not None:
+                try:
+                    regex_obj = _re.compile(path_query)
+                except _re.error as e:
+                    raise SafeStoreError(f"Invalid regex address: {e}") from e
+
+            matched_chunks: List[Dict[str, Any]] = []
+            parts: List[str] = []
+            resolved_path: Optional[str] = None
+
+            def _path_matches(chunk_meta: Dict[str, Any]) -> bool:
+                crumb_path = chunk_meta.get("path")
+                if field_filter:
+                    return all(
+                        str(chunk_meta.get(k, "")).strip() == v
+                        for k, v in field_filter.items()
+                    )
+                if path_query is None:
+                    return False
+                if regex_obj is not None:
+                    return bool(crumb_path and regex_obj.search(crumb_path))
+                if match == "exact":
+                    if crumb_path == path_query:
+                        return True
+                    # Single-heading exact: match any crumb component.
+                    if crumb_path and " / " not in path_query:
+                        return path_query in [p.strip() for p in crumb_path.split(" / ")]
+                    return False
+                if match == "prefix":
+                    return bool(crumb_path and crumb_path.startswith(path_query))
+                if match == "contains":
+                    return bool(crumb_path and path_query in crumb_path)
+                return False
+
+            for chunk in self._iter_document_chunks(doc_id, decrypt=True):
+                meta = chunk["metadata"]
+                if not meta:
+                    continue
+                if not _path_matches(meta):
+                    continue
+                matched_chunks.append({
+                    "chunk_id": chunk["chunk_id"],
+                    "chunk_seq": chunk["chunk_seq"],
+                })
+                parts.append(chunk["text"])
+                if resolved_path is None:
+                    resolved_path = meta.get("path")
+
+            return {
+                "doc_id": doc_id,
+                "file_path": file_path,
+                "address": address,
+                "resolved_path": resolved_path,
+                "matched_chunks": matched_chunks,
+                "content": "\n".join(parts),
+                "found": bool(matched_chunks),
+            }
+
+    def get_document_subtree(
+        self,
+        doc_id_or_path: Union[int, str, Path],
+        path_prefix: str
+    ) -> Dict[str, Any]:
+        """
+        Return everything under a breadcrumb prefix, e.g.
+        ``get_document_subtree("doc.md", "Intro / 1. Background")`` returns the
+        outline of sections under that prefix plus their concatenated content.
+
+        Requires PARSED-mode indexing (``metadata_mode="parsed"``).
+
+        Returns
+        -------
+        dict with keys ``doc_id``, ``file_path``, ``path_prefix``,
+        ``sections`` (outline-style entries under the prefix) and ``content``.
+        """
+        with self._instance_lock:
+            self._ensure_connection()
+            assert self.conn is not None
+
+            doc_id = self._resolve_doc_id(doc_id_or_path)
+            doc_row = db.get_document_record_by_id(self.conn, doc_id)
+            if not doc_row:
+                raise SafeStoreError(f"Document '{doc_id_or_path}' not found.")
+            path_bytes = doc_row[1]
+            file_path = path_bytes.decode("utf-8", errors="ignore") if path_bytes else ""
+
+            prefix = " / ".join(p.strip() for p in str(path_prefix).split(" / ") if p.strip())
+            if not prefix:
+                raise SafeStoreError("path_prefix must be a non-empty breadcrumb string.")
+
+            sections_by_path: Dict[str, Dict[str, Any]] = {}
+            ordered_paths: List[str] = []
+            parts: List[str] = []
+
+            for chunk in self._iter_document_chunks(doc_id, decrypt=True):
+                meta = chunk["metadata"]
+                if not meta:
+                    continue
+                crumb_path = meta.get("path")
+                if not crumb_path or not crumb_path.startswith(prefix):
+                    continue
+
+                parts.append(chunk["text"])
+
+                if crumb_path not in sections_by_path:
+                    crumb_parts = [p.strip() for p in crumb_path.split(" / ") if p.strip()]
+                    entry: Dict[str, Any] = {
+                        "path": crumb_path,
+                        "chapter": meta.get("chapter"),
+                        "section": meta.get("section"),
+                        "subsection": meta.get("subsection"),
+                        "level": len(crumb_parts),
+                        "first_chunk_id": chunk["chunk_id"],
+                        "first_chunk_seq": chunk["chunk_seq"],
+                        "chunk_ids": [chunk["chunk_id"]],
+                    }
+                    for k in ("chapter", "section", "subsection"):
+                        if entry[k] is None:
+                            entry.pop(k, None)
+                    sections_by_path[crumb_path] = entry
+                    ordered_paths.append(crumb_path)
+                else:
+                    sections_by_path[crumb_path]["chunk_ids"].append(chunk["chunk_id"])
+
+            return {
+                "doc_id": doc_id,
+                "file_path": file_path,
+                "path_prefix": prefix,
+                "sections": [sections_by_path[p] for p in ordered_paths],
+                "content": "\n".join(parts),
             }
 
     def get_chunk_by_id(self, chunk_id: int) -> Optional[Dict[str, Any]]:

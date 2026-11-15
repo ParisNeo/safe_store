@@ -6,12 +6,16 @@ or microservices), loading separate SentenceTransformer models in each process
 leads to excessive VRAM/RAM consumption and Out-Of-Memory (OOM) errors.
 
 SafeStore solves this with a Shared Model Server:
-1. First instance automatically spawns a background model server daemon.
-2. Subsequent instances and processes connect to the same server (1x model memory!).
-3. Dynamic Micro-Batching: Concurrent vectorization requests across multiple clients
-   are automatically grouped into batched inference passes for high GPU efficiency.
-4. Persistent Lifecycle: The server stays alive until explicitly instructed to die
-   via a special shutdown command (`SafeStore.shutdown_shared_vectorizer()`).
+1. The daemon starts in milliseconds and binds its port WITHOUT allocating any
+   model memory (lazy load — no torch import, no VRAM/RAM for weights).
+2. The SentenceTransformer is materialized on the first `vectorize()` call, or
+   on demand via `ModelServerClient.ensure_loaded()`.
+3. Idle weights are released after `--model-idle-timeout` (default 300 s) while
+   the daemon itself keeps serving; the next request reloads transparently.
+   Passing `--idle-timeout SEC` (>0) additionally exits the whole process.
+4. Inspect at any time with `ModelServerClient.health()` / `.status()` (loaded?
+   device? vram_bytes/ram_bytes? pending_requests?) and free VRAM for other
+   models with `ModelServerClient.unload_model()`; `.shutdown()` stops the daemon.
 """
 
 # =====================================================================

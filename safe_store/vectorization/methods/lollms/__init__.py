@@ -3,31 +3,105 @@ import numpy as np
 from typing import List, Optional, Dict, Any
 import os
 
-from ...base import BaseVectorizer
-from ....core.exceptions import ConfigurationError, VectorizationError
-from ascii_colors import ASCIIColors
+from safe_store.vectorization.base import BaseVectorizer
+from safe_store.core.exceptions import ConfigurationError, VectorizationError
+from ascii_colors import ASCIIColors, trace_exception
+import pipmaster as pm
 
 class_name = "LollmsVectorizer"
 
-import pipmaster as pm
-pm.ensure_packages(["openai"])
-import openai
+# Lazy import + lazy install: `lollms-client` is NOT a base dependency.
+# Installed on first use via pipmaster. `_LOLLMS_CLIENT_DEPS_READY` short-circuits.
+_LollmsClient = None
+_LOLLMS_CLIENT_DEPS_READY = False
 
-_OpenAIAPIError = openai.APIError
-_OpenAIAuthenticationError = openai.AuthenticationError
-_OpenAINotFoundError = openai.NotFoundError
-_OpenAIRateLimitError = openai.RateLimitError
-_OpenAIBadRequestError = openai.BadRequestError
-_OpenAIAPIConnectionError = openai.APIConnectionError
-_OPENAI_AVAILABLE = True
+
+def _ensure_lollms_client_deps_installed() -> None:
+    """Install `lollms-client` via pipmaster on first use. Idempotent."""
+    global _LOLLMS_CLIENT_DEPS_READY
+    if _LOLLMS_CLIENT_DEPS_READY:
+        return
+    try:
+        import lollms_client  # noqa: F401 - probe only
+        _LOLLMS_CLIENT_DEPS_READY = True
+        return
+    except (ImportError, ModuleNotFoundError):
+        pass
+    ASCIIColors.info(
+        "LollmsVectorizer: installing 'lollms-client' package (first use only)..."
+    )
+    pm.ensure_packages(["lollms-client>=1.3.0"])
+    _LOLLMS_CLIENT_DEPS_READY = True
+
+
+def _ensure_lollms_client_loaded():
+    """Import `lollms_client.LollmsClient` on first use. Idempotent."""
+    global _LollmsClient
+    if _LollmsClient is not None:
+        return _LollmsClient
+    try:
+        _ensure_lollms_client_deps_installed()
+        from lollms_client import LollmsClient as _LC
+    except Exception as e:
+        trace_exception(e)
+        raise ConfigurationError(
+            "LollmsVectorizer requires 'lollms-client' (auto-installed via "
+            "pipmaster on first use). If this persists, run "
+            "`pip install lollms-client`."
+        ) from e
+    _LollmsClient = _LC
+    return _LollmsClient
+
+
+# Lazy import + lazy install: `openai` is NOT a base dependency and MUST NOT be
+# installed at module-import time — `VectorizationManager.list_vectorizers()`
+# imports every method module just to read `class_name`, so a top-level
+# `pm.ensure_packages(["openai"])` would trigger a `pip install openai` merely
+# to LIST the vectorizers. Installed on first real use instead.
+_openai_module = None
+_OPENAI_DEPS_READY = False
+
+
+def _ensure_openai_deps_installed() -> None:
+    """Install the `openai` SDK via pipmaster on first use. Idempotent."""
+    global _OPENAI_DEPS_READY
+    if _OPENAI_DEPS_READY:
+        return
+    try:
+        import openai  # noqa: F401 - probe only
+        _OPENAI_DEPS_READY = True
+        return
+    except (ImportError, ModuleNotFoundError):
+        pass
+    ASCIIColors.info(
+        "LollmsVectorizer: installing 'openai' package (first use only)..."
+    )
+    pm.ensure_packages(["openai"])
+    _OPENAI_DEPS_READY = True
+
+
+def _ensure_openai_loaded():
+    """Import and return the `openai` module on first use. Idempotent."""
+    global _openai_module
+    if _openai_module is not None:
+        return _openai_module
+    try:
+        _ensure_openai_deps_installed()
+        import openai as _o
+    except Exception as e:
+        trace_exception(e)
+        raise ConfigurationError(
+            "LollmsVectorizer requires 'openai' (auto-installed via pipmaster "
+            "on first use). If this persists, run `pip install openai`."
+        ) from e
+    _openai_module = _o
+    return _openai_module
 
 def list_available_models(**kwargs) -> List[str]:
     """
     Dynamically lists models from a running Lollms (OpenAI-compatible) server.
     """
-    if not _OPENAI_AVAILABLE:
-        raise ConfigurationError("Lollms support requires 'openai'. Please run: pip install safe_store[openai]")
-    
+    openai = _ensure_openai_loaded()
     base_url = kwargs.get("base_url", "http://localhost:9600")
     api_key = kwargs.get("api_key", "not_needed")
     
@@ -72,9 +146,7 @@ class LollmsVectorizer(BaseVectorizer):
         super().__init__(
             vectorizer_name="lollms"
         )
-        if not _OPENAI_AVAILABLE or openai is None:
-            msg = "LollmsVectorizer requires the 'openai' library. Install with: pip install safe_store[openai]"
-            raise ConfigurationError(msg)
+        openai = _ensure_openai_loaded()
 
         if not isinstance(model_config, dict) or "model" not in model_config:
             msg = "Lollms vectorizer config must be a dictionary with a 'model' key."
@@ -110,7 +182,7 @@ class LollmsVectorizer(BaseVectorizer):
             self._dtype = np.dtype(np.float32)
             ASCIIColors.info(f"Model '{self.model_name}' ready. Dimension: {self._dim}, Dtype: {self._dtype.name}")
 
-        except (_OpenAIAuthenticationError, _OpenAINotFoundError, _OpenAIBadRequestError, _OpenAIRateLimitError, _OpenAIAPIConnectionError, _OpenAIAPIError) as e:
+        except (openai.AuthenticationError, openai.NotFoundError, openai.BadRequestError, openai.RateLimitError, openai.APIConnectionError, openai.APIError) as e:
             msg = (f"API error for model '{self.model_name}': "
                    f"HTTP {e.http_status if hasattr(e, 'http_status') else 'N/A'} - {e.code if hasattr(e, 'code') else 'N/A'} - {e.message}.")
             raise VectorizationError(msg) from e
@@ -135,7 +207,8 @@ class LollmsVectorizer(BaseVectorizer):
             return np.empty((0, self.dim), dtype=self.dtype)
 
         ASCIIColors.debug(f"Vectorizing {len(texts)} texts using Lollms model '{self.model_name}'...")
-        
+
+        openai = _ensure_openai_loaded()
         embeddings_results = [None] * len(texts)
         actual_texts_to_embed: List[str] = []
         original_indices_for_api_texts: List[int] = []
@@ -164,7 +237,7 @@ class LollmsVectorizer(BaseVectorizer):
                         raise VectorizationError(f"Model '{self.model_name}' returned an invalid embedding for text at original index {original_idx}.")
                     embeddings_results[original_idx] = embedding_vector
 
-            except (_OpenAIBadRequestError, _OpenAIRateLimitError, _OpenAIAPIConnectionError, _OpenAIAPIError) as e:
+            except (openai.BadRequestError, openai.RateLimitError, openai.APIConnectionError, openai.APIError) as e:
                 msg = f"Lollms API error during vectorization: {e.message if hasattr(e, 'message') else str(e)}"
                 raise VectorizationError(msg) from e
             except Exception as e:

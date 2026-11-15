@@ -1,4 +1,7 @@
 # safe_store/vectorization/methods/openai.py
+import importlib
+import site
+import sys
 import numpy as np
 from typing import List, Optional, Dict, Any
 import os # For accessing environment variables like OPENAI_API_KEY
@@ -6,30 +9,84 @@ import os # For accessing environment variables like OPENAI_API_KEY
 from ...base import BaseVectorizer
 from ....core.exceptions import ConfigurationError, VectorizationError
 from ascii_colors import ASCIIColors
+import pipmaster as pm
+
+_openai_module = None
+_OPENAI_DEPS_READY = False
+
+
+def _refresh_sys_path_after_install() -> None:
+    """Make wheels installed by pipmaster importable in THIS process.
+
+    `pm.ensure_packages(...)` runs `pip install` in a subprocess; the running
+    interpreter must invalidate its importlib path caches before the new
+    package can be imported. Also adds user-site if pip installed `--user`.
+    """
+    importlib.invalidate_caches()
+    try:
+        user_site = site.getusersitepackages()
+    except Exception:
+        return
+    if not user_site or user_site in sys.path:
+        return
+    try:
+        if os.path.isdir(user_site):
+            site.addsitedir(user_site)
+    except Exception:
+        pass
+
+
+def _ensure_openai_deps_installed() -> None:
+    """Install the `openai` SDK via pipmaster on first use. Idempotent."""
+    global _OPENAI_DEPS_READY
+    if _OPENAI_DEPS_READY:
+        return
+    try:
+        import openai  # noqa: F401 - probe only
+        _OPENAI_DEPS_READY = True
+        return
+    except (ImportError, ModuleNotFoundError):
+        pass
+    ASCIIColors.info(
+        "OpenAIVectorizer: installing 'openai' package (first use only)..."
+    )
+    pm.ensure_packages(["openai>=1.0"])
+    _refresh_sys_path_after_install()
+    _OPENAI_DEPS_READY = True
+
+
+def _ensure_openai_loaded():
+    """Import and return the `openai` module on first use. Idempotent."""
+    global _openai_module
+    if _openai_module is not None:
+        return _openai_module
+    try:
+        _ensure_openai_deps_installed()
+        import openai as _o
+    except Exception as e:
+        from ascii_colors import trace_exception as _te
+        _te(e)
+        raise ConfigurationError(
+            "OpenAIVectorizer requires 'openai' (auto-installed via pipmaster "
+            "on first use). If this persists, run `pip install openai`."
+        ) from e
+    _openai_module = _o
+    return _openai_module
 
 # each vectorizer must have a class name variable to be identified
 class_name = "OpenAIVectorizer"
-
-# Attempt import of openai and related error types, handle gracefully
-import pipmaster as pm
-pm.ensure_packages(["openai"]) # Ensure openai is installed
-import openai
-# Specific errors from the openai library (v1.x+)
-_OpenAIAPIError = openai.APIError
-_OpenAIAuthenticationError = openai.AuthenticationError
-_OpenAINotFoundError = openai.NotFoundError
-_OpenAIRateLimitError = openai.RateLimitError
-_OpenAIBadRequestError = openai.BadRequestError
-_OpenAIAPIConnectionError = openai.APIConnectionError
-_OPENAI_AVAILABLE = True
 
 def list_available_models(**kwargs) -> List[str]:
     """
     Dynamically lists models from a running Lollms (OpenAI-compatible) server.
     """
-    if not _OPENAI_AVAILABLE:
-        raise ConfigurationError("Lollms support requires 'openai'. Please run: pip install safe_store[openai]")
-    
+    try:
+        openai = _ensure_openai_loaded()
+    except ConfigurationError:
+        raise ConfigurationError(
+            "Lollms support requires 'openai'. Please run: pip install safe_store[openai]"
+        )
+
     base_url = kwargs.get("base_url", "http://localhost:9600")
     api_key = kwargs.get("api_key", "not_needed")
     
@@ -89,11 +146,7 @@ class OpenAIVectorizer(BaseVectorizer):
         super().__init__(
             vectorizer_name="openai"
         )
-        if not _OPENAI_AVAILABLE or openai is None:
-            msg = ("OpenAIVectorizer requires the 'openai' library. "
-                   "Install with: pip install safe_store[openai] (or pip install openai)")
-            ASCIIColors.error(msg)
-            raise ConfigurationError(msg)
+        openai = _ensure_openai_loaded()
 
         if not isinstance(model_config, dict) or "model" not in model_config:
             msg = "OpenAI vectorizer config must be a dictionary with a 'model' key."
@@ -145,19 +198,19 @@ class OpenAIVectorizer(BaseVectorizer):
             self._dtype = np.dtype(np.float32)
             ASCIIColors.info(f"OpenAI model '{self.model_name}' ready. Dimension: {self._dim}, Dtype: {self._dtype.name}")
 
-        except _OpenAIAuthenticationError as e:
+        except openai.AuthenticationError as e:
             msg = (f"OpenAI API authentication error for model '{self.model_name}': "
                    f"HTTP {e.http_status if hasattr(e, 'http_status') else 'N/A'} - {e.code if hasattr(e, 'code') else 'N/A'} - {e.message}. "
                    "Please check your API key (from vectorizer_config or OPENAI_API_KEY env var).")
             ASCIIColors.error(msg)
             raise ConfigurationError(msg) from e
-        except _OpenAINotFoundError as e:
+        except openai.NotFoundError as e:
             msg = (f"OpenAI model '{self.model_name}' not found: "
                    f"HTTP {e.http_status if hasattr(e, 'http_status') else 'N/A'} - {e.code if hasattr(e, 'code') else 'N/A'} - {e.message}. "
                    "Ensure the model name is correct and available to your API key.")
             ASCIIColors.error(msg)
             raise ConfigurationError(msg) from e
-        except (_OpenAIBadRequestError, _OpenAIRateLimitError, _OpenAIAPIConnectionError, _OpenAIAPIError) as e:
+        except (openai.BadRequestError, openai.RateLimitError, openai.APIConnectionError, openai.APIError) as e:
             msg = (f"OpenAI API error for model '{self.model_name}': "
                    f"HTTP {e.http_status if hasattr(e, 'http_status') else 'N/A'} - {e.code if hasattr(e, 'code') else 'N/A'} - {e.message}.")
             ASCIIColors.error(msg)
@@ -188,7 +241,8 @@ class OpenAIVectorizer(BaseVectorizer):
             return np.empty((0, self.dim), dtype=self.dtype)
 
         ASCIIColors.debug(f"Vectorizing {len(texts)} texts using OpenAI model '{self.model_name}'...")
-        
+
+        openai = _ensure_openai_loaded()
         # Prepare lists for batching, handling empty/whitespace strings
         embeddings_results = [None] * len(texts)
         actual_texts_to_embed: List[str] = []
@@ -232,7 +286,7 @@ class OpenAIVectorizer(BaseVectorizer):
                         raise VectorizationError(msg)
                     embeddings_results[original_idx] = embedding_vector
 
-            except (_OpenAIBadRequestError, _OpenAIRateLimitError, _OpenAIAPIConnectionError, _OpenAIAPIError) as e:
+            except (openai.BadRequestError, openai.RateLimitError, openai.APIConnectionError, openai.APIError) as e:
                 err_type = e.__class__.__name__
                 status_info = (f"HTTP {e.http_status if hasattr(e, 'http_status') else 'N/A'} - "
                                f"{e.code if hasattr(e, 'code') else 'N/A'} - {e.message if hasattr(e, 'message') else str(e)}")
@@ -278,7 +332,9 @@ class OpenAIVectorizer(BaseVectorizer):
             "text-embedding-ada-002",
         ]
 
-        if not _OPENAI_AVAILABLE:
+        try:
+            openai = _ensure_openai_loaded()
+        except Exception:
             return default_models
 
         # Attempt to retrieve API key and base URL from arguments or environment

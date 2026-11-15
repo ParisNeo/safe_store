@@ -3,46 +3,72 @@
 
 ## Table of Contents
 
-1. [Introduction](#1-introduction)
-   * [What is safe_store?](#what-is-safe_store)
-   * [Key Features & Architecture](#key-features--architecture)
-2. [Installation & Dependencies](#2-installation--dependencies)
-3. [Quick Start](#3-quick-start)
-4. [Database Diagnostics & Inspection (`store.info()`)](#4-database-diagnostics--inspection)
-5. [SafeStore Studio (Desktop & Web GUI)](#5-safestore-studio-desktop--web-gui)
-5. [Vectorization Backends](#5-vectorization-backends)
-6. [The 8 RAG Chunking Strategies](#6-the-8-rag-chunking-strategies)
-7. [Search & Retrieval Modes](#7-search--retrieval-modes)
-   * [7.1. Dense Vector Search (`query`)](#71-dense-vector-search)
-   * [7.2. Sparse Lexical Search (`BM25Retriever`)](#72-sparse-lexical-search)
-   * [7.3. Tri-Modal Hybrid Retrieval (`hybrid_query`)](#73-tri-modal-hybrid-retrieval)
-   * [7.4. Universal 0–100 Relevance Grading & Thresholding](#74-universal-0100-relevance-grading--thresholding)
-   * [7.5. Full Document & Context Window Retrieval](#75-full-document--context-window-retrieval)
-   * [7.6. Overlapping Chunk Reconstruction & Chronological Fusion](#76-overlapping-chunk-reconstruction--chronological-fusion)
-8. [Knowledge Graph & W3C SPARQL 1.1 Engine](#8-knowledge-graph--w3c-sparql-11-engine)
-   * [8.1. Automatic Graph Extraction & Dynamic Extraction Prompt](#81-automatic-graph-extraction)
-   * [8.2. W3C SPARQL 1.1 Query Engine (`query_sparql`)](#82-w3c-sparql-11-query-engine)
-   * [8.3. SPARQL 1.1 Update Engine (`execute_sparql_update`)](#83-sparql-11-update-engine)
-   * [8.4. TBox Ontology Management (`TBoxManager`)](#84-tbox-ontology-management)
-   * [8.5. Deductive Semantic Reasoning & Exclusivity Checking](#85-deductive-semantic-reasoning--exclusivity-checking)
-   * [8.6. Declarative Tabular-to-Graph Mapping (`TabularMapper`)](#86-declarative-tabular-to-graph-mapping)
-   * [8.7. AI-Assisted Mapping & TBox/ABox Separation](#87-ai-assisted-mapping--tboxabox-separation)
-   * [8.8. Tri-Modal Unified Graph Search (`query_graph_hybrid`)](#88-tri-modal-unified-graph-search)
-   * [8.8. Custom LLM Generator Callable Specification](#88-custom-llm-generator-callable-specification)
-9. [LLM Cognitive Memory & Tool Calling](#9-llm-cognitive-memory--tool-calling)
-   * [9.1. Episodic Memory Logging](#91-episodic-memory-logging)
-   * [9.2. Associative Pathways & Chunk Grounding](#92-associative-pathways--chunk-grounding)
-   * [9.3. Function Calling Tool Dispatcher](#93-function-calling-tool-dispatcher)
-10. [Semantic Datalake & Point Cloud Engine](#10-semantic-datalake--point-cloud-engine)
-11. [Document Clustering & Thematic Grouping](#11-document-clustering--thematic-grouping)
-12. [SafeStore Studio LLM Setup & Sourced Agentic Chat](#12-safestore-studio-llm-setup--sourced-agentic-chat)
-13. [External Framework Integrations (LangChain, Transformers, OpenAI)](#13-external-framework-integrations)
-   * [11.1. Document Centroid Embedding Math](#111-document-centroid-embedding-math)
-   * [11.2. Clustering Algorithms & Auto-K Selection](#112-clustering-algorithms--auto-k-selection)
-   * [11.3. Dual-Mode Thematic Synthesis (LLM vs c-TF-IDF)](#113-dual-mode-thematic-synthesis-llm-vs-c-tf-idf)
-   * [11.4. SQLite Caching & Automatic Invalidation](#114-sqlite-caching--automatic-invalidation)
-   * [11.5. Python API Usage](#115-python-api-usage)
-   * [11.6. SafeStore Studio Interactive Clustering Workspace](#116-safestore-studio-interactive-clustering-workspace)
+- [safe\_store Documentation](#safe_store-documentation)
+  - [Table of Contents](#table-of-contents)
+  - [1. Introduction](#1-introduction)
+    - [What is safe\_store?](#what-is-safe_store)
+  - [2. Installation \& Dependencies](#2-installation--dependencies)
+  - [3. Quick Start](#3-quick-start)
+  - [4. Database Diagnostics \& Inspection](#4-database-diagnostics--inspection)
+  - [5. SafeStore Studio (Desktop \& Web GUI)](#5-safestore-studio-desktop--web-gui)
+    - [Studio Capabilities \& Layout:](#studio-capabilities--layout)
+  - [5. Vectorization Backends](#5-vectorization-backends)
+  - [6. The 8 RAG Chunking Strategies](#6-the-8-rag-chunking-strategies)
+  - [7. Search \& Retrieval Modes](#7-search--retrieval-modes)
+    - [7.1. Dense Vector Search](#71-dense-vector-search)
+    - [7.2. Sparse Lexical Search](#72-sparse-lexical-search)
+    - [7.3. Tri-Modal Hybrid Retrieval](#73-tri-modal-hybrid-retrieval)
+    - [7.4. Universal 0–100 Relevance Grading \& Thresholding](#74-universal-0100-relevance-grading--thresholding)
+    - [7.5. Full Document \& Context Window Retrieval](#75-full-document--context-window-retrieval)
+    - [7.6. Overlapping Chunk Reconstruction \& Chronological Fusion](#76-overlapping-chunk-reconstruction--chronological-fusion)
+    - [7.7. Working with Document Structure \& Addresses](#77-working-with-document-structure--addresses)
+      - [7.7.1. Full document content — `get_document_content`](#771-full-document-content--get_document_content)
+      - [7.7.2. Structure without content — `get_document_structure`](#772-structure-without-content--get_document_structure)
+      - [7.7.3. Resolve an address to its content — `get_section_by_address`](#773-resolve-an-address-to-its-content--get_section_by_address)
+      - [7.7.4. Everything under a prefix — `get_document_subtree`](#774-everything-under-a-prefix--get_document_subtree)
+      - [7.7.5. End-to-end example](#775-end-to-end-example)
+  - [8. Knowledge Graph \& W3C SPARQL 1.1 Engine](#8-knowledge-graph--w3c-sparql-11-engine)
+    - [8.1. Automatic Graph Extraction (High-Context Fast Modes)](#81-automatic-graph-extraction-high-context-fast-modes)
+    - [8.2. W3C SPARQL 1.1 Query Engine \& AI SPARQL Generator](#82-w3c-sparql-11-query-engine--ai-sparql-generator)
+    - [8.3. SPARQL 1.1 Update Engine](#83-sparql-11-update-engine)
+    - [8.4. TBox Ontology Management](#84-tbox-ontology-management)
+    - [8.5. Deductive Semantic Reasoning \& Exclusivity Checking](#85-deductive-semantic-reasoning--exclusivity-checking)
+      - [Python API](#python-api)
+    - [8.6. Declarative Tabular-to-Graph Mapping (Zero-LLM)](#86-declarative-tabular-to-graph-mapping-zero-llm)
+    - [8.7. AI-Assisted Mapping \& TBox/ABox Separation](#87-ai-assisted-mapping--tboxabox-separation)
+      - [1. Visualizing TBox vs ABox](#1-visualizing-tbox-vs-abox)
+      - [2. CSV Ingestion Workflows](#2-csv-ingestion-workflows)
+      - [3. SafeStore Studio UI Integration](#3-safestore-studio-ui-integration)
+    - [8.6. Tri-Modal Unified Graph Search](#86-tri-modal-unified-graph-search)
+    - [8.7. Custom LLM Generator Callable Specification](#87-custom-llm-generator-callable-specification)
+      - [1. Standard Protocol Signature](#1-standard-protocol-signature)
+      - [2. Plug in OpenAI, Ollama, or Anthropic](#2-plug-in-openai-ollama-or-anthropic)
+      - [3. Single-Argument Lambda (Fastest 1-Liner)](#3-single-argument-lambda-fastest-1-liner)
+      - [4. Change Generator at Runtime](#4-change-generator-at-runtime)
+  - [9. LLM Cognitive Memory \& Tool Calling](#9-llm-cognitive-memory--tool-calling)
+  - [11. Document Clustering \& Thematic Grouping](#11-document-clustering--thematic-grouping)
+    - [11.1. Document Centroid Embedding Math](#111-document-centroid-embedding-math)
+    - [11.2. Clustering Algorithms \& Auto-K Selection](#112-clustering-algorithms--auto-k-selection)
+      - [Auto-K Estimation](#auto-k-estimation)
+    - [11.3. Dual-Mode Thematic Synthesis (LLM vs c-TF-IDF)](#113-dual-mode-thematic-synthesis-llm-vs-c-tf-idf)
+    - [11.4. SQLite Caching \& Automatic Invalidation](#114-sqlite-caching--automatic-invalidation)
+    - [11.5. Python API Usage](#115-python-api-usage)
+    - [11.6. SafeStore Studio Interactive Clustering Workspace](#116-safestore-studio-interactive-clustering-workspace)
+  - [12. SafeStore Studio LLM Setup \& Sourced Agentic Chat](#12-safestore-studio-llm-setup--sourced-agentic-chat)
+    - [12.1. LLM Setup Dialog (Studio Header)](#121-llm-setup-dialog-studio-header)
+    - [12.2. Sourced Agentic Chat \& Q\&A Workspace (`tab_chat`)](#122-sourced-agentic-chat--qa-workspace-tab_chat)
+  - [13. External Framework Integrations (LangChain, Transformers, OpenAI)](#13-external-framework-integrations-langchain-transformers-openai)
+    - [13.1. LangChain](#131-langchain)
+    - [13.2. Hugging Face Transformers](#132-hugging-face-transformers)
+    - [13.3. Direct OpenAI SDK](#133-direct-openai-sdk)
+  - [12. Zero-Leakage Local Encryption](#12-zero-leakage-local-encryption)
+    - [12.1. Total Zero-Leakage Architecture](#121-total-zero-leakage-architecture)
+    - [12.2. Encrypted Document Paths \& Blind Indexing](#122-encrypted-document-paths--blind-indexing)
+    - [12.3. Encrypted Knowledge Graph at Rest](#123-encrypted-knowledge-graph-at-rest)
+    - [12.4. Studio Password Challenge](#124-studio-password-challenge)
+  - [13. Database Portability \& Re-Vectorization](#13-database-portability--re-vectorization)
+  - [14. API Reference Summary](#14-api-reference-summary)
+  - [15. License](#15-license)
 12. [Zero-Leakage Local Encryption (Fernet AES-128/HMAC)](#12-zero-leakage-local-encryption)
    * [12.1. Total Zero-Leakage Architecture](#121-total-zero-leakage-architecture)
    * [12.2. Encrypted Document Paths & Blind Indexing](#122-encrypted-document-paths--blind-indexing)
@@ -71,18 +97,37 @@
 ## 2. Installation & Dependencies
 
 ```bash
-# Core package
+# Core package — light install, no torch, no transformers.
 pip install safe_store
 
-# Optional extras
-pip install safe_store[sentence-transformers] # Local Hugging Face models
-pip install safe_store[openai]                # OpenAI & Lollms API
-pip install safe_store[ollama]                # Local Ollama client
-pip install safe_store[cohere]                # Cohere API
-pip install safe_store[parsing]               # PDF, DOCX, HTML parser dependencies
-pip install safe_store[encryption]            # Cryptography & Fernet encryption
-pip install safe_store[all]                   # Everything
+# Vectorizer backends are AUTO-INSTALLED on first use via pipmaster.
+# Each vectorizer method module calls perform `pm.ensure_packages([...])`
+# when the backend is first requested, so you don't need to pre-install them.
+
+# Optional: pre-warm a backend at install time (useful for CI / deploy images)
+pip install safe_store[st]           # torch + sentence-transformers
+pip install safe_store[onnx]         # fastembed (ONNX Runtime, no torch)
+pip install safe_store[openai]       # OpenAI API client
+pip install safe_store[ollama]       # Local Ollama client
+pip install safe_store[cohere]       # Cohere API
+pip install safe_store[vectorizers]  # All of the above at once
+
+# Optional UI extras
+pip install safe_store[ui]           # NiceGUI + pywebview + Plotly
 ```
+
+### Lazy install semantics
+
+| Situation | Behaviour |
+| :--- | :--- |
+| `import safe_store` | ⚡ ~50 ms — **no** torch / transformers / fastembed import. |
+| First `SafeStore(..., vectorizer_name="st")` (local mode) | 🔽 Auto-installs `torch` + `sentence-transformers` (~30–90 s), then loads model. |
+| First `SafeStore(..., vectorizer_name="onnx")` | 🔽 Auto-installs `fastembed` (~30 s), then loads model. |
+| First shared-daemon request (`use_shared_server=True`) | 🔽 Daemon auto-installs `torch` + `sentence-transformers` on first `vectorize` (or `--eager`). |
+| Any subsequent process | ⚡ Instant — packages already on disk. |
+
+> 💡 The install is a **one-time** cost per environment. `pipmaster` caches the
+> resolved wheel state and skips the pip call once the module import succeeds.
 
 ---
 
@@ -184,12 +229,33 @@ print(f"Knowledge Graph: {diag['knowledge_graph']['total_nodes']} nodes, {diag['
 
 Configure any vectorizer at creation time:
 - `"st"`: Sentence-Transformers (e.g. `{"model": "all-MiniLM-L6-v2"}`). Supports `use_shared_server=True` for multi-user/multi-process server deployments with dynamic micro-batching and persistent resource sharing (see [Shared Model Server Blueprint](docs/shared_model_server_architecture.md)).
+- `"st"` with `use_shared_server=True` is **lazy by default**: the daemon binds its port in milliseconds and the model loads only on the first vectorize call. Use `ModelServerClient.ensure_loaded()`, `.health()`, `.status()`, and `.unload_model()` to control its lifecycle; weights are unloaded automatically after `--model-idle-timeout` (default 300 s). See [§5 Shared Model Server](#5-shared-model-server-lazy-load-vectorizer) below.
 - `"ollama"`: Ollama local daemon (e.g. `{"model": "nomic-embed-text", "host": "http://localhost:11434"}`)
 - `"openai"`: OpenAI API (e.g. `{"model": "text-embedding-3-small"}`)
 - `"cohere"`: Cohere API (e.g. `{"model": "embed-english-v3.0"}`)
 - `"lollms"`: Any OpenAI-compatible endpoint (e.g. `{"model": "nomic-embed-text", "base_url": "http://localhost:9600"}`)
 - `"tfidf"`: Data-dependent Term Frequency - Inverse Document Frequency.
 - `"grepper"`: Lightweight inverted index with markdown section tree extraction.
+
+---
+
+## 5. Shared Model Server (lazy-load vectorizer)
+
+The shared server lets many `SafeStore` processes reuse a single
+`SentenceTransformer`, avoiding one VRAM/RAM copy per worker. Startup is
+**lazy**: the daemon binds its TCP port in milliseconds and the model is loaded
+only on the first `vectorize()` call (or explicitly via `ModelServerClient.ensure_loaded()`).
+Idle weights are auto-released after `--model-idle-timeout` (default 300 s) while
+the daemon stays alive; `.unload_model()` frees VRAM on demand (e.g. before
+loading an LLM), and `.health()` / `.status()` report `model_loaded`, `device`,
+`vram_bytes`, and `ram_bytes`. Start it with:
+
+```bash
+python -m safe_store.vectorization.model_server.run_server --port 5555 --token "<secret>"
+```
+
+Full architecture, protocol, CLI flags, and client contract:
+[`docs/shared_model_server_architecture.md`](docs/shared_model_server_architecture.md).
 
 ---
 
@@ -262,19 +328,233 @@ reconstructed = store.query(
 fused = store.reconstruct_overlapping_chunks(raw_results, add_metadata=True)
 ```
 
-### 7.6. Overlapping Chunk Reconstruction & Chronological Fusion
-Eliminate chunk fragmentation and duplicate text at boundary seams:
+### 7.7. Working with Document Structure & Addresses
+
+`SafeStore` exposes four high-level helpers that make it trivial to browse a document without loading the entire text, to fetch the full content in one call, and to resolve a chapter / section / subsection "address" down to its exact spans:
+
+| Helper | What you get | Text included? |
+| :--- | :--- | :--- |
+| `store.get_document_content(doc_id_or_path)` | The complete document text + optional metadata | ✅ **Yes** |
+| `store.get_document_structure(doc_id_or_path)` | An ordered **outline** of addresses (path/chapter/section/subsection) | ❌ **No** |
+| `store.get_section_by_address(doc_id_or_path, address, match=...)` | Resolves an address → concatenated section content | ✅ Yes (matched only) |
+| `store.get_document_subtree(doc_id_or_path, path_prefix)` | Everything under a breadcrumb prefix | ✅ Yes (matched only) |
+
+> ⚠️ **Structural helpers require PARSED metadata.** Every helper except `get_document_content` reads the per-chunk breadcrumbs (`path`, `chapter`, `section`, `subsection`) that `safe_store` only records when a document is indexed under `DocMetadataMode.PARSED`. Index with:
+
 ```python
-# 1. Enable directly in dense or hybrid queries
-reconstructed = store.query(
-    "supervisor daemon telemetry metrics",
-    top_k=5,
-    reconstruct_overlapping_chunks=True, # Seamless chronological fusion
-    add_metadata=True                   # Single unified metadata header per doc
+store.add_document("paper.pdf", metadata_mode="parsed")   # string form
+store.add_document("notes.md", metadata_mode=DocMetadataMode.PARSED)  # enum form
+```
+
+> 💡 Already have documents indexed without parsed metadata? Upgrade them in place with `store.rechunk_and_vectorize(metadata_mode="parsed")` (see [§12](#12-database-portability--re-vectorization)).
+
+---
+
+#### 7.7.1. Full document content — `get_document_content`
+
+Fetches a document's complete text in one call. It prefers the stored `full_text` blob (fast path) and falls back to concatenating all chunks in `chunk_seq` order. Encrypted documents are decrypted transparently.
+
+```python
+doc = store.get_document_content("papers/quantum.pdf")
+
+print(doc["doc_id"])           # 7
+print(doc["file_path"])        # "papers/quantum.pdf"
+print(doc["chunk_count"])      # 42
+print(doc["metadata"])         # {"authors": "Jane Doe", ...} or None
+print(doc["content"][:200])    # full plaintext (decrypted if encrypted)
+
+# Skip metadata read when you don't need it:
+doc = store.get_document_content(7, include_metadata=False)
+```
+
+**Return schema**
+
+| Key | Type | Description |
+| :--- | :--- | :--- |
+| `doc_id` | `int` | Document identifier. |
+| `file_path` | `str` | Resolved full path (decrypted for encrypted stores). |
+| `content` | `str` | Complete document text. |
+| `chunk_count` | `int` | Number of chunks (DB truth). |
+| `metadata` | `dict \| None` | Document-level metadata (or `None` if absent / not requested). |
+
+---
+
+#### 7.7.2. Structure without content — `get_document_structure`
+
+Returns the **document outline** — the unique breadcrumbs discovered across all chunks — **without loading a single chunk's text**. This is the "table of contents" view.
+
+```python
+from safe_store import SafeStore, DocMetadataMode
+
+store = SafeStore("knowledge.db")
+store.add_document("handbook.md", metadata_mode="parsed")
+
+structure = store.get_document_structure("handbook.md")
+
+print(structure["title"])        # "Employee Handbook"
+print(structure["authors"])      # "Acme HR"  (if detected)
+print(structure["mode_available"])  # True
+
+for entry in structure["outline"]:
+    print(f"{'  ' * (entry['level'] - 1)}{entry['path']}")
+# Intro
+# Introduction
+#   1. Background
+#     1.1 Motivation
+#     1.2 Scope
+# Appendix A / Glossary
+```
+
+**Return schema**
+
+| Key | Type | Description |
+| :--- | :--- | :--- |
+| `doc_id` | `int` | Document identifier. |
+| `file_path` | `str` | Resolved full path. |
+| `title` | `str \| None` | Document-level title (from PARSED metadata). |
+| `authors` | `str \| None` | Authors, when detected. |
+| `abstract` | `str \| None` | Abstract, when detected. |
+| `outline` | `list[dict]` | Ordered outline entries (see below). |
+| `chunk_count` | `int` | Total chunks scanned. |
+| `mode_available` | `bool` | `True` iff at least one breadcrumb was found. |
+| `note` | `str \| None` | Guidance hint when `mode_available` is `False`. |
+
+Each **outline entry** is:
+
+| Key | Type | Description |
+| :--- | :--- | :--- |
+| `path` | `str` | Full breadcrumb, e.g. `"Intro / 1. Background / 1.2 Details"`. |
+| `chapter` | `str` | First breadcrumb component (omitted if absent). |
+| `section` | `str` | Second breadcrumb component (omitted if absent). |
+| `subsection` | `str` | Third breadcrumb component (omitted if absent). |
+| `level` | `int` | Number of breadcrumb components (depth). |
+| `first_chunk_id` | `int` | `chunk_id` of the first chunk in this section. |
+| `first_chunk_seq` | `int` | `chunk_seq` of the first chunk in this section. |
+| `chunk_ids` | `list[int]` | All chunk ids sharing this breadcrumb. |
+
+> 🧭 When the document was indexed **without** `metadata_mode="parsed"`, the call succeeds but returns `outline == []`, `mode_available == False`, and a descriptive `note` telling you how to fix it. It never raises.
+
+---
+
+#### 7.7.3. Resolve an address to its content — `get_section_by_address`
+
+Once you have an outline you can fetch the content of a specific chapter / section / subsection. The `address` argument is flexible:
+
+```python
+# (a) Full breadcrumb string
+res = store.get_section_by_address("handbook.md", "Introduction / 1. Background")
+
+# (b) Crumb list
+res = store.get_section_by_address("handbook.md", ["Introduction", "1. Background"])
+
+# (c) Dict of fields
+res = store.get_section_by_address(
+    "handbook.md",
+    {"chapter": "Introduction", "section": "1. Background"},
 )
 
-# 2. Or post-process any query result set
-fused = store.reconstruct_overlapping_chunks(raw_results, add_metadata=True)
+# (d) Single heading name (matched as a path suffix at any depth)
+res = store.get_section_by_address("handbook.md", "1.2 Scope")
+
+print(res["found"])          # True
+print(res["resolved_path"])  # "Introduction / 1. Background"
+print(res["matched_chunks"]) # [{"chunk_id": 12, "chunk_seq": 3}, ...]
+print(res["content"])        # concatenated, decrypted chunk text
+```
+
+**Match modes** — control how `address` is compared to each chunk's `path`:
+
+| `match=` | Behaviour | Example address | Matches path |
+| :--- | :--- | :--- | :--- |
+| `"exact"` *(default)* | Full path equality; a bare heading also matches any single crumb. | `"Introduction / 1. Background"` | `"Introduction / 1. Background"` |
+| `"prefix"` | Path starts with the address. | `"Introduction / 1"` | `"Introduction / 1. Background / 1.1 Motivation"` |
+| `"contains"` | Path contains the address anywhere. | `"Background"` | `"Introduction / 1. Background"` |
+| `"regex"` | Python regex `.search()` against the path. | `r"^\d+\. \w+"` | `"Introduction / 1. Background"` |
+
+```python
+# Fetch everything under "Introduction / 1. Background"
+sub = store.get_section_by_address(
+    "handbook.md", "Introduction / 1. Background", match="prefix"
+)
+
+# Regex, e.g. every numbered top-level section
+numbered = store.get_section_by_address(
+    "handbook.md", r"/ \d+\.", match="regex"
+)
+```
+
+**Return schema**
+
+| Key | Type | Description |
+| :--- | :--- | :--- |
+| `doc_id` | `int` | Document identifier. |
+| `file_path` | `str` | Resolved full path. |
+| `address` | `str \| list \| dict` | The address you passed (echoed back). |
+| `resolved_path` | `str \| None` | The first matching full breadcrumb. |
+| `matched_chunks` | `list[{chunk_id, chunk_seq}]` | Every chunk that matched, in `chunk_seq` order. |
+| `content` | `str` | Concatenation of the matched chunk texts. |
+| `found` | `bool` | `True` iff at least one chunk matched. |
+
+> 🔔 A merely-unmatched address does **not** raise — it returns `found=False` and `content=""`. A missing **document** raises `SafeStoreError`.
+
+---
+
+#### 7.7.4. Everything under a prefix — `get_document_subtree`
+
+The most ergonomic helper for "give me the whole Chapter 1". It combines the outline and the content in one call:
+
+```python
+subtree = store.get_document_subtree("handbook.md", "Introduction / 1. Background")
+
+print(subtree["path_prefix"])  # "Introduction / 1. Background"
+for s in subtree["sections"]:
+    print(f"  {s['path']}  ({len(s['chunk_ids'])} chunks)")
+#   Introduction / 1. Background  (5 chunks)
+#   Introduction / 1. Background / 1.1 Motivation  (2 chunks)
+#   Introduction / 1. Background / 1.2 Scope  (1 chunks)
+
+print(subtree["content"])      # all matched chunk text, concatenated
+```
+
+**Return schema**
+
+| Key | Type | Description |
+| :--- | :--- | :--- |
+| `doc_id` | `int` | Document identifier. |
+| `file_path` | `str` | Resolved full path. |
+| `path_prefix` | `str` | Normalized prefix (whitespace trimmed). |
+| `sections` | `list[dict]` | Outline entries under the prefix (same schema as `get_document_structure`). |
+| `content` | `str` | Concatenated text of every chunk under the prefix. |
+
+---
+
+#### 7.7.5. End-to-end example
+
+```python
+from safe_store import SafeStore, DocMetadataMode
+
+store = SafeStore("handbook.db", vectorizer_name="st")
+
+with store:
+    store.add_document("handbook.md", metadata_mode=DocMetadataMode.PARSED)
+
+    # 1. Full text — no need to paginate manually
+    full = store.get_document_content("handbook.md")
+    print(f"{full['chunk_count']} chunks, {len(full['content'])} chars")
+
+    # 2. Table of contents — no chunk text loaded
+    structure = store.get_document_structure("handbook.md")
+    for entry in structure["outline"]:
+        print(f"  [{entry['level']}] {entry['path']}")
+
+    # 3. Dive into one section by address
+    intro = store.get_section_by_address("handbook.md", {"chapter": "Introduction"})
+    if intro["found"]:
+        print(intro["content"])
+
+    # 4. Or grab the whole subtree of Chapter 1
+    chapter_1 = store.get_document_subtree("handbook.md", "Introduction / 1. Background")
+    print(chapter_1["content"])
 ```
 
 ---
@@ -747,13 +1027,24 @@ restored = safe_store.SafeStore.import_database("backup.json", "restored.db", de
 | **`store.cluster_documents(...)`** | Clusters documents by semantic centroid and synthesizes thematic titles, descriptions, and topic tags. |
 | **`store.get_document_clusters(...)`** | Retrieves cached or freshly computed document clusters and thematic groups. |
 | `store.unload_vectorizer()` | Forces immediate unloading of local model weights and purges GPU VRAM. |
-| `SafeStore.shutdown_shared_vectorizer(port)` | Special command to shut down the persistent shared model server daemon. |
+| `ModelServerClient.ensure_loaded()` | Pre-loads the vectorizer in the shared daemon (idempotent; JSON load metrics). |
+| `ModelServerClient.unload_model()` | Releases the shared vectorizer from VRAM/RAM; daemon stays alive for control verbs. |
+| `ModelServerClient.health()` / `.status()` | Full state (model_loaded/device/vram_bytes/ram_bytes) / lightweight liveness snapshot. |
+| `ModelServerClient.shutdown()` | Stops the persistent shared model server daemon (canonical API; replaces `SafeStore.shutdown_shared_vectorizer`). |
 | `store.query(...)` | Dense vector similarity search with 0–100 relevance score (supports `reconstruct_overlapping_chunks=True`). |
 | `store.reconstruct_overlapping_chunks(...)` | Reconstructs and chronologically fuses overlapping and non-contiguous chunks with single metadata header. |
 | `store.hybrid_query(...)` | Tri-Modal Reciprocal Rank Fusion (Dense + BM25). |
 | `store.query_full_documents(...)` | Full document retrieval aggregated from chunk hits. |
 | `store.query_document_content_window(...)` | Retrieves matching chunks with surrounding context window. |
 | `store.get_document_content_paginated(...)` | Page-by-page chunk inspection. |
+| `store.get_document_content(...)` | Full document text (single call) with optional metadata; prefers stored `full_text`. |
+| `store.get_document_structure(...)` | Ordered outline of addresses (`path`/`chapter`/`section`/`subsection`) **without** loading chunk text. |
+| `store.get_section_by_address(...)` | Resolves a chapter/section/subsection address to its content (`match=` exact/prefix/contains/regex). |
+| `store.get_document_subtree(...)` | Everything under a breadcrumb prefix — outline entries + concatenated content. |
+| `store.get_document_content(...)` | Full document text (single call) with optional metadata. |
+| `store.get_document_structure(...)` | Ordered outline of addresses (path/chapter/section/subsection) without loading chunk text. |
+| `store.get_section_by_address(...)` | Resolves a chapter/section/subsection address to its content (`match=` exact/prefix/contains/regex). |
+| `store.get_document_subtree(...)` | Everything under a breadcrumb prefix — outline entries + concatenated content. |
 | `GraphStore(store, ...)` | Knowledge graph management with W3C SPARQL 1.1 query/update support. |
 | **`graph.get_graph_info()`** | Returns knowledge graph diagnostics: total nodes, total edges, label breakdown, and chunk provenance link counts. |
 | **`graph.build_graph_for_all_documents()`** | Automatically extracts graph nodes and relationships across all documents with live per-chunk progress reporting. |

@@ -9,25 +9,55 @@ from ascii_colors import ASCIIColors, trace_exception
 # each vectorizer must have a class name variable to be identified
 class_name="OllamaVectorizer"
 
-# Attempt import of ollama and related error types, handle gracefully
-try:
-    import pipmaster as pm
+# Lazy import + lazy install: `ollama` is NOT a base dependency and MUST NOT be
+# installed at module-import time — `VectorizationManager.list_vectorizers()`
+# imports every method module just to read `class_name`, so a top-level
+# `pm.ensure_packages(["ollama"])` would trigger a `pip install ollama` merely
+# to LIST the vectorizers. Installed on first real use instead.
+import pipmaster as pm
+
+_ollama_module = None
+_OLLAMA_DEPS_READY = False
+
+
+def _ensure_ollama_deps_installed() -> None:
+    """Install the `ollama` client via pipmaster on first use. Idempotent."""
+    global _OLLAMA_DEPS_READY
+    if _OLLAMA_DEPS_READY:
+        return
+    try:
+        import ollama  # noqa: F401 - probe only
+        _OLLAMA_DEPS_READY = True
+        return
+    except (ImportError, ModuleNotFoundError):
+        pass
+    ASCIIColors.info(
+        "OllamaVectorizer: installing 'ollama' package (first use only)..."
+    )
     pm.ensure_packages(["ollama"])
-    import ollama
-    _OllamaResponseError = ollama.ResponseError
-    _OllamaRequestError = ollama.RequestError
-    _OLLAMA_AVAILABLE = True
-except ImportError:
-    _OLLAMA_AVAILABLE = False
-    ollama = None
-    class _OllamaResponseError(Exception): pass
-    class _OllamaRequestError(Exception): pass
+    _OLLAMA_DEPS_READY = True
+
+
+def _ensure_ollama_loaded():
+    """Import and return the `ollama` module on first use. Idempotent."""
+    global _ollama_module
+    if _ollama_module is not None:
+        return _ollama_module
+    try:
+        _ensure_ollama_deps_installed()
+        import ollama as _ol
+    except Exception as e:
+        trace_exception(e)
+        raise ConfigurationError(
+            "OllamaVectorizer requires 'ollama' (auto-installed via pipmaster "
+            "on first use). If this persists, run `pip install ollama`."
+        ) from e
+    _ollama_module = _ol
+    return _ollama_module
 
 def list_available_models(**kwargs) -> List[str]:
     """Dynamically lists models from a running Ollama server."""
-    if not _OLLAMA_AVAILABLE:
-        raise ConfigurationError("Ollama support is not installed. Please run: pip install safe_store[ollama]")
-    
+    ollama = _ensure_ollama_loaded()
     try:
         response = ollama.list()
         # The structure from ollama.list() is a dict with a 'models' key
@@ -63,8 +93,7 @@ class OllamaVectorizer(BaseVectorizer):
             VectorizationError: If connection to Ollama fails or the model is invalid.
         """
         super().__init__(vectorizer_name="ollama")
-        if not _OLLAMA_AVAILABLE or ollama is None:
-            raise ConfigurationError("OllamaVectorizer requires the 'ollama' library. Install with: pip install safe_store[ollama]")
+        ollama = _ensure_ollama_loaded()
 
         if not isinstance(model_config, dict) or "model" not in model_config:
             raise ConfigurationError("Ollama vectorizer config must be a dictionary with a 'model' key.")
@@ -117,10 +146,10 @@ class OllamaVectorizer(BaseVectorizer):
                 f"Original error: {e}. "
                 f"Check that your Ollama server/proxy at '{self.host or 'default'}' is properly configured."
             ) from e
-        except _OllamaResponseError as e:
+        except ollama.ResponseError as e:
             trace_exception(e)
             raise VectorizationError(f"Ollama API error for model '{self.model_name}': {e.error}") from e
-        except _OllamaRequestError as e:
+        except ollama.RequestError as e:
             trace_exception(e)
             raise VectorizationError(f"Ollama request error connecting to host '{self.host or 'default'}': {e}") from e
         except Exception as e:
@@ -131,6 +160,7 @@ class OllamaVectorizer(BaseVectorizer):
         if not texts:
             return np.empty((0, self.dim), dtype=self.dtype)
         
+        ollama = _ensure_ollama_loaded()
         embeddings_list = []
         try:
             for i, text in enumerate(texts):
@@ -152,7 +182,7 @@ class OllamaVectorizer(BaseVectorizer):
 
             return embeddings_array
 
-        except (_OllamaResponseError, _OllamaRequestError) as e:
+        except (ollama.ResponseError, ollama.RequestError) as e:
             raise VectorizationError(f"Ollama API error during vectorization: {e}") from e
         except Exception as e:
             raise VectorizationError(f"Unexpected error during Ollama vectorization: {e}") from e
@@ -168,6 +198,7 @@ class OllamaVectorizer(BaseVectorizer):
     @staticmethod
     def list_models(**kwargs) -> List[str]:
         """Lists available models from the running Ollama instance."""
+        ollama = _ensure_ollama_loaded()
         try:
             response = ollama.list()
             # The structure from ollama.list() is a dict with a 'models' key

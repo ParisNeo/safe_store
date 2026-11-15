@@ -16,27 +16,42 @@
 8. ⚖️ **OWL/RDFS Semantic Reasoning & Exclusivity Engine**: Automatic deductive inference (inverses, symmetry, transitivity, subclasses, `owl:sameAs`) and contradiction verification (`owl:disjointWith`).
 9. 🔍 **W3C SPARQL 1.1 Query & Update Engine**: Native TBox/ABox ontology management, declarative tabular mapping, and full SPARQL (`SELECT`, `ASK`, `CONSTRUCT`, `DESCRIBE`, and `INSERT/DELETE DATA` updates).
 10. 📐 **TBox / ABox Graph Scope Separation & AI CSV Mapping**: Visualize ontology schema classes, factual instances, or unified graphs. Ingest CSVs via manual mapping or AI rule synthesis with user verification.
-10. 🧠 **LLM Cognitive Memory & Thought Reorganization**: Episodic memory logging, associative semantic traversal, grounded text chunk evidence linking, and native function-calling tool dispatching.
-11. 🔀 **Tri-Modal Reciprocal Rank Fusion (RRF)**: Merges dense similarity, lexical BM25, and symbolic graph traversals into unified results with universal 0–100 relevance grades.
-12. 🔍 **Database Diagnostics & Introspection (`store.info()`)**: Instant inspection of vectorizers, chunking parameters, document chunk counts, ontology schemas, and graph topology metrics.
-13. 📊 **State-of-the-Art Semantic Datalake & Point Cloud Engine**: 2D/3D **UMAP** manifold projections (with cosine metric, plus PCA & t-SNE), persistent SQLite caching, streaming lazy loading (`IncrementalPCA`), and interactive HTML visualizer exports.
-14. 🎨 **Semantic Document Clustering & Thematic Synthesis**: Groups documents using vector centroids and synthesizes thematic titles, descriptions, and topic tags with auto-K estimation.
-15. 💬 **Sourced Agentic Document Chat & Q&A**: Talk to your documents using semantic search, full text, and SPARQL logic, with interactive source citation pills and previews.
-11. 🔐 **Total Zero-Leakage Local Encryption**: End-to-end AES-128/HMAC encryption for chunk text, document paths/names (blind indexed), metadata, and knowledge graph nodes/edges at rest.
-16. 📑 **`DocMetadataMode.PARSED` Structural Metadata Engine**: Zero-LLM, structure-aware per-chunk metadata with hierarchical breadcrumbs parsed from Markdown headings (`#`/`##`/`###`), YAML front-matter, or the Python AST — every chunk knows its `path` (chapter/section/subsection), title, authors, and abstract.
-17. 🖥️ **SafeStore Studio Desktop & Web App**: Interactive UI built on NiceGUI and pywebview with LLM Setup, Sourced Chat, VectorDB editing, 2D/3D Datalake, and SPARQL console.
-18. 🔄 **Rechunking & Re-vectorization**: `store.rechunk_and_vectorize(...)` atomically reconstructs every document, applies a new chunking (size / overlap / strategy), and re-embeds with an optionally new vectorizer — one call migrates an entire knowledge base.
+11. 🧠 **LLM Cognitive Memory & Thought Reorganization**: Episodic memory logging, associative semantic traversal, grounded text chunk evidence linking, and native function-calling tool dispatching.
+12. 🔀 **Tri-Modal Reciprocal Rank Fusion (RRF)**: Merges dense similarity, lexical BM25, and symbolic graph traversals into unified results with universal 0–100 relevance grades.
+13. 🔍 **Database Diagnostics & Introspection (`store.info()`)**: Instant inspection of vectorizers, chunking parameters, document chunk counts, ontology schemas, and graph topology metrics.
+14. 📊 **State-of-the-Art Semantic Datalake & Point Cloud Engine**: 2D/3D **UMAP** manifold projections (with cosine metric, plus PCA & t-SNE), persistent SQLite caching, streaming lazy loading (`IncrementalPCA`), and interactive HTML visualizer exports.
+15. 🎨 **Semantic Document Clustering & Thematic Synthesis**: Groups documents using vector centroids and synthesizes thematic titles, descriptions, and topic tags with auto-K estimation.
+16. 💬 **Sourced Agentic Document Chat & Q&A**: Talk to your documents using semantic search, full text, and SPARQL logic, with interactive source citation pills and previews.
+17. 🔐 **Total Zero-Leakage Local Encryption**: End-to-end AES-128/HMAC encryption for chunk text, document paths/names (blind indexed), metadata, and knowledge graph nodes/edges at rest.
+18. 📑 **`DocMetadataMode.PARSED` Structural Metadata Engine**: Zero-LLM, structure-aware per-chunk metadata with hierarchical breadcrumbs parsed from Markdown headings (`#`/`##`/`###`), YAML front-matter, or the Python AST — every chunk knows its `path` (chapter/section/subsection), title, authors, and abstract.
+19. 📚 **Document Structure & Address Helpers**: Fetch full content, list a document's outline **without** loading its text, resolve a chapter/section/subsection address to content, or grab an entire subtree — all in one call (see [§ Document Structure & Address Helpers](#-document-structure--address-helpers)).
+20. 🖥️ **SafeStore Studio Desktop & Web App**: Interactive UI built on NiceGUI and pywebview with LLM Setup, Sourced Chat, VectorDB editing, 2D/3D Datalake, and SPARQL console.
+21. 🔄 **Rechunking & Re-vectorization**: `store.rechunk_and_vectorize(...)` atomically reconstructs every document, applies a new chunking (size / overlap / strategy), and re-embeds with an optionally new vectorizer — one call migrates an entire knowledge base.
+
 ---
 
 ## 📦 Installation
 
 ```bash
-# Core package
+# Core package — lightweight, no torch, no torch-vision, no transformers.
+# All heavy vectorizer backends are auto-installed on FIRST USE via pipmaster.
 pip install safe_store
+
+# Optional: pre-warm a specific backend (mostly useful for CI / deploy images
+# where you want baked-in deps instead of a first-request download).
+pip install "safe_store[st]"     # torch + sentence-transformers
+pip install "safe_store[onnx]"   # fastembed (ONNX Runtime, no torch)
+pip install "safe_store[vectorizers]"  # all of the above + openai/ollama/cohere
 
 # With Desktop UI & Studio support
 pip install "safe_store[ui]"
 ```
+
+> 🚀 **Zero manual dependency management.** On first call to a vectorizer that
+> needs a heavy backend (e.g. `SentenceTransformer`), `safe_store` runs
+> `pipmaster.ensure_packages([...])` and installs the missing wheels before
+> proceeding. You only pay the ~30–90 s install cost once per environment.
+> Subsequent processes reuse the installed packages and start in milliseconds.
 
 ---
 
@@ -114,11 +129,17 @@ store.info()
 # 2. Or retrieve structured dictionary for APIs and dashboards
 db_info = store.get_database_info()
 print(f"Total Docs: {db_info['documents']['total_documents']}")
+for doc in db_info["documents"]["list"]:
+    print(f"  • {doc['document_title']}: {doc['chunk_count']} chunks")
+print(
+    f"Knowledge Graph: {db_info['knowledge_graph']['total_nodes']} nodes, "
+    f"{db_info['knowledge_graph']['total_relationships']} edges"
+)
 ```
 
 ---
 
-### 0.2 Document-Level Query Aggregation (`group_by_document=True`)
+### 0.1 Document-Level Query Aggregation (`group_by_document=True`)
 
 In classic chunk retrieval, a single query that matches several passages of the same document returns **multiple rows for the same file**. The caller then has to re-group, sort, dedupe, and fuse them before sending context to an LLM.
 
@@ -218,7 +239,7 @@ Matched Chunks: 3
 <chunk 1 text>
 ```
 
-The same guarantees apply to `reconstruct_overlapping_chunks=True` (see [§0.1](#01-overlapping-chunk-reconstruction--anti-hallucination-fusion)) — both retrieval paths return `document_title`, `head_snippet`, and a populated header.
+The same guarantees apply to `reconstruct_overlapping_chunks=True` (see [§ 0.2](#02-overlapping-chunk-reconstruction--anti-hallucination-fusion)) — both retrieval paths return `document_title`, `head_snippet`, and a populated header.
 
 > 💡 **Tip — get richer metadata without an LLM**: pass `metadata_mode="parsed"` at ingestion to have `safe_store` extract structural breadcrumbs (`title`, `chapter`, `section`, `subsection`, `authors`, `abstract`) directly from the document. For documents already indexed, call `store.rechunk_and_vectorize(metadata_mode="parsed")` once to upgrade them in place.
 
@@ -247,40 +268,9 @@ Use **`reconstruct_overlapping_chunks`** when you want the most natural, prose-l
 
 ---
 
-### 0.1 Overlapping Chunk Reconstruction & Anti-Hallucination Fusion
+### 0.2 Overlapping Chunk Reconstruction & Anti-Hallucination Fusion
 
-In traditional vector retrieval, adjacent chunks from the same document often score in reverse order (e.g., chunk 3 before chunk 2), resulting in disjointed narrative flow, duplicated boundary phrases, and redundant metadata headers. 
-
-`safe_store` can automatically reconstruct contiguous chunks in their true chronological order, eliminate the overlapping boundary stutter, bridge non-contiguous passages with `...`, and prepend a single metadata header per document:
-
-```python
-import safe_store
-
-store = safe_store.SafeStore("docs.db")
-
-# Option A: Built into query() or hybrid_query()
-results = store.query(
-    "how to configure TLS encryption and supervisor daemon",
-    top_k=4,
-    reconstruct_overlapping_chunks=True
-)
-
-for doc in results:
-    print(f"Document: {doc['document_title']} (Peak Relevance: {doc['relevance_score']:.1f}%)")
-    print(f"Fused Chunk Seqs: {doc['chunk_seqs']}")
-    print(f"Content:\n{doc['chunk_text']}\n")
-
-# Option B: Run on any existing result list
-reconstructed = store.reconstruct_overlapping_chunks(raw_results, add_metadata=True)
-```
-
-> 🏷️ **Always-on header + head snippet**: since the reconstruction path is used as a RAG-facing view, the returned `chunk_text` **always** begins with a `--- Document: ... ---` header — falling back to the filename when no metadata exists — and adds a `Head: ...` snippet (first ~500 chars of the document, LLM-less) when structured metadata is unavailable. The `head_snippet` field is also exposed verbatim on each result so callers can render it separately. See [§0.2 — Guaranteed Header & Head Snippet Fallback](#guaranteed-header--head-snippet-fallback) for the exact priority order.
-
----
-
-### 0.1 Overlapping Chunk Reconstruction & Anti-Hallucination Fusion
-
-In traditional vector retrieval, adjacent chunks from the same document often score in reverse order (e.g., chunk 3 before chunk 2), resulting in disjointed narrative flow, duplicated boundary phrases, and redundant metadata headers. 
+In traditional vector retrieval, adjacent chunks from the same document often score in reverse order (e.g., chunk 3 before chunk 2), resulting in disjointed narrative flow, duplicated boundary phrases, and redundant metadata headers.
 
 `safe_store` can automatically reconstruct contiguous chunks in their true chronological order, eliminate the overlapping boundary stutter, bridge non-contiguous passages with `...`, and prepend a single metadata header per document:
 
@@ -304,13 +294,8 @@ for doc in results:
 # Option B: Run on any existing result list
 reconstructed = store.reconstruct_overlapping_chunks(raw_results, add_metadata=True)
 ```
-db_info = store.get_database_info()
-print(f"Total Docs: {db_info['documents']['total_documents']}")
-for doc in db_info['documents']['list']:
-    print(f"  • {doc['document_title']}: {doc['chunk_count']} chunks")
 
-print(f"Knowledge Graph: {db_info['knowledge_graph']['total_nodes']} nodes, {db_info['knowledge_graph']['total_relationships']} edges")
-```
+> 🏷️ **Always-on header + head snippet**: since the reconstruction path is used as a RAG-facing view, the returned `chunk_text` **always** begins with a `--- Document: ... ---` header — falling back to the filename when no metadata exists — and adds a `Head: ...` snippet (first ~500 chars of the document, LLM-less) when structured metadata is unavailable. The `head_snippet` field is also exposed verbatim on each result so callers can render it separately. See [§ 0.1 — Guaranteed Header & Head Snippet Fallback](#guaranteed-header--head-snippet-fallback) for the exact priority order.
 
 ---
 
@@ -335,8 +320,13 @@ store = safe_store.SafeStore(
 )
 
 # Shutdown shared daemon when terminating multi-user service:
-# SafeStore.shutdown_shared_vectorizer(port=8765)
-```
+# from safe_store.vectorization.model_server.client import ModelServerClient
+# ModelServerClient("127.0.0.1", 8765, token).shutdown()
+
+# Inspect VRAM/RAM/lifecycle at any time (lazy by default):
+# from safe_store.vectorization.model_server.client import ModelServerClient
+# print(ModelServerClient("127.0.0.1", 8765, token).health())
+# ModelServerClient("127.0.0.1", 8765, token).unload_model()   # free VRAM on demand
 
 # Inspect database summary and diagnostics anytime:
 store.info()
@@ -392,7 +382,7 @@ restored = SafeStore.import_db_file("backup.db", "restored.db")
 
 ---
 
-### 1.1 Full Document & Neighborhood Context Window Retrieval
+### 1.2 Full Document & Neighborhood Context Window Retrieval
 
 When an LLM needs complete document context or the continuous paragraph surrounding a chunk match:
 
@@ -413,11 +403,25 @@ with store:
         print("No document exceeded the 50% relevance threshold.")
 
     # 2. Window Expansion Retrieval: Expands matching chunks by window_before / window_after chunks
+    windows = store.query_document_content_window(
+        query_text="ERR-4091 supervisor daemon",
+        top_k_hits=1,
+        window_before=1,
+        window_after=1,
+        min_relevance_percent=40.0
+    )
+    if windows:
+        print(f"Stitched Window Text:\n{windows[0]['stitched_window_text']}\n")
+
+    # 3. Document Chunk Pagination: Browse chunks page by page with sequence tracking
+    page_data = store.get_document_content_paginated("incident_001", page=1, page_size=5)
+    print(f"Page {page_data['page']} of {page_data['total_pages']} (Total Chunks: {page_data['total_chunks']})")
+    print(f"Stitched Page Text:\n{page_data['stitched_text']}")
 ```
 
 ---
 
-### 1.2 Unstructured File Ingestion & Dynamic Knowledge Graph Construction
+### 1.3 Unstructured File Ingestion & Dynamic Knowledge Graph Construction
 
 `safe_store` allows you to extract rich knowledge graphs directly from unstructured files (Markdown, PDF, DOCX, Text) with live per-chunk extraction reporting:
 
@@ -443,56 +447,6 @@ with store:
     graph_info = graph.get_graph_info()
     print(f"Nodes by Label: {graph_info['nodes_by_label']}")
     print(f"Edges by Type:  {graph_info['relationships_by_type']}")
-```
-
-```python
-    # 2. Window Expansion Retrieval: Expands matching chunks by window_before / window_after chunks
-    windows = store.query_document_content_window(
-        query_text="ERR-4091 supervisor daemon",
-        top_k_hits=1,
-        window_before=1,
-        window_after=1,
-        min_relevance_percent=40.0
-    )
-    if windows:
-        print(f"Stitched Window Text:\n{windows[0]['stitched_window_text']}\n")
-
-    # 3. Document Chunk Pagination: Browse chunks page by page with sequence tracking
-    page_data = store.get_document_content_paginated("incident_001", page=1, page_size=5)
-    print(f"Page {page_data['page']} of {page_data['total_pages']} (Total Chunks: {page_data['total_chunks']})")
-    print(f"Stitched Page Text:\n{page_data['stitched_text']}")
-```
-
-
-with store:
-    # Index unstructured technical documents
-    store.add_text(
-        unique_id="incident_001",
-        text="Production node crashed due to OOMKilled condition in supervisor daemon. "
-             "Error code ERR-4091 was emitted by telemetry controller.",
-        metadata={"service": "Telemetry", "severity": "Critical"}
-    )
-    store.add_text(
-        unique_id="manual_001",
-        text="Troubleshooting Guide: When encountering error code ERR-4091, replace the "
-             "memory buffer chip and execute supervisor restart.",
-        metadata={"doc_type": "Runbook"}
-    )
-
-    # Hybrid Query: Score-Calibrated Fusion of Dense Semantic Similarity with BM25 Sparse Lexical Score
-    results = store.hybrid_query(
-        query_text="troubleshooting memory failure ERR-4091",
-        top_k=2,
-        dense_weight=0.5,
-        bm25_weight=0.5,
-        rrf_k=60,
-        min_relevance_percent=40.0 # Standard 0-100 threshold filter
-    )
-
-    for r in results:
-        print(f"[{r['file_path']}] (Relevance: {r['relevance_score']:.1f}% | Raw RRF: {r['raw_rrf_score']:.5f})")
-        print(f"Content: {r['chunk_text']}\n")
-
 ```
 
 ---
@@ -542,7 +496,6 @@ llm_tools = graph.get_tool_definitions()
 ---
 
 ### 3. W3C SPARQL 1.1 Knowledge Graph Engine
-
 
 `safe_store` provides a full, standards-compliant SPARQL 1.1 engine supporting `SELECT`, `ASK`, `CONSTRUCT`, and `DESCRIBE` queries across multi-hop relational graphs.
 
@@ -609,72 +562,6 @@ WHERE {
 subgraph = graph.query_sparql(sparql_construct)
 for triple in subgraph["triples"]:
     print(f"Constructed: {triple['subject']['value']} -> {triple['predicate']['value']} -> {triple['object']['value']}")
-```
-
----
-
-### 3. TBox (Ontology) & Declarative Tabular-to-Graph Mapping (CSV / XLSX / SQLite)
-
-Convert structured business tables directly into grounded RDF knowledge graphs matching an explicit RDFS/OWL ontology (TBox).
-
-```python
-from safe_store import SafeStore, TBoxManager, TabularMapper
-
-store = SafeStore(db_path="supply_chain.db")
-
-# 1. Load TBox Ontology (Turtle format)
-tbox = TBoxManager()
-tbox.load_ontology("""
-@prefix owl: <http://www.w3.org/2002/07/owl#> .
-@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
-@prefix ex: <http://example.org/ontology/> .
-
-ex:Product a owl:Class .
-ex:Supplier a owl:Class .
-
-ex:suppliedBy a owl:ObjectProperty ;
-    rdfs:domain ex:Product ;
-    rdfs:range ex:Supplier .
-
-ex:hasPrice a owl:DatatypeProperty ;
-    rdfs:domain ex:Product .
-""", format="turtle")
-
-# 2. Declarative Mapping Configuration
-mapping_rules = {
-    "entity_mappings": [
-        {
-            "class": "http://example.org/ontology/Product",
-            "subject_template": "http://example.org/product/{sku}",
-            "properties": {
-                "product_name": "http://example.org/ontology/hasName",
-                "unit_price": "http://example.org/ontology/hasPrice"
-            }
-        },
-        {
-            "class": "http://example.org/ontology/Supplier",
-            "subject_template": "http://example.org/supplier/{supplier_id}",
-            "properties": {
-                "supplier_name": "http://example.org/ontology/hasName"
-            }
-        }
-    ],
-    "relationship_mappings": [
-        {
-            "predicate": "http://example.org/ontology/suppliedBy",
-            "source_template": "http://example.org/product/{sku}",
-            "target_template": "http://example.org/supplier/{supplier_id}"
-        }
-    ]
-}
-
-# 3. Ingest CSV or Excel Sheet directly into ABox Graph
-mapper = TabularMapper(store=store, tbox=tbox)
-summary = mapper.map_csv("inventory.csv", mapping_rules=mapping_rules)
-# Alternatively: mapper.map_excel("inventory.xlsx", mapping_rules=mapping_rules, sheet_name="Q3_Stock")
-# Alternatively: mapper.map_sqlite_table("legacy.db", "products", mapping_rules=mapping_rules)
-
-print(f"Mapped {summary['records_processed']} records into {summary['triples_generated']} RDF triples.")
 ```
 
 ---
@@ -1108,7 +995,7 @@ with store:
         text="Q3 Financial Analysis...",
         metadata={"department": "Finance", "clearance": "Restricted"}
     )
-    
+
     # The metadata is decrypted and prepended as context in query results
     results = store.query("Q3 analysis", top_k=1)
     print(results[0]["document_metadata"])
@@ -1126,7 +1013,6 @@ with store:
 ```python
 import safe_store
 from pathlib import Path
-import shutil
 
 DB_FILE = "encrypted_lifecycle.db"
 KEY = "correct-horse-battery-staple"
@@ -1177,6 +1063,7 @@ for p in [DB_FILE, f"{DB_FILE}.lock", f"{DB_FILE}-wal", f"{DB_FILE}-shm"]:
     Path(p).unlink(missing_ok=True)
 print("Encrypted lifecycle demo complete.")
 ```
+
 ---
 
 ## 📊 Semantic Datalake & Point Cloud Visualization
@@ -1195,8 +1082,8 @@ store = safe_store.SafeStore("my_knowledge.db", vectorizer_name="st")
 with store:
     # Get 2D state-of-the-art UMAP projection (default)
     points_2d = store.get_datalake_view(
-        method='umap', 
-        n_components=2, 
+        method='umap',
+        n_components=2,
         output_format='dict'
     )
 
@@ -1205,8 +1092,8 @@ with store:
 
     # Get 3D UMAP projection
     points_3d = store.get_datalake_view(
-        method='umap', 
-        n_components=3, 
+        method='umap',
+        n_components=3,
         output_format='dict'
     )
 ```
@@ -1255,6 +1142,98 @@ store.export_datalake_html(
 - **Hover Inspection**: See the actual text content and metadata of any point.
 - **Real-time Filtering**: Filter points by document title or metadata keywords.
 - **Zero Dependencies**: The exported file works offline in any modern browser.
+
+---
+
+## 📑 Document Structure & Address Helpers
+
+Browse a document without loading its full text, get a clean table of contents, or jump straight to "Chapter 1 → Section 2". `safe_store` exposes four high-level helpers that resolve breadcrumb **addresses** down to content.
+
+| Helper | What you get | Text included? |
+| :--- | :--- | :--- |
+| `store.get_document_content(...)` | The complete document text + optional metadata | ✅ **Yes** |
+| `store.get_document_structure(...)` | An ordered **outline** of addresses (path/chapter/section/subsection) | ❌ **No** |
+| `store.get_section_by_address(...)` | Resolves an address → concatenated section content | ✅ Yes (matched only) |
+| `store.get_document_subtree(...)` | Everything under a breadcrumb prefix | ✅ Yes (matched only) |
+
+> ⚠️ **Structural helpers require PARSED metadata.** `get_document_structure`, `get_section_by_address`, and `get_document_subtree` read the per-chunk breadcrumbs (`path`, `chapter`, `section`, `subsection`) that `safe_store` only records when a document is indexed under `DocMetadataMode.PARSED`. Index with `metadata_mode="parsed"` (string) or `metadata_mode=DocMetadataMode.PARSED` (enum). Already indexed without it? Upgrade in place with `store.rechunk_and_vectorize(metadata_mode="parsed")`.
+
+### Quick start
+
+```python
+from safe_store import SafeStore, DocMetadataMode
+
+store = SafeStore("handbook.db")
+store.add_document("handbook.md", metadata_mode=DocMetadataMode.PARSED)  # required for breadcrumbs
+
+# 1. Full content in one call
+doc = store.get_document_content("handbook.md")
+print(doc["content"][:500], "...")
+
+# 2. Outline / table of contents — NO chunk text loaded
+for entry in store.get_document_structure("handbook.md")["outline"]:
+    print(f"{'  ' * (entry['level'] - 1)}{entry['path']}")
+
+# 3. Resolve an address (string, list, dict, or single heading) → content
+section = store.get_section_by_address(
+    "handbook.md", {"chapter": "Introduction", "section": "1. Background"}
+)
+print(section["content"])
+
+# 4. Grab everything under a prefix
+chapter_1 = store.get_document_subtree("handbook.md", "Introduction / 1. Background")
+print(chapter_1["content"])
+```
+
+### Helper signatures & return shapes
+
+**`get_document_content(doc_id_or_path, include_metadata=True)`** → `{doc_id, file_path, content, chunk_count, metadata}`.
+Prefers the stored `full_text` blob; falls back to concatenating chunks in `chunk_seq` order. Encrypted documents are decrypted transparently.
+
+**`get_document_structure(doc_id_or_path)`** → `{doc_id, file_path, title, authors, abstract, outline, chunk_count, mode_available, note}`.
+Each `outline` entry is `{path, chapter, section, subsection, level, first_chunk_id, first_chunk_seq, chunk_ids}` — deduplicated by `path`, in first-occurrence order, **with no chunk text**. When indexed without PARSED metadata it returns `outline=[]`, `mode_available=False`, and a `note` explaining how to fix it (never raises).
+
+**`get_section_by_address(doc_id_or_path, address, *, match="exact")`** → `{doc_id, file_path, address, resolved_path, matched_chunks, content, found}`.
+`address` accepts a full breadcrumb string (`"Intro / 1. Background"`), a crumb list (`["Intro", "1. Background"]`), a field dict (`{"chapter": "Intro", "section": "1. Background"}`), or a single heading name. `match` is one of `exact` (default), `prefix`, `contains`, `regex`. An unmatched address returns `found=False` and `content=""` (never raises); only a missing **document** raises `SafeStoreError`.
+
+**`get_document_subtree(doc_id_or_path, path_prefix)`** → `{doc_id, file_path, path_prefix, sections, content}`.
+`sections` are outline-style entries under the prefix; `content` is the concatenation of every matching chunk.
+
+### Runnable example with expected output
+
+```python
+from safe_store import SafeStore, DocMetadataMode
+
+store = SafeStore("handbook.db", vectorizer_name="st")
+
+with store:
+    store.add_document("handbook.md", metadata_mode=DocMetadataMode.PARSED)
+
+    # 1. Full text — no need to paginate manually
+    full = store.get_document_content("handbook.md")
+    print(f"{full['chunk_count']} chunks, {len(full['content'])} chars")
+
+    # 2. Table of contents — chunk text never loaded
+    structure = store.get_document_structure("handbook.md")
+    for entry in structure["outline"]:
+        print(f"  [{entry['level']}] {entry['path']}")
+    # [1] Handbook
+    # [2] Handbook / Introduction
+    # [3] Handbook / Introduction / 1. Background
+
+    # 3. Dive into one section by address (prefix mode = whole chapter)
+    intro = store.get_section_by_address(
+        "handbook.md", "Handbook / Introduction", match="prefix"
+    )
+    if intro["found"]:
+        print(intro["content"])
+
+    # 4. Or grab the whole subtree of Chapter 1
+    chapter_1 = store.get_document_subtree("handbook.md", "Handbook / Introduction / 1. Background")
+    print(chapter_1["content"])
+```
+
+Full details — complete return schemas, the `match`-mode behaviour table, and more examples — are in [`DOC.md` → §7.7 Working with Document Structure & Addresses](DOC.md#77-working-with-document-structure--addresses).
 
 ---
 
@@ -1307,8 +1286,8 @@ Typical benchmarks measured on consumer hardware (Intel i7 / 16GB RAM / SSD):
 | **Tabular Mapping** | 10,000 CSV Rows | ~1.2 s | Batch Transactional Insertion |
 | **Document Ingestion (ST)** | 1 MB Text (~300 pages) | ~3.5 s | Parsing + Token Chunking + Embedding |
 
-
 ---
+
 ### 6. The 8 RAG Chunking Strategies (Beyond the Basics)
 
 Retrieval quality is decided at cut time. `safe_store` implements a complete suite of **8 distinct chunking strategies**:
@@ -1382,6 +1361,7 @@ store_exp = SafeStore(
     expand_after=30   # Injects 30 tokens of succeeding context into LLM prompt
 )
 ```
+
 ---
 
 ## 📑 Parsed Metadata Mode (`DocMetadataMode.PARSED`) — Zero-LLM Structural Metadata
@@ -1423,9 +1403,6 @@ with store:
         metadata_mode="parsed"
     )
 
-    # Every other add_* entry point accepts the same parameter
-    store.add_file("module.py", metadata_mode=DocMetadataMode.PARSED)
-
     results = store.query("revenue growth", top_k=3)
     for r in results:
         print(r["chunk_tags"])  # contains the parsed breadcrumb metadata
@@ -1462,7 +1439,7 @@ For Python files, the breadcrumb follows the code structure:
 - 💸 **Zero cost**: No API tokens, no LLM latency, no rate limits.
 - 🔐 **Privacy**: No document content ever leaves your machine.
 - 🎯 **Deterministic**: The same document always produces the same metadata — no hallucinated summaries.
-- 🧭 **Provenance**: Every chunk knows exactly where it lives in the document hierarchy, enabling section-scoped filtering and richer citations in RAG responses.
+- 🧭 **Provenance**: Every chunk knows exactly where it lives in the document hierarchy — powering the [Document Structure & Address Helpers](#-document-structure--address-helpers) above.
 
 ### Programmatic Access
 
@@ -1488,6 +1465,7 @@ print(meta["path"])
 - [x] Tri-Modal Hybrid Retrieval Engine (BM25 FTS5 + Dense Vectors + RRF)
 - [x] Semantic Datalake Point Cloud Engine (2D/3D PCA, t-SNE, persistent caching, lazy streaming, and HTML visualizer)
 - [x] AES-128/HMAC Authenticated Encryption at Rest
+- [x] Document Structure & Address Helpers (outline, section resolution, subtree retrieval)
 - [ ] Multi-Modal Image Vector Database using SigLIP / CLIP embeddings
 - [ ] Web-based Visual Knowledge Graph Studio & Inspector
 

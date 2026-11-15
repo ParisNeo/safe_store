@@ -15,19 +15,57 @@ def list_available_models(**kwargs) -> List[str]:
     """
     return ["embed-english-v3.0", "embed-english-light-v3.0", "embed-multilingual-v3.0"]
 
-# Attempt import of cohere and related error types, handle gracefully
-try:
-    import pipmaster as pm
-    pm.ensure_packages(["cohere"]) # Ensure cohere is installed
-    import safe_store.vectorization.methods.cohere as cohere
-    _CohereAPIError = cohere.APIError
-    _CohereConnectionError = cohere.ConnectionError
-    _COHERE_AVAILABLE = True
-except ImportError:
-    _COHERE_AVAILABLE = False
-    cohere = None
-    class _CohereAPIError(Exception): pass
-    class _CohereConnectionError(Exception): pass
+# Lazy import + lazy install: `cohere` is NOT a base dependency and MUST NOT be
+# installed at module-import time — `VectorizationManager.list_vectorizers()`
+# imports every method module just to read `class_name`, so a top-level
+# `pm.ensure_packages(["cohere"])` would trigger a `pip install cohere` merely
+# to LIST the vectorizers. Installed on first real use instead.
+import pipmaster as pm
+
+_cohere_module = None
+_COHERE_DEPS_READY = False
+
+
+def _ensure_cohere_deps_installed() -> None:
+    """Install the `cohere` SDK via pipmaster on first use. Idempotent."""
+    global _COHERE_DEPS_READY
+    if _COHERE_DEPS_READY:
+        return
+    try:
+        import cohere  # noqa: F401 - probe only
+        _COHERE_DEPS_READY = True
+        return
+    except (ImportError, ModuleNotFoundError):
+        pass
+    ASCIIColors.info(
+        "CohereVectorizer: installing 'cohere' package (first use only)..."
+    )
+    pm.ensure_packages(["cohere"])
+    _COHERE_DEPS_READY = True
+
+
+def _ensure_cohere_loaded():
+    """Import and return the `cohere` module on first use. Idempotent.
+
+    Note the original broken import was
+    ``import safe_store.vectorization.methods.cohere as cohere`` — a self-import
+    that resolved to THIS package (which does not expose ``APIError``/``Client``)
+    rather than the PyPI ``cohere`` SDK. Fixed here by importing the real package.
+    """
+    global _cohere_module
+    if _cohere_module is not None:
+        return _cohere_module
+    try:
+        _ensure_cohere_deps_installed()
+        import cohere as _co
+    except Exception as e:
+        trace_exception(e)
+        raise ConfigurationError(
+            "CohereVectorizer requires 'cohere' (auto-installed via pipmaster "
+            "on first use). If this persists, run `pip install cohere`."
+        ) from e
+    _cohere_module = _co
+    return _cohere_module
 
 
 class CohereVectorizer(BaseVectorizer):
@@ -68,8 +106,7 @@ class CohereVectorizer(BaseVectorizer):
             VectorizationError: If connection to Cohere fails or the model is invalid.
         """
         super().__init__(vectorizer_name="cohere")
-        if not _COHERE_AVAILABLE or cohere is None:
-            raise ConfigurationError("CohereVectorizer requires the 'cohere' library. Install with: pip install safe_store[cohere]")
+        cohere = _ensure_cohere_loaded()
 
         if not isinstance(model_config, dict) or "model" not in model_config:
             raise ConfigurationError("Cohere vectorizer config must be a dictionary with a 'model' key.")
@@ -129,12 +166,12 @@ class CohereVectorizer(BaseVectorizer):
             self._dtype = np.dtype(np.float32)
             ASCIIColors.info(f"Cohere model '{self.model_name}' ready. Dimension: {self._dim}")
 
-        except _CohereAPIError as e:
+        except cohere.APIError as e:
             msg = f"Cohere API error for model '{self.model_name}': {e}. Check API key and model name."
             if hasattr(e, 'http_status') and e.http_status in [401, 403, 404]:
                  raise ConfigurationError(msg) from e
             raise VectorizationError(msg) from e
-        except _CohereConnectionError as e:
+        except cohere.ConnectionError as e:
             raise VectorizationError(f"Cohere connection error for model '{self.model_name}': {e}.") from e
         except Exception as e:
             raise VectorizationError(f"Failed to initialize Cohere vectorizer '{self.model_name}': {e}") from e
@@ -143,6 +180,7 @@ class CohereVectorizer(BaseVectorizer):
         if not texts:
             return np.empty((0, self.dim), dtype=self.dtype)
 
+        cohere = _ensure_cohere_loaded()
         embeddings_results = [None] * len(texts)
         actual_texts_to_embed: List[str] = []
         original_indices_for_api_texts: List[int] = []
@@ -176,7 +214,7 @@ class CohereVectorizer(BaseVectorizer):
                         raise VectorizationError(f"Cohere model returned an invalid embedding for text at index {original_idx}.")
                     embeddings_results[original_idx] = embedding_vector
 
-            except (_CohereAPIError, _CohereConnectionError) as e:
+            except (cohere.APIError, cohere.ConnectionError) as e:
                 raise VectorizationError(f"Cohere API error during vectorization: {e}") from e
             except Exception as e:
                 raise VectorizationError(f"Unexpected error during Cohere vectorization: {e}") from e

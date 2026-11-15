@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "safe-store"
-version = "3.9.0"
+version = "3.9.1"
 description = "Simple, concurrent SQLite-based vector store optimized for local RAG pipelines, with optional encryption."
 readme = "README.md"
 requires-python = ">=3.8"
@@ -34,7 +34,11 @@ classifiers = [
     "Topic :: Text Processing :: Indexing",
     "Topic :: Security :: Cryptography", # Added classifier
 ]
-# Core dependencies
+# Core dependencies only. Heavy vectorizer backends (torch, sentence-transformers,
+# fastembed, openai, ollama, cohere) are installed lazily on first use via
+# `pipmaster.ensure_packages(...)` inside each vectorizer method module. This keeps
+# the base install footprint small (~50 MB vs ~2-3 GB with torch) and prevents
+# `import safe_store` from ever triggering a cold `import torch` on Windows.
 dependencies = [
     "pipmaster>=1.0.8",
     "numpy>=1.21",
@@ -48,13 +52,9 @@ dependencies = [
     "python-docx>=1.0",
     "beautifulsoup4>=4.11",
     "lxml>=4.9",
-    # Vectorizer & Projection Libraries
-    "sentence-transformers>=3.0.0",
+    # Projection / pure-numpy helpers
     "scikit-learn>=1.0",
     "umap-learn>=0.5.0",
-    "openai>=1.0",
-    "ollama",
-    "cohere",
     # Security/Encryption
     "cryptography>=40.0",
     "bcrypt>=4.0.0"
@@ -65,6 +65,37 @@ safe-store-studio = "safe_store.ui.app:main"
 safe-store-ui = "safe_store.ui.app:main"
 
 [project.optional-dependencies]
+# ── Vectorizer shortcuts ───────────────────────────────────────────────────
+# The base package does NOT pin these — they are installed lazily on demand
+# by each vectorizer module via `pipmaster.ensure_packages(...)`. These extras
+# exist purely as user-facing opt-in shortcuts (e.g. `pip install safe-store[st]`)
+# to pre-warm the install for CI/CD or deployment images where you want
+# dependencies resolved at build time rather than first-request time.
+st = [
+    "torch",
+    "sentence-transformers>=3.0.0",
+]
+onnx = [
+    "fastembed",
+]
+openai = [
+    "openai>=1.0",
+]
+ollama = [
+    "ollama",
+]
+cohere = [
+    "cohere",
+]
+vectorizers = [
+    "torch",
+    "sentence-transformers>=3.0.0",
+    "fastembed",
+    "openai>=1.0",
+    "ollama",
+    "cohere",
+]
+# ── UI / Studio ────────────────────────────────────────────────────────────
 ui = [
     "nicegui>=1.4.0",
     "pywebview>=4.0",

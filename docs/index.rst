@@ -27,6 +27,7 @@ Key Features:
    encryption
    graph_store
    api
+   shared_model_server_architecture
 
 
 Indices and tables

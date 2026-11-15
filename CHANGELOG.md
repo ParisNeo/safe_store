@@ -8,7 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #
 - feat: bump version to 3.3.4 and refine graph processing query# [Unreleased]
 
+- feat(store): add high-level document browsing helpers
+  * `store.get_document_content(doc_id_or_path, include_metadata=True)` — fetches full document text (prefers `documents.full_text`, falls back to concatenated chunks); transparent decryption.
+  * `store.get_document_structure(doc_id_or_path)` — returns an ordered PARSED-mode breadcrumb outline (`path` / `chapter` / `section` / `subsection` + `level`, `first_chunk_id`, `chunk_ids`) **without** loading chunk text; reports `mode_available=False` with guidance when the document was indexed without `metadata_mode="parsed"`.
+  * `store.get_section_by_address(doc_id_or_path, address, *, match="exact")` — resolves an address (full breadcrumb string, crumb list, `{chapter, section, subsection}` dict, or single heading) to the concatenated section content. Match modes: `exact`, `prefix`, `contains`, `regex`. Unmatched addresses return `found=False` (never raises); missing documents raise `SafeStoreError`.
+  * `store.get_document_subtree(doc_id_or_path, path_prefix)` — convenience wrapper returning every outline entry and the concatenated content under a breadcrumb prefix.
+  * Private helper `store._iter_document_chunks(doc_id, *, decrypt=True, page_size=500)` consolidates the paginated-chunk read path used by all of the above.
 - feat(vectorization): add detailed ASCII info for vectorizer initialization
+
+## [2026-11-15 01:38]
+
+- feat(vectorization): add shared model server architecture and update documentation
 
 ## [2026-11-08 18:56]
 
